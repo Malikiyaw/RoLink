@@ -61,7 +61,7 @@ call :log "Python not found on PATH or in standard install folders."
 goto :need_install
 
 :found
-for /f "tokens=*" %%v in ('call %PY% --version 2^>^&1') do (
+for /f "tokens=*" %%v in ('call "%PY%" --version 2^>^&1') do (
     echo         Found: %PY%  ^(%%v^)
     call :log "Python found: %PY% (%%v)"
 )
@@ -223,10 +223,10 @@ call :log "Python ready after winget install: %PY%"
 REM --- 2. Install websockets --------------------------------------------------
 echo.
 echo   [2/3] Checking websockets library...
-call %PY% -c "import websockets" >nul 2>nul
+call "%PY%" -c "import websockets" >nul 2>nul
 if errorlevel 1 (
     echo         Installing websockets - first time only...
-    call %PY% -m pip install --user websockets
+    call "%PY%" -m pip install --user websockets
     if errorlevel 1 (
         echo.
         echo   ERROR: Could not install websockets ^(see pip output above^).
