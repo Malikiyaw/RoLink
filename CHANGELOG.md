@@ -1,4 +1,25 @@
 # Changelog
+## 2.3.1 - CRITICAL: fix JS syntax error in core/main.js (button missing)
+The "Start RoLink agent" button (and all in-page UI) was missing because
+`core/main.js` had a syntax error at line 461. The file had duplicate
+text outside any template literal:
+
+  const STARTER = `...Begin with one tool call:
+
+  ###MCP_TOOL###                  ← duplicate, outside any string
+  {"tool":"get_studio_state"...
+
+This was caused by a botched edit in 2.3.0 (re-adding the STARTER
+constant after it was originally removed by the sysResendDue insert).
+`node -c core/main.js` now passes — all content scripts verified.
+
+Also verified all other content scripts parse cleanly:
+  core/main.js, core/config.js, core/parser.js
+  providers/{generic,deepseek,chatgpt,gemini,kimi,glm,qwen,arena,meta}.js
+  background.js, popup.js, options.js
+
+Version bump 2.3.0 → 2.3.1.
+
 ## 2.3.0 - Start button loading state, AI greeting, sysResendDue, camouflage, inputCover, diagnostics
 The user reported: "when i click the start agent buttons theres must be a loading
 starting just like the zerodev to active the bridge ... that ai web chat just

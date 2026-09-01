@@ -458,9 +458,6 @@ ${customBlock}
     return text + rider;
   }
 
-###MCP_TOOL###
-{"tool":"get_studio_state","args":{}}`;
-
   // ── dispatch a tool call ──────────────────────────────────────────────────
   function dispatchTool(name, args, sourceBlock, sourceItem, images){
     // Auto-inject `datamodel_type` for tools that need it. The bridge's
