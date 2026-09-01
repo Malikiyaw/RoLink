@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+*.log
+.env
+config.json
+.zenmcp/config.json
+__pycache__/
+*.pyc
+.venv/
+Assets/Audio/
+.mcp/
+*.tsbuildinfo
+.DS_Store

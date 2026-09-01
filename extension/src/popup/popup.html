@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>RoLink</title><style>
+body{font-family:system-ui;width:320px;padding:12px;margin:0}
+h1{font-size:16px;margin:0 0 8px}
+.row{display:flex;gap:8px;align-items:center;margin:6px 0}
+button{padding:6px 10px;border-radius:6px;border:1px solid #ccc;cursor:pointer}
+.toggle{width:44px;height:24px;background:#ddd;border-radius:12px;position:relative;cursor:pointer}
+.toggle.on{background:#4caf50}
+.toggle::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.2s}
+.toggle.on::after{left:22px}
+.status{font-size:12px;color:#555}
+</style></head>
+<body>
+<h1>RoLink</h1>
+<div class="row"><span>Bridge</span> <span id="bridgeStatus" class="status">checking…</span></div>
+<div class="row"><span>MCP</span> <span id="mcpStatus" class="status">checking…</span></div>
+<div class="row"><label>Build / Learn mode</label><div id="learnToggle" class="toggle"></div></div>
+<div class="row"><label>Difficulty</label>
+<select id="difficulty"><option value="adaptive">Adaptive</option><option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option></select>
+<button id="applyDiff">Apply</button></div>
+<div class="row"><input id="soundPrompt" placeholder="sound prompt e.g., explosion" style="flex:1"><button id="genSound">Gen SFX</button></div>
+<div class="row"><button id="enqueueTest">Enqueue test Part</button><button id="openOptions">Options</button></div>
+<pre id="log" style="font-size:11px;max-height:120px;overflow:auto;background:#f6f6f6;padding:6px"></pre>
+<script src="popup.js"></script>
+</body>
+</html>

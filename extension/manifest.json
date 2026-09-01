@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "RoLink — AI to Roblox Studio",
+  "version": "0.1.0",
+  "description": "Lets DeepSeek/ChatGPT/Claude directly control Roblox Studio via MCP bridge.",
+  "permissions": ["storage", "alarms", "scripting"],
+  "optional_host_permissions": ["*://*/*"],
+  "host_permissions": ["http://127.0.0.1:17613/*", "http://127.0.0.1:3001/*"],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://chat.openai.com/*", "*://chatgpt.com/*", "*://www.deepseek.com/*", "*://chat.deepseek.com/*", "*://claude.ai/*", "*://gemini.google.com/*"],
+      "js": ["src/content/isolated.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/content/main.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "action": {
+    "default_title": "RoLink",
+    "default_popup": "src/popup/popup.html"
+  },
+  "icons": {
+    "128": "icons/icon128.png"
+  }
+}
