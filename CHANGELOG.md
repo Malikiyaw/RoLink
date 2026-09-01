@@ -1,5 +1,7 @@
 # Changelog
-## 1.1.8 - 1000x better extension: centered Start button + visible tool chips + auto agent loop
+## 1.1.9 - Fix manifest: drop core/parser.js + core/inject.js from content_scripts
+- `manifest.json`: every `content_scripts` entry referenced `core/parser.js` (deleted in 1.1.8) and `web_accessible_resources` referenced `core/inject.js` (also deleted) — Chrome refused to load the extension with "Could not load javascript 'core/parser.js' for script." All entries now list only the files that exist: `core/config.js`, the per-site `providers/*.js` (sets `window.ROLINK_PROVIDER`), and `core/main.js`. Added `www.kimi.ai` to the Kimi match pattern. Dropped `inject.js` from `web_accessible_resources`.
+- Sync 1.1.9 across all versioned files.
 - **WS path fix:** `background.js` was still trying `ws://127.0.0.1:17613/ws?role=extension&token=dummy` (a path ZeroScript's bridge doesn't serve). Now connects to the root `ws://127.0.0.1:17613`, matching the bridge. Fixes the `ERR_CONNECTION_REFUSED` spam and the 7-client / 7-disconnect thrash.
 - **New in-page UI (`core/main.js` + `overlay.css`):**
   - **Centered "▶ Start RoLink agent" button** at the top-center of every AI page (gradient blue, glowing on hover, becomes a "■ Stop" pill with a square dot when active — same idea as ZeroScript's launcher but bigger and more prominent).

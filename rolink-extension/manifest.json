@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "RoLink — AI to Roblox Studio",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio agent. Browser extension + local bridge.",
   "permissions": ["storage", "alarms", "scripting"],
   "host_permissions": ["http://127.0.0.1:17613/*", "http://127.0.0.1:3001/*", "ws://127.0.0.1:17613/*"],
@@ -11,13 +11,13 @@
   "content_scripts": [
     {
       "matches": ["*://chat.deepseek.com/*", "*://www.deepseek.com/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/deepseek.js", "core/main.js"],
+      "js": ["core/config.js", "providers/deepseek.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://chatgpt.com/*", "*://chat.openai.com/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/chatgpt.js", "core/main.js"],
+      "js": ["core/config.js", "providers/chatgpt.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
@@ -29,25 +29,25 @@
     },
     {
       "matches": ["*://gemini.google.com/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/gemini.js", "core/main.js"],
+      "js": ["core/config.js", "providers/gemini.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
-      "matches": ["*://kimi.ai/*", "*://www.kimi.com/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/kimi.js", "core/main.js"],
+      "matches": ["*://kimi.ai/*", "*://www.kimi.ai/*", "*://www.kimi.com/*"],
+      "js": ["core/config.js", "providers/kimi.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://chat.z.ai/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/glm.js", "core/main.js"],
+      "js": ["core/config.js", "providers/glm.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://chat.qwen.ai/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/qwen.js", "core/main.js"],
+      "js": ["core/config.js", "providers/qwen.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
@@ -59,20 +59,20 @@
     },
     {
       "matches": ["*://arena.ai/*", "*://lmarena.ai/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/arena.js", "core/main.js"],
+      "js": ["core/config.js", "providers/arena.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://www.meta.ai/*", "*://meta.ai/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/meta.js", "core/main.js"],
+      "js": ["core/config.js", "providers/meta.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["core/main-world.js", "core/inject.js"],
+      "resources": ["core/main-world.js"],
       "matches": ["<all_urls>"]
     }
   ],
@@ -94,6 +94,3 @@
     }
   }
 }
-
-
-
