@@ -1,6 +1,9 @@
 node_modules/
 dist/
+mcp-server/dist/
 build/
+shared/*.js
+shared/*.d.ts
 *.log
 .env
 config.json

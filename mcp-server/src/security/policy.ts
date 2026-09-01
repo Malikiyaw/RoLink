@@ -34,6 +34,22 @@ export const ALLOWED_TOOLS = new Set([
   "git_commit",
   "git_log",
   "review_code",
+  // Phase C S11/S14-16/S19/S21-23
+  "compile_visual",
+  "visual_from_prompt",
+  "collab_join",
+  "collab_list",
+  "collab_broadcast",
+  "search_assets",
+  "import_asset",
+  "report_metrics",
+  "get_metrics",
+  "generate_gdd",
+  "generate_asset",
+  "generate_asset_variants",
+  "optimize_perf",
+  "analytics_report",
+  "analytics_suggestions",
 ]);
 
 export function isToolAllowed(tool: string): boolean {
