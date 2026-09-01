@@ -1,4 +1,11 @@
 # Changelog
+## 1.1.1 - Use -File + temp .ps1 for PowerShell download (no more $args loss)
+- `start.bat` `:direct_dl`: switch all PowerShell invocations from `-Command "..." arg1 arg2` to `-File script.ps1 arg1 arg2`. The `-Command` + trailing args form is fragile: depending on PowerShell version the args may not land in `$args[]` (which is why `Invoke-WebRequest -Uri $args[0]` saw an empty Uri).
+- New approach: write the PS script to `%TEMP%\rolink-download.ps1` via `>` / `>>` redirect, then `powershell -NoProfile -ExecutionPolicy Bypass -File "%DL_PS1%" url out`. `$args[0]` / `$args[1]` are then reliably populated.
+- Hardcoded `%TEMP%` and `%LOCALAPPDATA%` fallbacks (`%SystemRoot%\Temp`, `%USERPROFILE%\AppData\Local`) so the script never breaks on sessions where those env vars are missing.
+- URLs stored in `URL_PY` / `URL_PIP` (no env-var indirection).
+- Sync 1.1.1 across all versioned files.
+
 ## 1.1.0 - Fix embedded-quote bug in start.bat direct-download fallback
 - `start.bat` `:direct_dl`: `set "PY=\"%PYDIR%\python.exe\""` was the bug — cmd's quote-stripping turned the value into literal `\"...\""`, which then broke every later `call %PY%` invocation (path lost its drive letter, e.g. `'\python.exe\"'`).
 - Variables now hold RAW paths/URLs (no embedded quotes); call sites use `call "%PYEXE%" --version`. The download URLs and the python.exe path are stored in separate variables (`PYEXE`, `PYURL`, `PYZIP`, `GETPIP`, `GETPIPURL`, `PYDIR`).

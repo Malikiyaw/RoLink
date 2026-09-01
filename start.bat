@@ -116,34 +116,47 @@ REM reliable fallback on locked-down machines.
 echo.
 echo   Downloading Python 3.12 (embeddable, no admin needed) from python.org...
 echo.
-REM CRITICAL: do NOT put embedded quotes in these variables. cmd's quote-stripping
-REM turns set "VAR=\"...\"" into literal \"...\" which then breaks later.
-REM Store raw paths/URLs; let the call site add quotes.
-set "PYDIR=%LOCALAPPDATA%\Programs\Python\RoLinkPython312"
-set "PYEXE=%LOCALAPPDATA%\Programs\Python\RoLinkPython312\python.exe"
-set "PYZIP=%TEMP%\rolink-python312.zip"
-set "PYURL=https://www.python.org/ftp/python/3.12.7/python-3.12.7-embed-amd64.zip"
-set "GETPIP=%TEMP%\rolink-get-pip.py"
-set "GETPIPURL=https://bootstrap.pypa.io/get-pip.py"
-call :log "direct_dl: PYEXE=%PYEXE% PYURL=%PYURL%"
 
-REM Use PowerShell for download. Pass URLs/paths as ARGUMENTS ($args[N]) so
-REM cmd's %-expansion cannot break the -Command string.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing; exit 0 } catch { Write-Host ('Download failed: ' + $_.Exception.Message); exit 1 }" "%PYURL%" "%PYZIP%"
+REM Use hardcoded fallback paths so we never depend on %TEMP% / %LOCALAPPDATA%
+REM being defined (some locked-down / cmd /c relaunched sessions have them empty).
+if defined TEMP (set "ROlink_TEMP=%TEMP%") else (set "ROlink_TEMP=%SystemRoot%\Temp")
+if defined LOCALAPPDATA (set "ROlink_LA=%LOCALAPPDATA%") else (set "ROlink_LA=%USERPROFILE%\AppData\Local")
+set "PYDIR=%ROlink_LA%\Programs\Python\RoLinkPython312"
+set "PYEXE=%ROlink_LA%\Programs\Python\RoLinkPython312\python.exe"
+set "PYZIP=%ROlink_TEMP%\rolink-python312.zip"
+set "GETPIP=%ROlink_TEMP%\rolink-get-pip.py"
+
+REM Hardcoded URLs (no env-var indirection anywhere).
+set "URL_PY=https://www.python.org/ftp/python/3.12.7/python-3.12.7-embed-amd64.zip"
+set "URL_PIP=https://bootstrap.pypa.io/get-pip.py"
+
+call :log "direct_dl: PYEXE=%PYEXE%"
+
+REM Write the download PowerShell script to a real .ps1 file and run it with
+REM -File. Passing URLs/paths as separate args via -Command + $args[] is fragile
+REM across PowerShell versions; -File + $args is the documented, reliable path.
+set "DL_PS1=%ROlink_TEMP%\rolink-download.ps1"
+> "%DL_PS1%" echo $ErrorActionPreference = 'Stop'
+>> "%DL_PS1%" echo [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+>> "%DL_PS1%" echo try { Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing; exit 0 } catch { Write-Host ('Download failed: ' + $_.Exception.Message); exit 1 }
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%DL_PS1%" "%URL_PY%" "%PYZIP%"
 if errorlevel 1 (
     echo   ERROR: Direct download failed. Install Python manually from
     echo   https://www.python.org/downloads/ ^(tick "Add python.exe to PATH"^).
-    call :log "FATAL: direct python.org download failed (URL=%PYURL%, ZIP=%PYZIP%)."
+    call :log "FATAL: direct python.org download failed."
     pause
     exit /b 1
 )
 call :log "Downloaded Python embeddable zip to %PYZIP%."
 
 if not exist "%PYDIR%" mkdir "%PYDIR%" >nul 2>nul
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; try { Expand-Archive -Path $args[0] -DestinationPath $args[1] -Force; exit 0 } catch { Write-Host ('Extract failed: ' + $_.Exception.Message); exit 1 }" "%PYZIP%" "%PYDIR%"
+> "%DL_PS1%" echo $ErrorActionPreference = 'Stop'
+>> "%DL_PS1%" echo try { Expand-Archive -Path $args[0] -DestinationPath $args[1] -Force; exit 0 } catch { Write-Host ('Extract failed: ' + $_.Exception.Message); exit 1 }
+powershell -NoProfile -ExecutionPolicy Bypass -File "%DL_PS1%" "%PYZIP%" "%PYDIR%"
 if errorlevel 1 (
     echo   ERROR: Could not extract Python zip. Install manually.
-    call :log "FATAL: extract of embeddable Python zip failed (ZIP=%PYZIP%, DIR=%PYDIR%)."
+    call :log "FATAL: extract of embeddable Python zip failed."
     pause
     exit /b 1
 )
@@ -151,7 +164,7 @@ call :log "Extracted Python to %PYDIR%."
 
 if not exist "%PYEXE%" (
     echo   ERROR: %PYEXE% missing after extract. Install manually.
-    call :log "FATAL: python.exe missing after extract (expected at %PYEXE%)."
+    call :log "FATAL: python.exe missing after extract."
     pause
     exit /b 1
 )
@@ -160,12 +173,16 @@ REM Embeddable zip ships python.exe + python312._pth (which DISABLES site-packag
 REM AND pip). Patch python312._pth so site-packages work, then bootstrap pip.
 set "PYPTH=%PYDIR%\python312._pth"
 if exist "%PYPTH%" (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=$args[0]; $c=Get-Content $p; $c=$c -replace '^#import site','import site'; $c | Set-Content $p" "%PYPTH%"
+    > "%DL_PS1%" echo $p = $args[0]
+    >> "%DL_PS1%" echo $c = Get-Content $p
+    >> "%DL_PS1%" echo $c = $c -replace '^#import site','import site'
+    >> "%DL_PS1%" echo $c ^| Set-Content $p
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%DL_PS1%" "%PYPTH%"
     call :log "Patched %PYPTH% to enable site-packages."
 )
 
 REM Bootstrap pip into the embeddable Python.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing; exit 0 } catch { Write-Host ('get-pip download failed: ' + $_.Exception.Message); exit 1 }" "%GETPIPURL%" "%GETPIP%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%DL_PS1%" "%URL_PIP%" "%GETPIP%"
 if errorlevel 1 (
     call :log "WARN: get-pip.py download failed; continuing without pip."
 ) else (
@@ -177,7 +194,6 @@ if errorlevel 1 (
     )
 )
 
-REM %PY% holds the RAW path (no embedded quotes). Call sites use call "%PY%".
 set "PY=%PYEXE%"
 call :validate_py
 if errorlevel 1 (
