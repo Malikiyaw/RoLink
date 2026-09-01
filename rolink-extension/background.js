@@ -22,16 +22,37 @@ function connect(){
 }
 function resetStale(){ clearTimeout(staleTimer); staleTimer=setTimeout(()=>{ try{ws.close();}catch{} },25000); }
 function schedule(){ setTimeout(connect, reconnectDelay); reconnectDelay=Math.min(5000, reconnectDelay*1.5); }
-function broadcast(msg){ chrome.tabs.query({}, tabs=>{ for(const t of tabs){ try{ chrome.tabs.sendMessage(t.id, msg);}catch{} } }); }
+function broadcast(msg){
+  // Only broadcast to provider tabs to avoid "Receiving end does not exist" on unrelated tabs,
+  // and swallow Promise rejections (MV3 returns Promise; try/catch does not catch).
+  const urlFilters = PROVIDER_URLS.map(h => "*://" + h + "/*");
+  chrome.tabs.query({ url: urlFilters }, tabs => {
+    for (const t of tabs) {
+      if (t.id == null) continue;
+      const p = chrome.tabs.sendMessage(t.id, msg);
+      if (p && p.catch) p.catch(() => {});
+    }
+  });
+  // Also handle case where query url filter not supported — fallback silent
+  if (chrome.runtime.lastError) void chrome.runtime.lastError;
+}
 
 connect();
 chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
-  if(msg.type==="bridge" && msg.status) sendResponse({ok:true, status:"bridge", tools:toolsCache});
-  if(msg.id && ws && ws.readyState===1){
-    pending.set(msg.id, (res)=> sendResponse(res));
-    ws.send(JSON.stringify(msg));
-    setTimeout(()=>{ if(pending.has(msg.id)){ pending.delete(msg.id); sendResponse({error:"timeout"});} },130000);
-    return true;
+  if(msg.type==="bridge"){
+    sendResponse({ok:true, status: ws && ws.readyState===1 ? "connected" : "disconnected", tools:toolsCache});
+    return false;
+  }
+  if(msg.id){
+    if(ws && ws.readyState===1){
+      pending.set(msg.id, (res)=> { try{ sendResponse(res); }catch{} });
+      try{ ws.send(JSON.stringify(msg)); }catch(e){ pending.delete(msg.id); sendResponse({error:String(e)}); return false; }
+      setTimeout(()=>{ if(pending.has(msg.id)){ pending.delete(msg.id); try{ sendResponse({error:"timeout"});}catch{} } },130000);
+      return true;
+    } else {
+      sendResponse({error:"bridge offline"});
+      return false;
+    }
   }
 });
 chrome.alarms.create("rolink-heartbeat",{periodInMinutes:0.2});
