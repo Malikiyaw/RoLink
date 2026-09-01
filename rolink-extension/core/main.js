@@ -8,7 +8,7 @@
     <span id="rolink-dot" style="width:10px;height:10px;border-radius:50%;background:grey;display:inline-block;box-shadow:0 0 6px transparent;transition:all .3s"></span>
     <span id="rolink-text" style="font-weight:500">RoLink: offline</span>
     <span style="flex:1"></span>
-    <button id="rolink-start" style="background:#2f81f7;border:none;color:#fff;padding:4px 10px;border-radius:6px;cursor:pointer;font:11px system-ui;font-weight:500">Start session</button>
+    <button id="rolink-start" title="Start agent: injects system prompt + starter into this chat" style="background:#2f81f7;border:none;color:#fff;padding:4px 10px;border-radius:6px;cursor:pointer;font:11px system-ui;font-weight:500">▶ Start agent</button>
     <button id="rolink-reconnect" style="background:transparent;border:1px solid #444;color:#fff;padding:4px 10px;border-radius:6px;cursor:pointer;font:11px system-ui">Reconnect</button>
     <button id="rolink-options" title="Settings" style="background:transparent;border:1px solid #444;color:#fff;padding:4px 8px;border-radius:6px;cursor:pointer;font:11px system-ui">⚙</button>
   `;
@@ -52,7 +52,11 @@
   let started=false;
   document.addEventListener("click", (e)=>{
     const t=e.target;
-    if(t && t.id==="rolink-start"){ started=true; setStatus("ready"); t.textContent="✓ Active"; t.style.background="#3fb950"; t.disabled=true; }
+    if(t && t.id==="rolink-start"){
+      if(started){ return; }
+      try{ chrome.runtime.sendMessage({type:"start_agent"}); }catch{}
+      started=true; setStatus("ready"); t.textContent="✓ Active"; t.style.background="#3fb950"; t.disabled=true;
+    }
     if(t && t.id==="rolink-reconnect"){ connect(); }
     if(t && t.id==="rolink-options"){ try{ chrome.runtime.sendMessage({type:"reconnect"}); }catch{} if(typeof chrome!=="undefined"&&chrome.runtime&&chrome.runtime.openOptionsPage){ try{ chrome.runtime.openOptionsPage(); }catch{ window.open(chrome.runtime.getURL("options.html")); } } else { window.open(chrome.runtime.getURL("options.html")); } }
   });
@@ -68,8 +72,9 @@
       last.parentElement.style.display="none";
       const chip=document.createElement("div");
       chip.textContent="🔧 RoLink tool: "+(parsed.tool||parsed.method||"run")+"…";
-      chip.style.cssText="background:#1a73e8;color:#fff;padding:4px 8px;border-radius:6px;font:11px monospace;margin:4px 0";
+      chip.style.cssText="background:linear-gradient(135deg,#2f81f7,#1f6feb);color:#fff;padding:4px 10px;border-radius:6px;font:11px monospace;margin:4px 0;display:inline-block;box-shadow:0 2px 6px rgba(47,129,247,.3)";
       last.parentElement.parentElement.insertBefore(chip, last.parentElement);
+      try{ chrome.runtime.sendMessage({type:"log",level:"ok",text:"🔧 "+(parsed.tool||parsed.method||"run")}); }catch{}
     }
   });
   try{ obs.observe(document.documentElement,{childList:true,subtree:true}); }catch{}

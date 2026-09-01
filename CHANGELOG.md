@@ -1,5 +1,15 @@
 # Changelog
-## 1.1.3 - Fix `ValueError: host/port and sock`, `"" is not recognized`, 1000x better UI
+## 1.1.4 - "Start agent" button + visible tools + MCP auto-launch
+- **Extension popup:**
+  - New **"▶ Start agent"** button (full-width, gradient blue). It finds the active AI tab (DeepSeek, ChatGPT, Gemini, Kimi, GLM, Qwen, Arena, Meta) and injects the system prompt + a starter question, then auto-clicks Send.
+  - **Tools section** shows the live tool list pulled from `bridge.py`'s new `/tools` HTTP endpoint, with a count pill and styled tool tags. Now you can see every tool the AI has access to.
+  - **Activity log** shows real-time events: agent start, tool invocations, errors, with timestamps. Tool invocations in the AI tab also push to the log via `chrome.runtime.sendMessage({type:"log"})`.
+- **New content script** `core/inject.js`: finds the page's chat input (works on DeepSeek, ChatGPT, Gemini, Kimi, GLM, Qwen, Arena, Meta), sets the value via React-friendly setter (for textarea) or `execCommand("insertText")` (for contenteditable), then submits.
+- **System prompt in `core/config.js`** rewritten to clearly show the `###MCP_TOOL###` JSON format and the full tool list (create_instance, run_code, get_snapshot, set_property, get_logs, undo, heal_code, rollback, perf_stats, translate_code, validate_code, run_sandbox_tests, plan, get_context, list_templates, use_template, style_profile, generate_tests, git_commit, review_code, compile_visual, collab_broadcast, search_assets, import_asset, report_metrics, generate_gdd, generate_asset, optimize_perf, analytics_report, analytics_suggestions).
+- **`bridge.py`:** new `/tools` HTTP endpoint that proxies to the Node MCP server's `/tools` (or returns a fallback tool list if the MCP server isn't running).
+- **`start.bat` simplified** (matches your reference style): `[1/3]` Python, `[2/3]` websockets, `[3/3]` bridge, with an optional Node `mcp-server` background launch (skips gracefully if Node or the build is missing).
+- **Overlay bar** "Start session" → "▶ Start agent" (triggers the same injection), gradient tool chip.
+- Sync 1.1.4 across all versioned files.
 - `bridge.py`: drop the redundant `host`/`port` args from `serve(...)` when passing a pre-bound `sock` (Python 3.14 asyncio rejects the combination with `ValueError: host/port and sock can not be specified at the same time`).
 - `start.bat`: remove embedded quotes from `set "PY=%%~R\%%D\python.exe"` in the pre-install scan (was producing `""` when later expanded as `"%PY%"` → `'-m' is not recognized`).
 - **UI overhaul (1000x better than ZeroScript):**

@@ -1,13 +1,15 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "1.1.3";
+const ROLINK_VERSION = "1.1.4";
 const SYS_MARKER = "\u27E6RL-SYS\u27E7";
 const TOOL_NOTES = `
-You have RoLink MCP tools:
-- read/edit scripts: get_snapshot, read_script, edit_script, run_code (Luau sandbox, self-heals)
-- instances: create_instance, delete_instance, set_property
-- assets: search_assets, import_asset (Creator Store), generate_asset (text-to-3D fallback)
-- power: heal_code, rollback, perf_stats, translate_code, validate_code, plan, generate_gdd, optimize_perf, analytics_report, compile_visual
-Always call tools via ###MCP_TOOL### JSON block. Never claim "I cannot run commands".
+You have RoLink MCP tools. To call one, output a single JSON code block like:
+###MCP_TOOL###
+{"tool":"run_code","args":{"code":"print('hi')"}}
+or for queued tools:
+###MCP_TOOL###
+{"tool":"get_snapshot"}
+Available: read/edit scripts (get_snapshot, run_code with Luau sandbox, self-heals), instances (create_instance, delete_instance, set_property), assets (search_assets, import_asset, generate_asset), power (heal_code, rollback, perf_stats, translate_code, validate_code, run_sandbox_tests, plan, generate_gdd, optimize_perf, analytics_report, analytics_suggestions, compile_visual).
+Always call tools via ###MCP_TOOL### JSON. Never claim "I cannot run commands".
 `.trim();
 
 function buildSystemPrompt(provider) {

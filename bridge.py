@@ -14,7 +14,7 @@ except ImportError:
     print("[RoLink] missing websockets — run: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
-BRIDGE_VERSION = "1.1.3"
+BRIDGE_VERSION = "1.1.4"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT") or "17613")
 CONFIG_PATH = pathlib.Path(__file__).parent / "config.json"
 STUDIO_MCP_PORT = 13469  # Studio MCP squatter detection
@@ -243,6 +243,16 @@ async def http_ws_process_request(path, request_headers):
         if request_headers.get("Upgrade", "").lower() != "websocket":
             body = json.dumps({"ok":True,"version":BRIDGE_VERSION,"bridge":PORT,"clients":len(clients),"servers":list(servers.keys()),"uptime": int(time.time()-start_time)}).encode()
             return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*"),("Content-Length",str(len(body)))], body)
+    if clean in ("/tools", "/tools/"):
+        if request_headers.get("Upgrade", "").lower() != "websocket":
+            try:
+                import urllib.request
+                with urllib.request.urlopen("http://127.0.0.1:3001/tools", timeout=3) as r:
+                    data = r.read()
+                return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*"),("Content-Length",str(len(data)))], data)
+            except Exception:
+                fallback = json.dumps({"ok":True,"tools":[{"name":n} for n in ("create_instance","run_code","get_snapshot","set_property","get_logs","undo","heal_code","rollback","perf_stats","translate_code","validate_code","run_sandbox_tests","plan","get_context","list_templates","use_template","style_profile","generate_tests","git_commit","review_code","compile_visual","collab_broadcast","search_assets","import_asset","report_metrics","generate_gdd","generate_asset","optimize_perf","analytics_report","analytics_suggestions")]}).encode()
+                return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*"),("Content-Length",str(len(fallback)))], fallback)
     return None
 
 async def main():

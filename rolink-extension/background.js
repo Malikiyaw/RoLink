@@ -83,6 +83,28 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
   }
   if(msg.type==="version"){ sendResponse({version:VERSION}); return false; }
   if(msg.type==="reconnect"){ if(ws){try{ws.close();}catch{}} else { connect(); } sendResponse({ok:true}); return false; }
+  if(msg.type==="start_agent"){
+    (async()=>{
+      const urlFilters = PROVIDER_URLS.map(h => "*://" + h + "/*");
+      chrome.tabs.query({ url: urlFilters }, async (tabs)=>{
+        if(!tabs.length){ sendResponse({ok:false,error:"No AI tab open. Open chat.deepseek.com, chatgpt.com, etc., then try again."}); return; }
+        const tab = tabs.find(t=>t.active) || tabs[0];
+        try{
+          await chrome.scripting.executeScript({ target:{tabId:tab.id, allFrames:false}, files:["core/inject.js"] });
+          sendResponse({ok:true,tabId:tab.id,url:tab.url});
+        }catch(e){ sendResponse({ok:false,error:String(e)}); }
+      });
+    })();
+    return true;
+  }
+  if(msg.type==="inject_done"){
+    broadcast({type:"log", level:"info", text:"[agent] started in "+ (msg.provider||"tab")});
+    return false;
+  }
+  if(msg.type==="log"){
+    broadcast({type:"log", level:msg.level||"info", text:msg.text||""});
+    return false;
+  }
   if(msg.id){
     if(ws && ws.readyState===1){
       pending.set(msg.id, (res)=> { try{ sendResponse(res); }catch{} });

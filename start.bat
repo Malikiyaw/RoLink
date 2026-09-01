@@ -97,7 +97,7 @@ if "%WINGET_OK%"=="1" (
         if exist "%%~R" (
             for /f "delims=" %%D in ('dir /b /ad /o-n "%%~R\Python3*" 2^>nul') do (
                 if exist "%%~R\%%D\python.exe" (
-                    set PY="%%~R\%%D\python.exe"
+                    set "PY=%%~R\%%D\python.exe"
                     call :validate_py && goto :ready
                 )
             )
@@ -107,42 +107,22 @@ if "%WINGET_OK%"=="1" (
 )
 
 :direct_dl
-REM --- Direct download fallback: embeddable Python 3.12 zip --------------------
-REM Winget on corporate / restricted Windows often fails with
-REM "0x8a15000f : Data required by the source is missing" (broken winget source).
-REM The embeddable zip from python.org is a self-contained, NO-INSTALLER,
-REM NO-ADMIN bundle that extracts to a folder and just works. This is the most
-REM reliable fallback on locked-down machines.
-echo.
-echo   Downloading Python 3.12 (embeddable, no admin needed) from python.org...
-echo.
-
-REM Use hardcoded fallback paths so we never depend on %TEMP% / %LOCALAPPDATA%
-REM being defined (some locked-down / cmd /c relaunched sessions have them empty).
 if defined TEMP (set "ROlink_TEMP=%TEMP%") else (set "ROlink_TEMP=%SystemRoot%\Temp")
 if defined LOCALAPPDATA (set "ROlink_LA=%LOCALAPPDATA%") else (set "ROlink_LA=%USERPROFILE%\AppData\Local")
 set "PYDIR=%ROlink_LA%\Programs\Python\RoLinkPython312"
 set "PYEXE=%ROlink_LA%\Programs\Python\RoLinkPython312\python.exe"
 set "PYZIP=%ROlink_TEMP%\rolink-python312.zip"
 set "GETPIP=%ROlink_TEMP%\rolink-get-pip.py"
-
-REM Hardcoded URLs (no env-var indirection anywhere).
 set "URL_PY=https://www.python.org/ftp/python/3.12.7/python-3.12.7-embed-amd64.zip"
 set "URL_PIP=https://bootstrap.pypa.io/get-pip.py"
-
-REM Separate, dedicated PS1 files for each PowerShell call. Reusing one .ps1
-REM across calls is fragile (content depends on order of writes).
 set "PS_DOWNLOAD=%ROlink_TEMP%\rolink-dl.ps1"
 set "PS_EXTRACT=%ROlink_TEMP%\rolink-extract.ps1"
 set "PS_PATCH=%ROlink_TEMP%\rolink-patch.ps1"
-
 > "%PS_DOWNLOAD%" echo $ErrorActionPreference = 'Stop'
 >> "%PS_DOWNLOAD%" echo [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 >> "%PS_DOWNLOAD%" echo try { Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing; exit 0 } catch { Write-Host ('Download failed: ' + $_.Exception.Message); exit 1 }
-
 > "%PS_EXTRACT%" echo $ErrorActionPreference = 'Stop'
 >> "%PS_EXTRACT%" echo try { Expand-Archive -Path $args[0] -DestinationPath $args[1] -Force; exit 0 } catch { Write-Host ('Extract failed: ' + $_.Exception.Message); exit 1 }
-
 > "%PS_PATCH%" echo $ErrorActionPreference = 'Stop'
 >> "%PS_PATCH%" echo $p = $args[0]
 >> "%PS_PATCH%" echo if (Test-Path $p) {
@@ -152,8 +132,6 @@ set "PS_PATCH=%ROlink_TEMP%\rolink-patch.ps1"
 >> "%PS_PATCH%" echo     exit 0
 >> "%PS_PATCH%" echo } else { Write-Host ('PYPTH not found: ' + $p); exit 1 }
 
-call :log "direct_dl: PYEXE=%PYEXE% PS_DOWNLOAD=%PS_DOWNLOAD%"
-
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_DOWNLOAD%" "%URL_PY%" "%PYZIP%"
 if errorlevel 1 (
     echo   ERROR: Direct download failed. Install Python manually from
@@ -162,8 +140,6 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-call :log "Downloaded Python embeddable zip to %PYZIP%."
-
 if not exist "%PYDIR%" mkdir "%PYDIR%" >nul 2>nul
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_EXTRACT%" "%PYZIP%" "%PYDIR%"
 if errorlevel 1 (
@@ -172,56 +148,21 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-call :log "Extracted Python to %PYDIR%."
-
 if not exist "%PYEXE%" (
     echo   ERROR: %PYEXE% missing after extract. Install manually.
     call :log "FATAL: python.exe missing after extract."
     pause
     exit /b 1
 )
-
-REM Embeddable zip ships python.exe + python312._pth (which DISABLES site-packages
-REM AND pip). Patch python312._pth so site-packages work, then bootstrap pip.
 set "PYPTH=%PYDIR%\python312._pth"
-if exist "%PYPTH%" (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_PATCH%" "%PYPTH%"
-    if errorlevel 1 (
-        call :log "WARN: python312._pth patch failed; continuing."
-    ) else (
-        call :log "Patched %PYPTH% to enable site-packages."
-    )
-) else (
-    call :log "WARN: %PYPTH% not present; pip may not work."
-)
-
-REM Bootstrap pip into the embeddable Python.
+if exist "%PYPTH%" powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_PATCH%" "%PYPTH%"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_DOWNLOAD%" "%URL_PIP%" "%GETPIP%"
-if errorlevel 1 (
-    call :log "WARN: get-pip.py download failed; continuing without pip."
-) else (
-    "%PYEXE%" "%GETPIP%" --no-warn-script-location >nul 2>&1
-    if errorlevel 1 (
-        call :log "WARN: get-pip.py bootstrap failed; pip may be unavailable."
-    ) else (
-        call :log "Bootstrapped pip into embeddable Python."
-    )
-)
-
+if not errorlevel 1 "%PYEXE%" "%GETPIP%" --no-warn-script-location >nul 2>&1
 set "PY=%PYEXE%"
 call :validate_py
 if errorlevel 1 (
-    echo.
-    echo   ERROR: Embeddable Python did not validate. Dumping details:
-    echo   PYEXE=%PYEXE%
-    echo   "%PYEXE%" --version:
-    call "%PYEXE%" --version 2>&1
-    echo   "%PYEXE%" -m pip --version:
-    call "%PYEXE%" -m pip --version 2>&1
-    echo.
-    echo   Install Python manually from https://www.python.org/downloads/
-    echo   ^(tick "Add python.exe to PATH"^) then run this again.
-    call :log "FATAL: embeddable Python failed validation. See console above."
+    echo   ERROR: Embeddable Python did not validate. Install manually.
+    call :log "FATAL: embeddable Python failed validation."
     pause
     exit /b 1
 )
@@ -271,19 +212,34 @@ if defined OLDPID (
     call :log "Killing previous bridge instance (pid !OLDPID!) on port 17613."
     taskkill /F /T /PID !OLDPID! >nul 2>nul
     timeout /t 1 /nobreak >nul
-    set "STILLTHERE="
-    for /f "tokens=5" %%a in ('netstat -aon ^| findstr :17613 ^| findstr LISTENING 2^>nul') do (
-        set "STILLTHERE=%%a"
+)
+
+REM --- Optional: launch Node mcp-server in background if built ----------------
+set "MCPDIR=%~dp0mcp-server"
+set "MCPENTRY=%MCPDIR%\dist\mcp-server\src\index.js"
+set "MCPENTRY2=%MCPDIR%\dist\src\index.js"
+if exist "%MCPENTRY%" set "MCPENTRY=%MCPENTRY%"
+if exist "%MCPENTRY2%" if not exist "%MCPENTRY%" set "MCPENTRY=%MCPENTRY2%"
+where node >nul 2>nul
+if not errorlevel 1 (
+    if exist "%MCPENTRY%" (
+        set "MCPBUSY="
+        for /f "tokens=5" %%a in ('netstat -aon ^| findstr :3001 ^| findstr LISTENING 2^>nul') do set "MCPBUSY=%%a"
+        if defined MCPBUSY (
+            echo         MCP server already running on port 3001 ^(pid !MCPBUSY!^).
+            call :log "MCP server already on port 3001 (pid !MCPBUSY!)"
+        ) else (
+            echo         Launching MCP server ^(%MCPENTRY%^)...
+            call :log "Launching MCP server: %MCPENTRY%"
+            start "RoLink MCP" /B node "%MCPENTRY%" > "%~dp0logs\mcp.log" 2>&1
+            timeout /t 2 /nobreak >nul
+        )
+    ) else (
+        echo         MCP server not built ^(run npm -C mcp-server run build to enable 84+ tools^).
+        call :log "MCP server entry not found at %MCPENTRY% (skipped)."
     )
-    if defined STILLTHERE (
-        echo.
-        echo   WARNING: port 17613 is still held by pid !STILLTHERE! after trying
-        echo   to close the previous bridge. If the bridge below fails to start,
-        echo   close that process manually in Task Manager ^(or restart Windows^)
-        echo   and run start.bat again.
-        echo.
-        call :log "WARNING: port 17613 still held by pid !STILLTHERE! after taskkill."
-    )
+) else (
+    call :log "node.exe not on PATH - skipping MCP server (Python bridge only)."
 )
 
 echo.
