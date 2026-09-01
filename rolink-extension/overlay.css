@@ -1,0 +1,4 @@
+#rolink-bar{font:12px system-ui;position:fixed;bottom:0;left:0;right:0;background:#111;color:#fff;padding:6px 10px;z-index:2147483647;display:flex;align-items:center;gap:8px;border-top:1px solid #333}
+#rolink-bar button{background:#1a73e8;color:#fff;border:none;padding:4px 10px;border-radius:6px;cursor:pointer}
+#rolink-bar button:hover{background:#1557b0}
+#rolink-dot{width:10px;height:10px;border-radius:50%;background:grey;display:inline-block;flex-shrink:0}

@@ -1,0 +1,24 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Zip RoLink
+        run: |
+          zip -r RoLink-${{ github.ref_name }}.zip \
+            bridge.py config.json launch_studio_mcp.py start.bat MacOS_Start.command \
+            rolink-extension/ extension/ mcp-server/ shared/ studio-plugin/ \
+            README.md LICENSE CHANGELOG.md \
+            -x "*/node_modules/*" "*/dist/*" "*.log" "*/.git/*"
+          ls -lh RoLink-*.zip
+      - uses: softprops/action-gh-release@v1
+        with:
+          files: RoLink-*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
