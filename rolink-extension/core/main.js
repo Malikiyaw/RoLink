@@ -344,7 +344,7 @@
                 + names.map(n => "- " + n).join("\n")
                 + (names.length ? "\n\nArgument schema is whatever the bridge accepts. If a call fails, read the error and fix it on the next call — don't guess at unrelated tool names." : "");
     } else {
-      toolBlock = "Tools will be discovered at session start. Begin by trying common RoLink tools like `get_studio_state`, `list_roblox_studios`, `get_snapshot`, `run_code`.";
+      toolBlock = "Tools will be discovered at session start. Begin by trying common RoLink tools like `get_studio_state`, `list_roblox_studios`, `get_snapshot`, `execute_luau`.";
     }
     const custom = (A.customPrompt || "").trim();
     const customBlock = custom ? `\n\n# User-added instructions\n${custom}\n` : "";
