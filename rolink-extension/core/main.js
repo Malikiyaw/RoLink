@@ -357,6 +357,12 @@
 ###MCP_TOOL###
 {"tool":"<name from the list below>","args":{...}}
 \`\`\`
+For execute_luau specifically, you can also use ###LUA### ... ###END_LUA### (no JSON escaping needed):
+\`\`\`
+###LUA###
+<your luau code, no escaping>
+###END_LUA###
+\`\`\`
 
 2) You're completely done — short final answer, end with the word DONE on its own line.
 
@@ -564,7 +570,22 @@ ${customBlock}
         } else if(reply.kind === "parse_error"){
           pushFeed("err", "✗", "Malformed tool call — sending fix-it nudge");
           A.injecting = true;
-          await P.typeAndSend(`Your last tool call was malformed (${reply.reason}). Please fix the JSON (use double quotes, no trailing commas, close all braces) and retry with another ###MCP_TOOL### block. If you want to answer the user in plain text instead, just do so without the JSON.`, []);
+          await P.typeAndSend(`Your last tool call was malformed JSON (${reply.reason}).
+
+To pass a code string to execute_luau, you MUST escape every double quote in the code with a backslash, and put the whole code on one logical line with \\n for newlines. For example:
+
+###MCP_TOOL###
+{"tool":"execute_luau","args":{"code":"local p = Instance.new(\\"Part\\"); p.Parent = game.Workspace; print(\\"hi\\")"}}
+
+Alternatively use the ###LUA### ... ###END_LUA### form (no escaping needed):
+
+###LUA###
+local p = Instance.new("Part")
+p.Parent = game.Workspace
+print("hi")
+###END_LUA###
+
+Retry now with valid JSON (or use the ###LUA### form).`, []);
           A.injecting = false;
         } else if(reply.kind === "context_limit"){
           pushFeed("err", "⏹", "Context limit reached: " + (reply.detail||"").slice(0,200));
@@ -720,13 +741,18 @@ ${customBlock}
       const txt = el.innerText || el.textContent || "";
       if(!txt || txt.indexOf("###MCP_TOOL###") === -1) continue;
       if(ZSParse.hasOpenToolBlock(txt)) continue; // wait for it to finish
-      const blk = ZSParse.extract(txt);
-      if(!blk) continue;
-      const n = ZSParse.normalize(blk);
-      if(!n) continue;
+      // Extract ALL tool blocks in this <pre> (models often emit multiple per reply)
+      const blks = ZSParse.extractAll(txt);
+      const calls = blks.map(ZSParse.normalize).filter(Boolean);
+      if(!calls.length) continue;
       A.strippedBlocks.add(el);
       const item = el.closest(S_CHAT_ITEM) || el.closest("[data-message-author-role]") || el.closest(".ds-message") || el.closest("article") || el.closest("main") || null;
-      dispatchTool(n.name, n.arguments, el, item);
+      // Hide the whole <pre> at once (so the user never sees ANY of the raw JSON)
+      if(el.parentElement) el.parentElement.style.display = "none";
+      // Dispatch each call sequentially (preserves argument order, avoids races)
+      for(let i = 0; i < calls.length; i++){
+        setTimeout(()=>dispatchTool(calls[i].name, calls[i].arguments, el, item), i*30);
+      }
     }
   }
   const S_CHAT_ITEM = "[data-message-author-role], .ds-message, [data-testid*='conversation-turn'], article, .message, main p";

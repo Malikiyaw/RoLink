@@ -1,4 +1,31 @@
 # Changelog
+## 2.0.1 - Fix: multiple tool calls per reply, malformed-JSON escape hints
+- **CRITICAL FIX in `core/parser.js` `extractAll()`**: the previous version
+  called `text.search(LUA_START_RE)` instead of `text.slice(i).search(...)`,
+  so when a reply had two `###MCP_TOOL###` blocks it only found the first
+  (and only sometimes). Now the function scans forward from position `i`
+  and returns every block in document order. Verified with a real reply
+  that emits `get_studio_state` + `list_roblox_studios` back to back —
+  both are now dispatched.
+- **`scanToolBlocks` (live DOM stripper) now extracts ALL tool blocks from
+  each `<pre>` element**, not just the first. If the model emits two blocks
+  in one code block, both chips appear and both tools get dispatched.
+  Previously the second block was silently dropped, the agent classified
+  the reply as a single-tool turn, the model stopped after the first
+  result came back, and the session went silent.
+- **`###LUA###` form is now advertised in the system prompt** so the model
+  knows it can avoid JSON-escaping hell by using:
+  ```
+  ###LUA###
+  <luau code, no escaping>
+  ###END_LUA###
+  ```
+- **Better parse_error feedback**: when the model emits invalid JSON (the
+  classic "double quotes inside the code string"), the nudge now shows a
+  worked example of BOTH the escaped `###MCP_TOOL###` form AND the
+  escaping-free `###LUA###` form, plus the exact escape rules.
+- Version bump 2.0.0 → 2.0.1.
+
 ## 2.0.0 - The "1000x" rewrite: aggressive agent, live stripping, session memory, native-tool lockdown
 - **AI no longer gets away with "What would you like to build?"** The agent now
   detects when the model's reply is a question (or "I'll await your instructions")

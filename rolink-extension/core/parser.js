@@ -140,24 +140,42 @@
     text = text.replace(DSML_RE, "");
     const out = [];
     let i = 0;
-    while (i < text.length) {
-      // find the NEXT block of any kind
-      const idxMcp = text.indexOf(START_M, i);
-      const idxLua = text.search(LUA_START_RE) === -1 || text.search(LUA_START_RE) < i ? -1 : text.search(LUA_START_RE);
+    let safety = 0;
+    while (i < text.length && safety++ < 200) {
+      // find the NEXT block of any kind, starting at position i
+      const sub = text.slice(i);
+      const idxMcp = sub.indexOf(START_M);
+      const idxLua = sub.search(LUA_START_RE);
+      // Also find a raw JSON code block
+      const idxJson = sub.search(/```(?:json)?\s*\n?\s*\{/);
+      // And a function-calling flavour (bare JSON with tool/command)
+      const idxFn = (function(){
+        const m = sub.match(/\{[\s\S]*?"(?:tool|command|function)"\s*:\s*"/);
+        return m ? m.index : -1;
+      })();
+
       const candidates = [];
-      if (idxMcp !== -1) candidates.push({pos: idxMcp, type: "mcp"});
-      if (idxLua !== -1) candidates.push({pos: idxLua, type: "lua"});
+      if (idxMcp !== -1) candidates.push({pos: i + idxMcp, type: "mcp"});
+      if (idxLua !== -1) candidates.push({pos: i + idxLua, type: "lua"});
+      if (idxJson !== -1) candidates.push({pos: i + idxJson, type: "json"});
+      if (idxFn !== -1) candidates.push({pos: i + idxFn, type: "fn"});
       if (!candidates.length) break;
       candidates.sort((a, b) => a.pos - b.pos);
       const head = candidates[0];
-      // look at the chunk starting at head.pos
-      const sub = text.slice(head.pos);
-      const blk = extract(sub);
-      if (!blk) break;
+      // Extract from this position
+      const slice = text.slice(head.pos);
+      const blk = extract(slice);
+      if (!blk) {
+        // Couldn't parse; advance past the marker so we don't loop forever
+        i = head.pos + (head.type === "mcp" ? START_M.length : (head.type === "lua" ? 10 : 4));
+        continue;
+      }
       out.push(blk);
-      // advance past the chunk we consumed
-      const consumed = blk.raw ? blk.raw.length : 50;
-      i = head.pos + consumed;
+      // Advance by the consumed raw length; if raw is missing/short, bump by marker length + 1
+      const advance = blk.raw && blk.raw.length > 0
+        ? blk.raw.length
+        : (head.type === "mcp" ? START_M.length : (head.type === "lua" ? 10 : 4)) + 1;
+      i = head.pos + advance;
     }
     return out;
   }
