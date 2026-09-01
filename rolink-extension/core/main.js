@@ -1075,7 +1075,11 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   // only after the whole turn finishes).
   function scanToolBlocks(node){
     if(!node || node.nodeType !== 1) return;
-    if(A.busy) return; // don't race the active dispatch
+    // NOTE: We no longer bail on A.busy. If the model emits multiple tool
+    // blocks in one turn, each one fires its own dispatchTool. dispatchTool
+    // sets A.busy, sends the bridge call, and resolves later. Multiple
+    // bridge calls can be in flight at once. The previous bail caused the
+    // second tool to be silently dropped.
     const candidates = [];
     if(node.tagName === "PRE" || node.tagName === "CODE") candidates.push(node);
     if(node.querySelectorAll) candidates.push(...node.querySelectorAll("pre, code"));
@@ -1173,6 +1177,20 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     try{ obs.observe(document.documentElement, {childList:true, subtree:true, characterData:true}); }catch{}
     // Belt-and-braces: refresh camouflage every 1.5s regardless of mutations
     setInterval(camouflageSweep, 1500);
+    // Safety net: re-scan the whole chat for tool blocks every 2s. The
+    // MutationObserver can miss a <pre> if the AI site mounts it via a
+    // microtask (React batch) that fires before our observer attaches, or
+    // if a <pre> is added then re-rendered. This catches any tool block
+    // the live stripper missed, so the agent never silently drops one.
+    setInterval(()=>{
+      try{
+        const items = (P && P.allItems) ? P.allItems() : [];
+        for(const it of items){
+          if(!it || A.strippedBlocks.has(it)) continue;
+          if(it.querySelectorAll) scanToolBlocks(it);
+        }
+      }catch{}
+    }, 2000);
   }
 
   // ── status updates from background ───────────────────────────────────────

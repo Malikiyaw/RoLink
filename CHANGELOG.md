@@ -1,4 +1,31 @@
 # Changelog
+## 2.3.2 - Fix: second tool block in same turn was silently dropped
+When the model emitted two `###MCP_TOOL###` blocks in one reply (e.g.
+`search_game_tree` + `script_search`), only the first one was dispatched
+and the second was silently dropped. The user saw both tool blocks in
+the chat but no chip, no result, no execution.
+
+**Root cause**: `scanToolBlocks` (the live DOM stripper) returned early
+when `A.busy` was true:
+```js
+if(A.busy) return; // don't race the active dispatch
+```
+The first tool set `A.busy=true`, the second `<pre>` arrived, the
+stripper saw `A.busy=true` and skipped. The second tool was never
+dispatched. The waitForReply fallback should have caught it, but the
+race window was enough for the model to finalize the turn as "text"
+(the model often says "let me also search..." alongside the blocks).
+
+**Fix**:
+- **Removed the `A.busy` bail from `scanToolBlocks`**. Each tool gets
+  its own dispatch and bridge call, in parallel. The `WeakSet`
+  prevents double-dispatching the same `<pre>`, so no risk of
+  duplicate runs.
+- **Added a 2s safety-net re-scan** that walks `P.allItems()` and
+  runs `scanToolBlocks` on each. Catches tool blocks the
+  MutationObserver missed (React batched mounts, re-renders, etc).
+- Version bump 2.3.1 → 2.3.2.
+
 ## 2.3.1 - CRITICAL: fix JS syntax error in core/main.js (button missing)
 The "Start RoLink agent" button (and all in-page UI) was missing because
 `core/main.js` had a syntax error at line 461. The file had duplicate
