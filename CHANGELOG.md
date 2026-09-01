@@ -1,5 +1,29 @@
 # Changelog
-## 1.2.0 - Real agentic loop: system prompt injection + nudge + activity feed
+## 1.3.0 - Real ZeroScript-style ZSProvider architecture (the way ZeroDev does it)
+- **`core/parser.js` is back as a proper ZSParse module** with `extract`, `extractAll`, `hasToolSignature`, `hasOpenToolBlock`, `toolNameFromText`, `normalize`. Recognizes: `###MCP_TOOL### {json}`, `###LUA### ... ###END_LUA###`, raw JSON code blocks (`{"command":...}`), function-calling flavour (bare JSON with `tool`/`command`/`function` key). Tolerant of cut-off JSON (auto-closes braces), DeepSeek `<|DSML|>` stripping, tab escaping.
+- **`providers/deepseek.js` is now a full ZeroScript-quality ZSProvider** (1000+ lines, transcribed from the proven v1.5.3 codebase and rebranded to RoLink):
+  - **Stable per-turn identity** via `data-virtual-list-item-key` (DeepSeek virtualizes its message list — counts alone are wrong when old turns detach; this key survives scroll/rerender).
+  - **Real `isGenerating()` detection** from three orthogonal signals: `.ds-loading` spinner, footer button glyph (the same button doubles as SEND and STOP — distinguished by the `<path d>` starting with `M2` (stop square) vs `M8` (send arrow)), and stream-growth tracking (the only liveness signal during the reasoning phase when there is no stop button).
+  - **`isBusyNow()`** is a strict version: true only when a generation is actively happening RIGHT NOW, so the send never aborts a turn mid-stream.
+  - **Send-locked composer** during agent activity (`readonly` attribute + "RoLink agent working, please wait..." placeholder, with the dataset-captured original placeholder restored on unlock).
+  - **163,840-char input cap** with head+tail truncation + explicit marker so the model knows the gap and doesn't re-run.
+  - **Composer mode control**: at session start, force the Expert tab (most powerful) unless the user has explicitly chosen Vision (so `screen_capture` is honored) or Instant.
+  - **`installSendHooks`** intercepts Enter / send-button click / native Stop / native Continue so the agent can react to user actions during a session.
+  - **Image attachment** via real file-input upload (idempotent — won't double-attach across retries).
+  - **`findToolBlockSpot`** hides the raw `###MCP_TOOL###` / `###LUA###` block (and its code-fence wrapper) before the chip is inserted, so nothing of the raw command flashes on screen.
+  - **Context-limit / too-long / stopped** detection from site chrome (not model output).
+- **`providers/generic.js`** is a "good enough" ZSProvider for the other 7 sites (Gemini, Kimi, GLM, Qwen, Arena, Meta AI, ChatGPT). Per-site providers are now thin wrappers that layer on top of the generic one.
+- **`core/main.js` is now a true ZeroScript-style agent loop**:
+  - **System prompt injection** as the first user message (proven to make the AI treat it as directives, not a question).
+  - **Bootstrap gates** on `ensureComposerReady` (waits for Expert/Instant/Vision to be selected on DeepSeek, up to 1.4s).
+  - **Classifies each AI reply** as: tool (dispatch + chip), text (loop ends, AI answered), truncated (click Continue / nudge to redo), parse_error (fix-it nudge), context_limit (stop + banner), too_long (nudge to start new chat), empty (auto-resume: re-feed last result up to 12 times), stopped/timeout (stop).
+  - **Auto-resume watchdog**: if the AI drops a tool result on the floor (empty reply after a feed), the loop re-sends the same payload with a "no reply received" header.
+  - **Tab-visibility gate**: pauses the loop when the AI tab is hidden (background tabs throttle rendering), resumes immediately on unhide.
+  - **Input-lock during inject** so the user can't accidentally abort a send.
+  - **Live activity feed** (right side, color-coded) + **tool counter** in the status bar.
+- **Per-site provider pattern** preserved: `providers/<site>.js` exports `window.ZSProvider`; the core never touches site DOM directly. Adding a new AI site = drop a thin wrapper over `generic.js` + add to manifest.
+- **Manifest load order** updated: `core/config.js` → `core/parser.js` → `providers/generic.js` (when applicable) → `providers/<site>.js` → `core/main.js`.
+- Sync 1.3.0 across all versioned files.
 - **`core/main.js` is now a real agentic loop**, not a "send one message and watch" stub. Inspired by ZeroDev/Lemonade:
   - **Strong system prompt as the first message** — injected as a user message (the AI treats it as directives). Lists EVERY tool with the exact `###MCP_TOOL### {json}` format, with a "DONE" stop signal, and the rule "Never claim you cannot run commands".
   - **Automatic tool dispatch** — scans every new `<pre>` block in the AI's replies for `###MCP_TOOL###` JSON, dispatches via `bg({type:"call_tool"})`, replaces the raw block with a **beautiful tool chip** (icon + tool name + args + live result). Supports multiple tool calls per AI reply.
