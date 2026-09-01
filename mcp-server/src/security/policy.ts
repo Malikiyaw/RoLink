@@ -15,6 +15,25 @@ export const ALLOWED_TOOLS = new Set([
   "generate_sound",
   "generate_sound_pack",
   "play_sound",
+  // Phase B S1-S10
+  "heal_code",
+  "rollback",
+  "rollback_list",
+  "perf_stats",
+  "translate_code",
+  "validate_code",
+  "run_sandbox_tests",
+  "plan",
+  "get_context",
+  "list_templates",
+  "use_template",
+  "create_template",
+  "style_profile",
+  "personalize_code",
+  "generate_tests",
+  "git_commit",
+  "git_log",
+  "review_code",
 ]);
 
 export function isToolAllowed(tool: string): boolean {

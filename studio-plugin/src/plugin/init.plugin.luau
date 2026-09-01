@@ -45,38 +45,80 @@ local safeEnv = {
 	task = task, tick = tick, time = time, os = { clock = os.clock, date = os.date, time = os.time },
 }
 
+-- S1 local heal helpers
+local function balanceParens(code: string): string
+	local o = select(2, code:gsub("%(", ""))
+	local c = select(2, code:gsub("%)", ""))
+	if o > c then return code .. string.rep(")", o - c) end
+	if c > o then return string.rep("(", c - o) .. code end
+	return code
+end
+
+local function healMissingEnds(code: string): string
+	local opens = 0
+	for _ in code:gmatch("%f[%w]function%f[%W]") do opens += 1 end
+	for _ in code:gmatch("%f[%w]if%f[%W]") do opens += 1 end
+	for _ in code:gmatch("%f[%w]for%f[%W]") do opens += 1 end
+	for _ in code:gmatch("%f[%w]while%f[%W]") do opens += 1 end
+	for _ in code:gmatch("%f[%w]do%f[%W]") do opens += 1 end
+	local ends = select(2, code:gsub("%f[%w]end%f[%W]", ""))
+	if opens > ends then return code .. string.rep("\nend", opens - ends) end
+	return code
+end
+
 local function sandboxRun(code: string): (boolean, any)
 	-- try loadstring if enabled, else ModuleScript fallback
-	local fn: any, err: string?
-	-- attempt loadstring
+	local fn: any
 	local ok, res = pcall(function()
 		return loadstring(code, "RoLink")
 	end)
 	if ok and res then
 		fn = res
-		-- setfenv for Luau compat (plugin env is Luau, setfenv may be deprecated but still works in Studio)
 		pcall(function() setfenv(fn, safeEnv) end)
 		local ok2, ret = pcall(fn)
-		return ok2, ret
+		if ok2 then return true, ret end
+		-- S1 auto-heal retry: balance parens / missing ends / deprecated connect
+		local errMsg: string = tostring(ret)
+		local healed = code
+		if errMsg:find("expected") or errMsg:find("unfinished") or errMsg:find("%) expected") then
+			healed = balanceParens(healed)
+			healed = healMissingEnds(healed)
+		end
+		if errMsg:find(":connect") then healed = healed:gsub(":connect%(", ":Connect(") end
+		healed = healed:gsub("WatiForChild", "WaitForChild"):gsub("Instnace", "Instance")
+		if healed ~= code then
+			log("S1 heal retry: " .. errMsg:sub(1,120))
+			local okH, resH = pcall(function() return loadstring(healed, "RoLinkHeal") end)
+			if okH and resH then
+				pcall(function() setfenv(resH, safeEnv) end)
+				local ok2h, retH = pcall(resH)
+				if ok2h then return true, retH end
+				return false, tostring(retH) .. " (heal attempted: " .. healed:sub(1,200) .. ")"
+			end
+		end
+		return false, errMsg
 	else
 		-- ModuleScript fallback
 		local ok3, ret2 = pcall(function()
 			local mod = Instance.new("ModuleScript")
-			mod.Name = "RoLinkTemp"
+			mod.Name = "RoLinkTemp_" .. tostring(math.random(1000,9999))
 			mod.Source = code .. "\nreturn true"
 			local reqOk, reqRet = pcall(require, mod)
 			mod:Destroy()
+			if not reqOk then error(reqRet) end
 			return reqRet
 		end)
 		if ok3 then return true, ret2 end
-		return false, (err or res or ret2)
+		return false, tostring(ret2)
 	end
 end
 
-local function captureSnapshot(maxDepth: number?): string
+local function captureSnapshot(maxDepth: number?, filter: string?): string
 	local function walk(inst: Instance, depth: number, acc: { string })
 		if depth > (maxDepth or 3) then return end
-		table.insert(acc, string.format("%s (%s)", inst:GetFullName(), inst.ClassName))
+		if not filter or inst.Name:lower():find(filter:lower()) or inst.ClassName:lower():find(filter:lower()) then
+			table.insert(acc, string.format("%s (%s) [%d children]", inst:GetFullName(), inst.ClassName, #inst:GetChildren()))
+		end
 		for _, c in ipairs(inst:GetChildren()) do
 			walk(c, depth + 1, acc)
 			if #acc > 800 then break end
@@ -84,6 +126,10 @@ local function captureSnapshot(maxDepth: number?): string
 	end
 	local acc: { string } = {}
 	pcall(function() walk(game, 0, acc) end)
+	-- S3 include FPS/memory hint
+	local fps = 60
+	pcall(function() fps = math.floor(1 / RunService.Heartbeat:Wait()) end)
+	table.insert(acc, 1, string.format("-- snapshot %s | FPS~%d | total %d", os.date("%X"), fps, #acc))
 	return table.concat(acc, "\n"):sub(1, 8000)
 end
 
@@ -132,16 +178,31 @@ local function executeCommand(cmd: any): (any, string?)
 			if not ok2 then error(ret2) end
 			result = { returned = ret2, codePreview = code:sub(1, 200) }
 		elseif tool == "get_snapshot" then
-			result = { snapshot = captureSnapshot(args.maxDepth or 3) }
+			result = { snapshot = captureSnapshot(args.maxDepth or 3, args.filter) }
 		elseif tool == "undo" then
 			for _ = 1, (args.steps or 1) do pcall(function() ChangeHistoryService:Undo() end) end
-			result = { undone = true }
+			result = { undone = true, steps = args.steps or 1 }
 		elseif tool == "play_sound" then
 			local snd = game:FindFirstChild(args.path or "")
 			if snd and (snd :: any).Play then (snd :: any):Play(); result = { played = args.path } else error("sound not found") end
-		elseif tool == "set_property" or tool == "adjust_difficulty" then
-			-- DDA: apply patches via properties
+		elseif tool == "adjust_difficulty" or tool == "set_difficulty_profile" then
+			-- S45 DDA: apply via NumberValue in ReplicatedStorage
+			pcall(function()
+				local rs = game:GetService("ReplicatedStorage")
+				local f = rs:FindFirstChild("RoLinkDDA") or Instance.new("Folder", rs)
+				f.Name = "RoLinkDDA"
+				for k,v in pairs(args :: any) do
+					local val = f:FindFirstChild(k) or Instance.new("NumberValue", f)
+					val.Name = k; (val :: any).Value = tonumber(v) or 0
+				end
+			end)
 			result = { ddaApplied = true, args = args }
+		elseif tool == "run_sandbox_tests" then
+			-- S5 harness already wrapped server-side; just run
+			local code: string = cmd.command
+			local ok2, ret2 = sandboxRun(code)
+			if not ok2 then error(ret2) end
+			result = { testsPassed = true, returned = ret2 }
 		else
 			-- generic: try run_code fallback
 			local ok2, ret2 = sandboxRun(cmd.command)
