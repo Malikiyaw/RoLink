@@ -1,3 +1,4 @@
+:: SPDX-License-Identifier: GPL-3.0-or-later
 @echo off
 :: RoLink start.bat 1.0.4 — keep chcp 65001 for Unicode arrow, auto-detect non-cmd and relaunch via cmd.exe, absolute paths
 :: If launched via bash/powershell (COMSPEC missing or SHELL), re-invoke via cmd.exe

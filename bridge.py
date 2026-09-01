@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 RoLink Bridge — hardened WS 127.0.0.1:17613 <-> StudioMCP stdio + RoLink MCP HTTP fallback
-MIT, RoLink Bridge 1.0.0
+SPDX-License-Identifier: GPL-3.0-or-later
 Single dependency: websockets
 """
 import asyncio, json, sys, os, subprocess, pathlib, threading, queue, time, signal, collections

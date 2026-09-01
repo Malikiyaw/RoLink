@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 RoLink launch_studio_mcp.py — finds newest StudioMCP.exe paired with RobloxStudioBeta.exe
+SPDX-License-Identifier: GPL-3.0-or-later
 Respects ROLINK_STUDIO_MCP_PATH env override.
 """
 import os, sys, pathlib, subprocess, json, time
