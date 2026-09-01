@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "1.1.2";
+const ROLINK_VERSION = "1.1.3";
 const SYS_MARKER = "\u27E6RL-SYS\u27E7";
 const TOOL_NOTES = `
 You have RoLink MCP tools:

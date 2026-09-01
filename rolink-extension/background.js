@@ -1,6 +1,7 @@
 // RoLink background.js — single WS owner (avoids mixed-content), broadcasts status to all provider tabs
 const BRIDGE="ws://127.0.0.1:17613";
 const HTTP_HEALTH="http://127.0.0.1:17613/health";
+const VERSION=chrome.runtime.getManifest().version;
 const PROVIDER_URLS=["chat.deepseek.com","chatgpt.com","gemini.google.com","kimi.ai","chat.z.ai","chat.qwen.ai","arena.ai","meta.ai"];
 let ws=null, reconnectDelay=1000, heartbeatTimer=null, staleTimer=null;
 let toolsCache=null, studioConnected=false;
@@ -38,7 +39,6 @@ async function connect(){
   // Q2 keep dummy token (no auth) — bridge.py accepts any token. Health probe first to avoid ERR_CONNECTION_REFUSED spam.
   const healthy = await healthProbe();
   if(!healthy){
-    // throttle log: only every 5 fails (~25s at 5s backoff) to avoid console flood
     if(healthFailCount % 5 === 1) console.warn("[RoLink] bridge offline — run start.bat (health probe failed "+healthFailCount+")");
     setBadge(false);
     schedule();
@@ -61,8 +61,6 @@ async function connect(){
 function resetStale(){ clearTimeout(staleTimer); staleTimer=setTimeout(()=>{ try{ws.close();}catch{} },25000); }
 function schedule(){ setTimeout(connect, reconnectDelay); reconnectDelay=Math.min(15000, reconnectDelay*1.7); }
 function broadcast(msg){
-  // Only broadcast to provider tabs to avoid "Receiving end does not exist" on unrelated tabs,
-  // and swallow Promise rejections (MV3 returns Promise; try/catch does not catch).
   const urlFilters = PROVIDER_URLS.map(h => "*://" + h + "/*");
   chrome.tabs.query({ url: urlFilters }, tabs => {
     for (const t of tabs) {
@@ -71,7 +69,6 @@ function broadcast(msg){
       if (p && p.catch) p.catch(() => {});
     }
   });
-  // Also handle case where query url filter not supported — fallback silent
   if (chrome.runtime.lastError) void chrome.runtime.lastError;
 }
 
@@ -84,6 +81,8 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
     sendResponse({ok:true, status: ws && ws.readyState===1 ? "connected" : "disconnected", tools:toolsCache});
     return false;
   }
+  if(msg.type==="version"){ sendResponse({version:VERSION}); return false; }
+  if(msg.type==="reconnect"){ if(ws){try{ws.close();}catch{}} else { connect(); } sendResponse({ok:true}); return false; }
   if(msg.id){
     if(ws && ws.readyState===1){
       pending.set(msg.id, (res)=> { try{ sendResponse(res); }catch{} });
@@ -97,3 +96,7 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
   }
 });
 chrome.alarms.onAlarm.addListener(async ()=>{ if(!ws || ws.readyState!==1) await connect(); else { try{ ws.send(JSON.stringify({id:"hb",method:"heartbeat"})); }catch{} } });
+
+// Keyboard shortcut Ctrl+Shift+R opens the popup (manifest command "open-popup").
+chrome.commands?.onCommand?.addListener((cmd)=>{ if(cmd==="open-popup") chrome.action.openPopup?.(); });
+

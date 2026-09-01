@@ -49,7 +49,7 @@ for %%R in (
     if exist "%%~R" (
         for /f "delims=" %%D in ('dir /b /ad /o-n "%%~R\Python3*" 2^>nul') do (
             if exist "%%~R\%%D\python.exe" (
-                set PY="%%~R\%%D\python.exe"
+                set "PY=%%~R\%%D\python.exe"
                 call :validate_py && goto :found
             )
         )

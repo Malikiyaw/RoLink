@@ -1,5 +1,14 @@
 # Changelog
-## 1.1.2 - Fix `'-m' is not recognized`, port 17648 crash loop, separate PS1 files
+## 1.1.3 - Fix `ValueError: host/port and sock`, `"" is not recognized`, 1000x better UI
+- `bridge.py`: drop the redundant `host`/`port` args from `serve(...)` when passing a pre-bound `sock` (Python 3.14 asyncio rejects the combination with `ValueError: host/port and sock can not be specified at the same time`).
+- `start.bat`: remove embedded quotes from `set "PY=%%~R\%%D\python.exe"` in the pre-install scan (was producing `""` when later expanded as `"%PY%"` → `'-m' is not recognized`).
+- **UI overhaul (1000x better than ZeroScript):**
+  - **Popup:** modern dark theme with live status dot (green/yellow/red/grey + glow), live bridge clients / MCP servers / uptime readouts, 5 buttons: Reconnect, Restart, Studio, Settings, Copy log path.
+  - **Options page:** redesigned with sections (Endpoints, Keyboard shortcuts, About), focus-glow inputs, version badge, Enter-to-save, Reset-to-defaults button.
+  - **In-page overlay:** gradient bar with animated glowing dot, Settings ⚙ button, Start-session turns into ✓ Active.
+  - **Keyboard shortcut:** `Ctrl+Shift+R` opens the popup (Chrome command `open-popup`, rebindable in `chrome://extensions/shortcuts`).
+  - **Background:** exposes `version` and `reconnect` messages to the popup; reads version from `chrome.runtime.getManifest()` so it can never drift.
+- Sync 1.1.3 across all versioned files.
 - `start.bat`: every `call %PY%` is now `call "%PY%"` (the path contains spaces, e.g. `C:\Users\Administrator\AppData\Local\Programs\Python\RoLinkPython312\python.exe`; without quotes, cmd split on spaces and `-m` became a separate "command").
 - `start.bat`: use **three separate PS1 files** (`rolink-dl.ps1`, `rolink-extract.ps1`, `rolink-patch.ps1`) instead of reusing one — the single-file reuse was fragile (the `_pth` patch PS1 could see content from a prior call depending on write order, which caused the `Cannot find drive 'https'` error).
 - `start.bat` patch script now `Test-Path $p` first and exits cleanly if the file is missing instead of calling `Get-Content` on a bad value.

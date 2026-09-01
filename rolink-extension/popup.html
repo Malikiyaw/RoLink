@@ -1,11 +1,62 @@
 <!doctype html><meta charset="utf-8"><title>RoLink</title>
-<style>body{width:260px;font:12px system-ui;padding:10px;margin:0;background:#111;color:#eee} .dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:grey} button{width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#1a73e8;color:#fff;cursor:pointer;margin:4px 0} .small{font-size:10px;color:#aaa}</style>
-<div style="display:flex;align-items:center;gap:8px"><span id="dot" class="dot"></span><span id="txt">Checking...</span></div>
-<button id="reconnect">Reconnect</button>
-<button id="restart">Restart Roblox Server</button>
-<button id="settings">Settings</button>
-<div class="small">RoLink 1.1.2 — Keep this bridge running via start.bat.</div>
+<style>
+:root{
+  --bg:#0e1116;--panel:#1.1.32;--border:#262d36;--text:#e6edf3;--muted:#8b949e;
+  --green:#3fb950;--yellow:#d29922;--red:#f85149;--grey:#6e7681;--accent:#2f81f7;
+}
+*{box-sizing:border-box}
+body{width:300px;font:13px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:0;margin:0;background:var(--bg);color:var(--text)}
+header{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#1a2030,#1.1.32)}
+.logo{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#2f81f7,#3fb950);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#fff;box-shadow:0 2px 8px rgba(47,129,247,.4)}
+.title{font-weight:600;font-size:14px}.ver{font-size:10px;color:var(--muted);margin-top:1px}
+.status{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--grey);box-shadow:0 0 6px transparent;transition:all .3s}
+.dot.green{background:var(--green);box-shadow:0 0 8px rgba(63,185,80,.6)}
+.dot.yellow{background:var(--yellow);box-shadow:0 0 8px rgba(210,153,34,.6)}
+.dot.red{background:var(--red);box-shadow:0 0 8px rgba(248,81,73,.6);animation:pulse 1.2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+main{padding:12px 14px}
+.row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px}
+.row:last-child{border-bottom:none}
+.row .k{color:var(--muted)}
+.row .v{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+button{
+  padding:9px 10px;border-radius:8px;border:1px solid var(--border);
+  background:var(--panel);color:var(--text);cursor:pointer;font-size:12px;
+  font-weight:500;display:flex;align-items:center;justify-content:center;gap:6px;
+  transition:all .15s ease;
+}
+button:hover{background:#1f2630;border-color:#3a424d;transform:translateY(-1px)}
+button:active{transform:translateY(0)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover{background:#1f6feb;border-color:#1f6feb}
+button.warn{background:#21262d;border-color:#da3633;color:var(--red)}
+button.warn:hover{background:#2d1416}
+button.full{grid-column:span 2}
+footer{padding:10px 14px;border-top:1px solid var(--border);font-size:10px;color:var(--muted);text-align:center;background:#0a0d12}
+</style>
+<header>
+  <div class="logo">R</div>
+  <div>
+    <div class="title">RoLink</div>
+    <div class="ver" id="ver">v1.1.3</div>
+  </div>
+  <div class="status"><span class="dot" id="dot"></span><span id="statustxt">offline</span></div>
+</header>
+<main>
+  <div class="row"><span class="k">Bridge</span><span class="v" id="bridgeUrl">ws://127.0.0.1:17613</span></div>
+  <div class="row"><span class="k">MCP HTTP</span><span class="v" id="mcpUrl">http://127.0.0.1:3001</span></div>
+  <div class="row"><span class="k">Bridge clients</span><span class="v" id="clients">-</span></div>
+  <div class="row"><span class="k">MCP servers</span><span class="v" id="servers">-</span></div>
+  <div class="row"><span class="k">Uptime</span><span class="v" id="uptime">-</span></div>
+  <div class="actions">
+    <button id="reconnect" title="Reconnect to bridge">↻ Reconnect</button>
+    <button id="restart" title="Restart the bridge" class="warn">⟲ Restart</button>
+    <button id="openStudio" title="Open Roblox Studio (via bridge)">🎮 Studio</button>
+    <button id="openOptions" title="Open settings">⚙ Settings</button>
+    <button id="copyLogs" title="Copy bridge log path" class="full">📋 Copy log path</button>
+  </div>
+</main>
+<footer>Keep start.bat running in the background.</footer>
 <script src="popup.js"></script>
-
-
-
