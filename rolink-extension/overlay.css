@@ -1,4 +1,204 @@
-#rolink-bar{font:12px system-ui;position:fixed;bottom:0;left:0;right:0;background:#111;color:#fff;padding:6px 10px;z-index:2147483647;display:flex;align-items:center;gap:8px;border-top:1px solid #333}
-#rolink-bar button{background:#1a73e8;color:#fff;border:none;padding:4px 10px;border-radius:6px;cursor:pointer}
-#rolink-bar button:hover{background:#1557b0}
-#rolink-dot{width:10px;height:10px;border-radius:50%;background:grey;display:inline-block;flex-shrink:0}
+// SPDX-License-Identifier: GPL-3.0-or-later
+// overlay.css - RoLink in-page UI. Scoped under #rl-root / .rl-*
+
+#rl-root {
+  position: fixed;
+  z-index: 2147483600;
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  pointer-events: none;
+}
+#rl-root * { box-sizing: border-box; }
+
+/* ── Centered "Start agent" button (sits at the top-center of the page) ─── */
+.rl-launcher {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px 9px 14px;
+  background: linear-gradient(135deg, rgba(47,129,247,0.95), rgba(31,111,235,0.95));
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(47,129,247,0.35), 0 2px 6px rgba(0,0,0,0.25);
+  backdrop-filter: blur(8px);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  pointer-events: auto;
+  user-select: none;
+  transition: transform .15s ease, box-shadow .15s ease, opacity .2s ease;
+  z-index: 2147483600;
+}
+.rl-launcher:hover { transform: translateX(-50%) translateY(-1px); box-shadow: 0 10px 30px rgba(47,129,247,0.45), 0 3px 8px rgba(0,0,0,0.3); }
+.rl-launcher:active { transform: translateX(-50%) translateY(0); }
+.rl-launcher[disabled] { opacity: 0.6; cursor: default; }
+.rl-launcher .rl-logo {
+  width: 18px; height: 18px; border-radius: 5px;
+  background: rgba(255,255,255,0.22);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800;
+}
+.rl-launcher.is-active {
+  background: linear-gradient(135deg, rgba(63,185,80,0.95), rgba(45,160,67,0.95));
+  box-shadow: 0 8px 24px rgba(63,185,80,0.35), 0 2px 6px rgba(0,0,0,0.25);
+}
+.rl-launcher .rl-stop-dot {
+  width: 9px; height: 9px; border-radius: 2px; background: #fff;
+  box-shadow: 0 0 8px rgba(255,255,255,0.6);
+}
+
+/* ── Status bar (anchored above the composer) ───────────────────────────── */
+#rl-bar {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px 7px 12px;
+  background: rgba(14,17,22,0.96);
+  color: #e6edf3;
+  border: 1px solid rgba(47,129,247,0.30);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.42);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+  user-select: none;
+  pointer-events: auto;
+  z-index: 2147483600;
+}
+.rl-inline { position: static !important; width: 100%; margin: 0 0 6px; background: transparent; border: none; border-bottom: 1px solid rgba(255,255,255,0.08); border-radius: 0; box-shadow: none; padding: 4px 14px 8px; backdrop-filter: none; }
+.rl-dot { width: 8px; height: 8px; border-radius: 50%; background: #6e7681; box-shadow: 0 0 0 transparent; transition: all .25s ease; }
+.rl-dot.on { background: #3fb950; box-shadow: 0 0 8px rgba(63,185,80,0.65); }
+.rl-dot.warn { background: #d29922; box-shadow: 0 0 8px rgba(210,153,34,0.65); }
+.rl-dot.err { background: #f85149; box-shadow: 0 0 8px rgba(248,81,73,0.65); animation: rl-pulse 1.2s infinite; }
+@keyframes rl-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.rl-state { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+.rl-state small { color: #8b949e; font-weight: 400; font-size: 11px; }
+.rl-spacer { flex: 1; }
+.rl-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #e6edf3;
+  padding: 4px 9px; border-radius: 7px; cursor: pointer;
+  font-size: 11px; font-weight: 500;
+  transition: background .12s ease;
+}
+.rl-btn:hover { background: rgba(255,255,255,0.12); }
+.rl-btn.primary { background: linear-gradient(135deg,#2f81f7,#1f6feb); border-color: #1f6feb; }
+.rl-btn.primary:hover { background: linear-gradient(135deg,#1f6feb,#1158c7); }
+.rl-btn.warn { background: rgba(248,81,73,0.14); border-color: rgba(248,81,73,0.4); color: #fca5a5; }
+
+/* ── Tool chips (replace raw ###MCP_TOOL### blocks with visual results) ─── */
+.rl-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 6px 0;
+  padding: 6px 10px 6px 8px;
+  border-radius: 8px;
+  font: 11.5px/1.4 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  color: #e6edf3;
+  background: linear-gradient(135deg, rgba(47,129,247,0.18), rgba(31,111,235,0.10));
+  border: 1px solid rgba(47,129,247,0.45);
+  box-shadow: 0 2px 8px rgba(47,129,247,0.15);
+  pointer-events: auto;
+  user-select: text;
+  word-break: break-word;
+  white-space: pre-wrap;
+  max-width: 100%;
+}
+.rl-chip.rl-ok { background: linear-gradient(135deg, rgba(63,185,80,0.18), rgba(45,160,67,0.10)); border-color: rgba(63,185,80,0.45); box-shadow: 0 2px 8px rgba(63,185,80,0.15); }
+.rl-chip.rl-err { background: linear-gradient(135deg, rgba(248,81,73,0.18), rgba(218,54,51,0.10)); border-color: rgba(248,81,73,0.5); box-shadow: 0 2px 8px rgba(248,81,73,0.15); }
+.rl-chip .rl-ico {
+  width: 18px; height: 18px; border-radius: 5px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(47,129,247,0.25);
+  color: #fff; font-size: 10px; font-weight: 700;
+  flex-shrink: 0;
+}
+.rl-chip.rl-ok .rl-ico { background: rgba(63,185,80,0.3); }
+.rl-chip.rl-err .rl-ico { background: rgba(248,81,73,0.3); }
+.rl-chip .rl-name { color: #79c0ff; font-weight: 700; }
+.rl-chip.rl-ok .rl-name { color: #7ee787; }
+.rl-chip.rl-err .rl-name { color: #ffa198; }
+.rl-chip .rl-spinner {
+  width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.18);
+  border-top-color: #79c0ff;
+  animation: rl-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes rl-spin { to { transform: rotate(360deg); } }
+
+/* ── Tools panel (floating, lists all available MCP tools) ───────────────── */
+.rl-tools {
+  position: fixed;
+  top: 60px;
+  right: 16px;
+  width: 280px;
+  max-height: 70vh;
+  background: rgba(14,17,22,0.97);
+  border: 1px solid rgba(47,129,247,0.30);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  backdrop-filter: blur(10px);
+  color: #e6edf3;
+  font-size: 12px;
+  pointer-events: auto;
+  z-index: 2147483600;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+.rl-tools.rl-show { display: flex; }
+.rl-tools-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  font-weight: 600;
+}
+.rl-tools-head .pill {
+  background: rgba(47,129,247,0.20);
+  color: #79c0ff;
+  border: 1px solid rgba(47,129,247,0.35);
+  border-radius: 10px; padding: 1px 7px; font-size: 10px;
+  margin-left: auto;
+}
+.rl-tools-list {
+  overflow-y: auto;
+  padding: 6px 8px;
+  display: flex; flex-wrap: wrap; gap: 4px;
+  align-content: flex-start;
+}
+.rl-tools-list .t {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #79c0ff;
+  font: 10.5px/1 ui-monospace, Menlo, Consolas, monospace;
+  padding: 2px 6px; border-radius: 4px;
+  white-space: nowrap;
+}
+.rl-tools-list::-webkit-scrollbar { width: 6px; }
+.rl-tools-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+
+/* ── Banner (transient guidance) ────────────────────────────────────────── */
+.rl-banner {
+  position: fixed;
+  top: 60px; left: 50%; transform: translateX(-50%);
+  max-width: 480px;
+  padding: 9px 14px;
+  background: linear-gradient(135deg, rgba(210,153,34,0.18), rgba(210,153,34,0.10));
+  border: 1px solid rgba(210,153,34,0.5);
+  border-radius: 10px;
+  color: #f0d479;
+  font-size: 12px;
+  pointer-events: auto;
+  z-index: 2147483600;
+  box-shadow: 0 4px 14px rgba(210,153,34,0.2);
+}
+.rl-banner.err { background: linear-gradient(135deg, rgba(248,81,73,0.18), rgba(248,81,73,0.10)); border-color: rgba(248,81,73,0.5); color: #ffa198; }
+.rl-banner.ok { background: linear-gradient(135deg, rgba(63,185,80,0.18), rgba(63,185,80,0.10)); border-color: rgba(63,185,80,0.5); color: #7ee787; }

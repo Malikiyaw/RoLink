@@ -1,169 +1,429 @@
-// RoLink core/main.js - thin content-script glue for the AI tab.
-// Routes every tool call through the background service worker (which owns
-// the single bridge WebSocket) instead of opening a second WS from the page
-// (a second WS is fine, but going through bg() gives us: the AI tab never
-// sees the bridge go offline, the SW can retry/reconnect transparently, and
-// we get response correlation for free). The MutationObserver below scans
-// for ###MCP_TOOL### {json} blocks and asks bg() to dispatch them.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// core/main.js - RoLink in-page agent loop + UI.
+//
+// What this does:
+//   1. Renders a centered "▶ Start agent" button (top-center of the page) and
+//      a status bar (anchored above the chat composer). No matter what site.
+//   2. On Start: injects a system prompt + a starter question into the AI's
+//      input box, then auto-clicks Send.
+//   3. Watches the AI's replies for ###MCP_TOOL### {json} blocks. For each
+//      one, asks background.js to dispatch the tool, and replaces the raw
+//      block with a beautiful tool chip showing the live result.
+//   4. After the result, feeds it back to the AI (hidden) so the loop
+//      continues automatically until the AI has nothing more to do.
+//
+// Routes every call through background.js (single bridge WS owner). Never
+// opens a second WS from the page. Sits in a #rl-root shadow-DOM-like div
+// so its CSS can't be clobbered by the host site.
+
 (function(){
   "use strict";
   if(window.__rolink_injected) return; window.__rolink_injected=true;
 
+  // ── chrome.runtime.sendMessage wrapper with offline fallback ──────────────
+  let bgAvailable = !!(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id);
   function bg(msg){
     return new Promise(resolve=>{
+      if(!bgAvailable){ resolve({ok:false, error:"extension not available"}); return; }
       try{
         chrome.runtime.sendMessage(msg, resp=>{
           if(chrome.runtime.lastError) return resolve({ok:false, error:chrome.runtime.lastError.message});
-          resolve(resp || {ok:false, error:"no response"});
+          resolve(resp || {ok:false, error:"no response from background"});
         });
-      }catch(e){ resolve({ok:false, error:String(e)}); }
+      }catch(e){
+        if(/Extension context invalidated|message port closed/i.test(String(e))){
+          bgAvailable = false;
+          return resolve({ok:false, kind:"stale-extension", error:String(e)});
+        }
+        resolve({ok:false, error:String(e)});
+      }
     });
   }
 
+  // ── shared state ─────────────────────────────────────────────────────────
+  const S = {
+    started: false,          // user clicked Start
+    injecting: false,        // currently feeding a result back to the AI
+    busy: false,             // a tool is currently executing
+    toolRunningName: "",
+    lastActivityTs: 0,
+    lastFeedAt: 0,
+    feedStreak: 0,           // how many tool-results we've fed back in a row (for stall detection)
+    observeTarget: null,
+    status: "offline",       // offline | bridge | studioOff | ready
+    tools: [],
+  };
+
+  // ── UI elements ──────────────────────────────────────────────────────────
+  const root = document.createElement("div");
+  root.id = "rl-root";
+  document.documentElement.appendChild(root);
+
+  // Centered launcher
+  const launcher = document.createElement("button");
+  launcher.className = "rl-launcher";
+  launcher.setAttribute("aria-label", "Start RoLink agent");
+  launcher.innerHTML = `<span class="rl-logo">R</span><span class="rl-label">Start RoLink agent</span>`;
+  root.appendChild(launcher);
+
+  // Status bar
+  const bar = document.createElement("div");
+  bar.id = "rl-bar";
+  bar.style.display = "none";
+  bar.innerHTML = `
+    <span class="rl-dot" id="rl-dot"></span>
+    <span class="rl-state" id="rl-state">RoLink: <small>…</small></span>
+    <span class="rl-spacer"></span>
+    <button class="rl-btn" id="rl-tools-btn" title="Show available tools">🛠 Tools</button>
+    <button class="rl-btn" id="rl-stop-btn" class="rl-btn warn" style="display:none" title="Stop the agent">■ Stop</button>
+  `;
+  root.appendChild(bar);
+
+  // Tools panel
+  const toolsPanel = document.createElement("div");
+  toolsPanel.className = "rl-tools";
+  toolsPanel.innerHTML = `
+    <div class="rl-tools-head">Tools <span class="pill" id="rl-tools-count">-</span></div>
+    <div class="rl-tools-list" id="rl-tools-list">Loading…</div>
+  `;
+  root.appendChild(toolsPanel);
+
+  // Banner (transient guidance)
+  const banner = document.createElement("div");
+  banner.className = "rl-banner";
+  banner.style.display = "none";
+  root.appendChild(banner);
+
+  function showBanner(text, kind, ms){
+    banner.textContent = text;
+    banner.className = "rl-banner" + (kind ? " " + kind : "");
+    banner.style.display = "block";
+    clearTimeout(banner._t);
+    if(ms) banner._t = setTimeout(()=>{ banner.style.display = "none"; }, ms);
+  }
+  function hideBanner(){ banner.style.display = "none"; }
+
+  // ── status / dot ─────────────────────────────────────────────────────────
+  function setStatus(s){
+    S.status = s;
+    const dot = document.getElementById("rl-dot");
+    const state = document.getElementById("rl-state");
+    if(!dot || !state) return;
+    dot.classList.remove("on","warn","err");
+    if(s === "ready"){ dot.classList.add("on"); state.innerHTML = `RoLink: <small>Bridge + Studio ready</small>`; }
+    else if(s === "studioOff"){ dot.classList.add("warn"); state.innerHTML = `RoLink: <small>enable MCP in Studio</small>`; }
+    else if(s === "bridge"){ dot.classList.add("warn"); state.innerHTML = `RoLink: <small>Bridge OK, open Studio</small>`; }
+    else { state.innerHTML = `RoLink: <small>offline — run start.bat</small>`; }
+  }
+
+  // ── tools panel ──────────────────────────────────────────────────────────
+  async function refreshTools(){
+    const r = await bg({type:"list_tools"});
+    const arr = (r && Array.isArray(r.tools)) ? r.tools : [];
+    S.tools = arr;
+    const list = document.getElementById("rl-tools-list");
+    const count = document.getElementById("rl-tools-count");
+    if(!list) return;
+    if(!arr.length){
+      list.textContent = r && r.error ? ("bridge: " + r.error) : "no tools — open Roblox Studio";
+    } else {
+      list.innerHTML = arr.map(t => {
+        const nm = (typeof t === "string") ? t : (t.name || JSON.stringify(t));
+        return `<span class="t" title="${(typeof t==="object"&&t.description)||""}">${escapeHtml(nm)}</span>`;
+      }).join("");
+    }
+    if(count) count.textContent = arr.length + " available";
+  }
+  function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);}
+
+  document.getElementById("rl-tools-btn").onclick = ()=>{
+    toolsPanel.classList.toggle("rl-show");
+  };
+
+  // ── bar placement (above the chat composer) ─────────────────────────────
+  function findComposer(){
+    const sels = ["textarea","[contenteditable='true']","[role='textbox']","form [data-testid*='input' i]"];
+    for(const s of sels){ const el = document.querySelector(s); if(el) return el; }
+    return null;
+  }
+  function placeBar(){
+    const composer = findComposer();
+    if(!composer) return;
+    // Skip if composer is itself the bar (avoid re-anchoring)
+    if(composer.closest("#rl-bar") || composer.closest("#rl-root")) return;
+    const rect = composer.getBoundingClientRect();
+    if(!rect.width) return;
+    const vw = window.innerWidth;
+    const desiredWidth = Math.min(720, Math.max(320, rect.width));
+    bar.style.left = Math.max(12, rect.left + (rect.width - desiredWidth)/2) + "px";
+    bar.style.top = Math.max(8, rect.top - 38) + "px";
+    bar.style.width = desiredWidth + "px";
+    bar.style.display = "flex";
+  }
+  window.addEventListener("resize", placeBar);
+  setInterval(placeBar, 1500);
+  setTimeout(placeBar, 600);
+
+  // ── tool call chip helpers ───────────────────────────────────────────────
+  function makeToolChip(name, args){
+    const chip = document.createElement("div");
+    chip.className = "rl-chip";
+    const argsStr = args && Object.keys(args).length ? " " + JSON.stringify(args).slice(0,120) : "";
+    chip.innerHTML = `<span class="rl-spinner"></span><span class="rl-ico">⚙</span><span><span class="rl-name">${escapeHtml(name)}</span><span style="opacity:.65">${escapeHtml(argsStr)}</span></span>`;
+    return chip;
+  }
+  function chipFinalize(chip, name, res){
+    chip.classList.remove("rl-err"); chip.classList.add(res.ok ? "rl-ok" : "rl-err");
+    const ico = res.ok ? "✓" : "✗";
+    let body = res.ok ? (res.text || "done") : (res.error || "failed");
+    if(typeof body === "string" && body.length > 300) body = body.slice(0, 280) + "…";
+    chip.innerHTML = `<span class="rl-ico">${ico}</span><span><span class="rl-name">${escapeHtml(name)}</span> <span style="opacity:.85">${escapeHtml(String(body))}</span></span>`;
+  }
+
+  // ── provider-specific: find the AI's input box + send button ─────────────
   function pickInput(){
-    const sels=[
+    const sels = [
       "textarea",
       "[contenteditable='true']",
-      "div[role='textbox']",
-      "[data-testid='chat-input']",
+      "[role='textbox']",
+      "div[data-testid='chat-input']",
       "textarea[data-testid='chat-input']",
-      "textarea[placeholder*='Message']",
-      "textarea[placeholder*='Ask']",
-      "textarea[placeholder*='Send']",
-      "textarea[placeholder*='Type']"
+      "textarea[placeholder*='Message' i]",
+      "textarea[placeholder*='Ask' i]",
+      "textarea[placeholder*='Send' i]",
+      "textarea[placeholder*='Type' i]",
+      "div[aria-label*='message' i][contenteditable='true']",
     ];
-    for(const s of sels){ const el=document.querySelector(s); if(el) return el; }
+    for(const s of sels){ const el = document.querySelector(s); if(el && el.offsetParent !== null) return el; }
+    return null;
+  }
+  function pickSendBtn(){
+    const sels = [
+      "button[data-testid='send-button']",
+      "button[aria-label*='Send' i]",
+      "button[aria-label*='Submit' i]",
+      "form button[type='submit']",
+      "button[title*='Send' i]",
+    ];
+    for(const s of sels){ const el = document.querySelector(s); if(el && !el.disabled) return el; }
     return null;
   }
   function setReactValue(el,val){
-    const proto=el.tagName==="TEXTAREA"?HTMLTextAreaElement.prototype:HTMLDivElement.prototype;
-    const setter=Object.getOwnPropertyDescriptor(proto,"value")?.set;
+    const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLDivElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto,"value")?.set;
     if(setter){ setter.call(el,val); el.dispatchEvent(new Event("input",{bubbles:true})); el.dispatchEvent(new Event("change",{bubbles:true})); }
-    else { el.value=val; el.dispatchEvent(new Event("input",{bubbles:true})); }
+    else { el.value = val; el.dispatchEvent(new Event("input",{bubbles:true})); }
   }
   function setCE(el,val){
     el.focus();
     try{ document.execCommand("selectAll",false,null); document.execCommand("insertText",false,val); return; }catch{}
-    el.innerText=val;
+    el.innerText = val;
     el.dispatchEvent(new InputEvent("input",{bubbles:true,data:val,inputType:"insertText"}));
   }
-
-  const bar=document.createElement("div");
-  bar.id="rolink-bar";
-  bar.innerHTML=`
-    <span id="rolink-dot" style="width:10px;height:10px;border-radius:50%;background:grey;display:inline-block;box-shadow:0 0 6px transparent;transition:all .3s"></span>
-    <span id="rolink-text" style="font-weight:500">RoLink: …</span>
-    <span style="flex:1"></span>
-    <button id="rolink-start" title="Start agent: injects system prompt + starter into this chat" style="background:#2f81f7;border:none;color:#fff;padding:4px 10px;border-radius:6px;cursor:pointer;font:11px system-ui;font-weight:500">▶ Start agent</button>
-    <button id="rolink-reconnect" style="background:transparent;border:1px solid #444;color:#fff;padding:4px 10px;border-radius:6px;cursor:pointer;font:11px system-ui">Reconnect</button>
-  `;
-  bar.style.cssText="position:fixed;bottom:0;left:0;right:0;background:linear-gradient(180deg,#161b22,#0e1116);color:#e6edf3;padding:8px 12px;z-index:999999;font:12px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;align-items:center;gap:8px;box-shadow:0 -2px 12px rgba(0,0,0,.4);border-top:1px solid #262d36";
-  function injectBar(){ const anchor=document.querySelector('form, [role="textbox"], textarea'); if(anchor && !document.getElementById("rolink-bar")) (anchor.parentElement||document.body).appendChild(bar); }
-  setInterval(injectBar, 1500);
-  injectBar();
-  const dot=()=>document.getElementById("rolink-dot"), txt=()=>document.getElementById("rolink-text");
-  function setStatus(s){
-    const d=dot(), t=txt(); if(!d||!t) return;
-    if(s==="ready"){ d.style.background="#3fb950"; d.style.boxShadow="0 0 8px rgba(63,185,80,.6)"; t.textContent="RoLink: Bridge + Studio ready"; }
-    else if(s==="bridge"){ d.style.background="#d29922"; d.style.boxShadow="0 0 8px rgba(210,153,34,.6)"; t.textContent="RoLink: Bridge OK, open Studio place"; }
-    else if(s==="studioOff"){ d.style.background="#d29922"; d.style.boxShadow="0 0 8px rgba(210,153,34,.6)"; t.textContent="RoLink: enable MCP in Studio"; }
-    else { d.style.background="#6e7681"; d.style.boxShadow="none"; t.textContent="RoLink: offline — run start.bat"; }
+  function clearEditor(el){
+    if(el.tagName === "TEXTAREA") setReactValue(el, "");
+    else setCE(el, "");
   }
 
-  // status updates from background
+  // ── system prompt + starter ──────────────────────────────────────────────
+  const SYSTEM_REMINDER = `[RoLink Agent: you control Roblox Studio via MCP tools running on the user's PC.
+Output a SINGLE JSON code block per tool call:
+###MCP_TOOL###
+{"tool":"run_code","args":{"code":"print('hi')"}}
+You can call multiple tools in one reply (one JSON block per call). The result of every tool is fed back to you automatically so you can decide the next step. Never claim you cannot run commands.]`;
+  const STARTER = "\n\nHi! I'm RoLink Agent — connected to your local Roblox Studio. What would you like to build? Try: 'create a Part named Roof in workspace', 'snapshot the game tree', 'run print(1+1)', or 'plan an obby'.";
+
+  function injectAndSend(){
+    const el = pickInput();
+    if(!el){ setTimeout(injectAndSend, 400); return; }
+    el.focus();
+    const val = SYSTEM_REMINDER + STARTER;
+    if(el.tagName === "TEXTAREA") setReactValue(el, val);
+    else setCE(el, val);
+    setTimeout(()=>{
+      const btn = pickSendBtn();
+      if(btn && !btn.disabled){ try{ btn.click(); }catch{} }
+      else { const form = el.closest("form"); if(form){ try{ form.requestSubmit(); }catch{ form.dispatchEvent(new Event("submit",{bubbles:true,cancelable:true})); } } }
+      S.lastActivityTs = Date.now();
+    }, 250);
+  }
+  function feedResultToAI(text){
+    const el = pickInput();
+    if(!el || S.injecting){ return false; }
+    S.injecting = true;
+    el.focus();
+    const msg = `[Tool result]\n${text}\n\nUse this result to decide your next step. Reply with another ###MCP_TOOL### block, or answer the user in plain text when done.`;
+    if(el.tagName === "TEXTAREA") setReactValue(el, msg);
+    else setCE(el, msg);
+    setTimeout(()=>{
+      const btn = pickSendBtn();
+      if(btn && !btn.disabled){ try{ btn.click(); }catch{} }
+      else { const form = el.closest("form"); if(form){ try{ form.requestSubmit(); }catch{ form.dispatchEvent(new Event("submit",{bubbles:true,cancelable:true})); } } }
+      setTimeout(()=>{ clearEditor(el); S.injecting = false; }, 500);
+    }, 250);
+    S.lastFeedAt = Date.now();
+    return true;
+  }
+
+  // ── ###MCP_TOOL### JSON parser (brace-aware, tolerates tabs / cutoffs) ──
+  function matchBrace(s, start){
+    let depth = 0, inStr = false, esc = false, q = "";
+    for(let i = start; i < s.length; i++){
+      const c = s[i];
+      if(inStr){
+        if(esc) esc = false;
+        else if(c === "\\") esc = true;
+        else if(c === q) inStr = false;
+      } else {
+        if(c === '"' || c === "'"){ inStr = true; q = c; }
+        else if(c === "{") depth++;
+        else if(c === "}"){ depth--; if(depth === 0) return i; }
+      }
+    }
+    return -1;
+  }
+  function salvage(s){
+    let o = (s.match(/\{/g) || []).length, c = (s.match(/\}/g) || []).length;
+    if(o > c) s += "}".repeat(o - c);
+    try{ return JSON.parse(s); }catch{ return null; }
+  }
+  function tryParseTool(text){
+    text = text.replace(/<\|DSML\|>/g, "");
+    const m = text.indexOf("###MCP_TOOL###");
+    if(m === -1) return null;
+    const b = text.indexOf("{", m);
+    if(b === -1) return null;
+    const end = matchBrace(text, b);
+    const chunk = end !== -1 ? text.slice(b, end + 1) : text.slice(b);
+    try{ return JSON.parse(chunk); }
+    catch{ return salvage(chunk); }
+  }
+
+  // ── agent loop: scan new <pre> blocks, dispatch, feed back ─────────────
+  const seenBlocks = new WeakSet();
+  const inflight = new Map(); // chip element -> {name, args, promise}
+
+  function isToolBlock(node){
+    if(!node || !node.innerText) return false;
+    if(node.innerText.indexOf("###MCP_TOOL###") === -1) return false;
+    return true;
+  }
+
+  function dispatchTool(parsed, sourceBlock){
+    if(!S.started) return;
+    const name = parsed.tool || parsed.method || parsed.name || "run_code";
+    const args = parsed.args || parsed.params || parsed.arguments || {};
+    // visual: hide raw block, insert chip
+    if(sourceBlock && sourceBlock.parentElement){ sourceBlock.parentElement.style.display = "none"; }
+    const chip = makeToolChip(name, args);
+    if(sourceBlock && sourceBlock.parentElement && sourceBlock.parentElement.parentElement){
+      sourceBlock.parentElement.parentElement.insertBefore(chip, sourceBlock.parentElement);
+    } else {
+      (sourceBlock || document.body).appendChild(chip);
+    }
+    S.busy = true; S.toolRunningName = name; S.lastActivityTs = Date.now();
+    bg({type:"call_tool", name, arguments: args, timeout: 120000}).then(res=>{
+      S.busy = false; S.toolRunningName = ""; S.lastActivityTs = Date.now();
+      if(!res) res = {ok:false, error:"no response"};
+      chipFinalize(chip, name, res);
+      // Feed the result back to the AI (hidden) so it can continue.
+      const text = res.ok ? (res.text || "OK") : ("ERROR: " + (res.error || "unknown"));
+      const ok = res.ok !== false;
+      if(ok){
+        S.feedStreak = Math.min(20, (S.feedStreak || 0) + 1);
+        feedResultToAI(`${name} result:\n${text}`);
+      } else {
+        S.feedStreak = 0;
+        feedResultToAI(`${name} failed:\n${text}\n\nPlease fix the tool call and try again, or explain the error to the user.`);
+      }
+    });
+  }
+
+  function scanNode(node){
+    if(!node || node.nodeType !== 1) return;
+    // find <pre><code> blocks containing ###MCP_TOOL###
+    if(node.tagName === "PRE" && node.children.length === 1 && node.firstElementChild.tagName === "CODE"){
+      if(seenBlocks.has(node)) return;
+      if(!isToolBlock(node)) return;
+      seenBlocks.add(node);
+      const parsed = tryParseTool(node.innerText);
+      if(parsed) dispatchTool(parsed, node);
+      return;
+    }
+    // recurse
+    const all = node.querySelectorAll ? node.querySelectorAll("pre code") : [];
+    for(const sub of all){
+      if(seenBlocks.has(sub.parentElement || sub)) continue;
+      if(!isToolBlock(sub)) continue;
+      const pre = sub.parentElement || sub;
+      seenBlocks.add(pre);
+      const parsed = tryParseTool(sub.innerText);
+      if(parsed) dispatchTool(parsed, pre);
+    }
+  }
+
+  function startObserver(){
+    if(S.observeTarget) return;
+    S.observeTarget = document.documentElement;
+    const obs = new MutationObserver(muts=>{
+      if(!S.started) return;
+      for(const m of muts){
+        for(const n of m.addedNodes){ scanNode(n); }
+      }
+    });
+    try{ obs.observe(document.documentElement, {childList:true, subtree:true}); }catch{}
+  }
+
+  // ── launcher click ───────────────────────────────────────────────────────
+  launcher.addEventListener("click", ()=>{
+    if(S.started){
+      // already running -> stop
+      S.started = false;
+      S.busy = false;
+      launcher.classList.remove("is-active");
+      launcher.innerHTML = `<span class="rl-logo">R</span><span class="rl-label">Start RoLink agent</span>`;
+      showBanner("Agent stopped. Reload the page to clear the chips.", "warn", 4000);
+      bg({type:"log", level:"warn", text:"Agent stopped by user."});
+      return;
+    }
+    S.started = true;
+    launcher.classList.add("is-active");
+    launcher.innerHTML = `<span class="rl-stop-dot"></span><span class="rl-label">Stop agent</span>`;
+    hideBanner();
+    bar.style.display = "flex";
+    placeBar();
+    setStatus("bridge");
+    bg({type:"log", level:"ok", text:"Agent started in "+location.hostname});
+    showBanner("Agent started — sending system prompt + starter to the AI.", "ok", 3500);
+    injectAndSend();
+    startObserver();
+  });
+
+  // ── background status broadcasts ────────────────────────────────────────
   chrome.runtime.onMessage.addListener(msg=>{
-    if(msg && msg.type==="rolink-status"){
+    if(!msg || !msg.type) return;
+    if(msg.type === "rolink-status"){
       if(!msg.connected) setStatus("offline");
-      else if(msg.mcpAlive && msg.studio===true) setStatus("ready");
-      else if(msg.mcpAlive && msg.studio===false) setStatus("studioOff");
+      else if(msg.mcpAlive && msg.studio === true) setStatus("ready");
+      else if(msg.mcpAlive && msg.studio === false) setStatus("studioOff");
       else setStatus("bridge");
     }
   });
-  setInterval(()=>{ bg({type:"status"}).then(s=>{ if(!s) return; if(!s.connected) setStatus("offline"); }); }, 3000);
-  bg({type:"status"}).then(s=>{ if(!s||!s.connected) setStatus("offline"); });
+  // Periodic poll fallback (the broadcast above can race with page reload).
+  setInterval(()=>{
+    bg({type:"status"}).then(s=>{
+      if(!s) return;
+      if(!s.connected) setStatus("offline");
+      else if(s.mcpAlive && s.studio === true) setStatus("ready");
+      else if(s.mcpAlive && s.studio === false) setStatus("studioOff");
+      else setStatus("bridge");
+    });
+    refreshTools();
+  }, 3000);
+  // initial
+  bg({type:"status"}).then(s=>{ if(s){ if(!s.connected) setStatus("offline"); else setStatus("bridge"); } });
+  refreshTools();
 
-  const SYSTEM_REMINDER=`[RoLink Agent: you control Roblox Studio via MCP tools. To call a tool, output a single JSON code block like:
-###MCP_TOOL###
-{"tool":"run_code","args":{"code":"print('hi')"}}
-Common tools: run_code (Luau sandbox), execute_luau, get_studio_state, list_roblox_studios, get_instance_tree, search_assets, import_asset, run_code_with_snapshot, start_stop_play, screen_capture. Always call tools via ###MCP_TOOL###. Never claim you cannot run commands.]`;
-  const STARTER="\n\nHi! I'm RoLink Agent. What would you like to build in Roblox Studio? Try asking me to create a Part, run Luau, take a snapshot, or plan an obby.";
-
-  function injectAndSend(){
-    const el=pickInput(); if(!el){ setTimeout(injectAndSend,500); return; }
-    el.focus();
-    const val=SYSTEM_REMINDER+STARTER;
-    if(el.tagName==="TEXTAREA") setReactValue(el,val); else setCE(el,val);
-    setTimeout(()=>{
-      const sendBtn=document.querySelector("button[data-testid='send-button'], button[aria-label*='Send' i], button[aria-label*='Submit' i], form button[type='submit']");
-      if(sendBtn && !sendBtn.disabled){ try{ sendBtn.click(); }catch{} }
-      else { const form=el.closest("form"); if(form){ try{ form.requestSubmit(); }catch{ form.dispatchEvent(new Event("submit",{bubbles:true,cancelable:true})); } } }
-    }, 250);
-  }
-
-  let started=false;
-  document.addEventListener("click", e=>{
-    const t=e.target;
-    if(t && t.id==="rolink-start"){
-      if(started) return;
-      started=true; setStatus("ready");
-      t.textContent="✓ Active"; t.style.background="#3fb950"; t.disabled=true;
-      injectAndSend();
-    }
-    if(t && t.id==="rolink-reconnect"){ bg({type:"reconnect"}); setTimeout(()=>bg({type:"status"}).then(s=>{ if(!s||!s.connected) setStatus("offline"); }),500); }
-  });
-
-  // agentic loop: parse AI's ###MCP_TOOL### blocks and dispatch via background
-  function tryZSParse(text){
-    const m=text.indexOf("###MCP_TOOL###");
-    if(m===-1) return null;
-    const b=text.indexOf("{",m); if(b===-1) return null;
-    let depth=0, inStr=false, esc=false, q="";
-    for(let i=b;i<text.length;i++){
-      const c=text[i];
-      if(inStr){
-        if(esc) esc=false;
-        else if(c==="\\") esc=true;
-        else if(c===q) inStr=false;
-      } else {
-        if(c==='"'||c==="'"){ inStr=true; q=c; }
-        else if(c==="{") depth++;
-        else if(c==="}"){ depth--; if(depth===0) return JSON.parse(text.slice(b,i+1)); }
-      }
-    }
-    return null;
-  }
-
-  const obs=new MutationObserver(()=>{
-    if(!started) return;
-    const blocks=document.querySelectorAll("pre code");
-    if(!blocks.length) return;
-    for(let i=blocks.length-1;i>=0;i--){
-      const last=blocks[i];
-      if(last.getAttribute("data-rolink-scanned")) continue;
-      last.setAttribute("data-rolink-scanned","1");
-      const text=last.innerText;
-      const parsed=tryZSParse(text);
-      if(!parsed) continue;
-      const payload={
-        type:"call_tool",
-        name: parsed.tool || parsed.method || "run_code",
-        arguments: parsed.args || parsed.params || parsed.arguments || {},
-        timeout: 120000,
-      };
-      // dispatch via background service worker (owns the bridge WS)
-      bg(payload).then(res=>{
-        if(!res) return;
-        // replace the raw block with a chip showing the result
-        last.parentElement.style.display="none";
-        const chip=document.createElement("div");
-        const ok = res.ok !== false;
-        chip.textContent = (ok?"✓ ":"✗ ") + payload.name + (res.text?": "+String(res.text).slice(0,140):(res.error?" — "+res.error:""));
-        chip.style.cssText="background:"+(ok?"linear-gradient(135deg,#3fb950,#2da043)":"linear-gradient(135deg,#f85149,#da3633)")+";color:#fff;padding:4px 10px;border-radius:6px;font:11px monospace;margin:4px 0;display:inline-block;box-shadow:0 2px 6px rgba(0,0,0,.3)";
-        last.parentElement.parentElement.insertBefore(chip, last.parentElement);
-        bg({type:"log", level:ok?"ok":"error", text: (ok?"✓ ":"✗ ")+payload.name});
-      });
-    }
-  });
-  try{ obs.observe(document.documentElement,{childList:true,subtree:true}); }catch{}
-  window.ROLINK_STARTED=()=> started;
+  // expose for debug
+  window.ROLINK = { start:()=>launcher.click(), status:()=>S, tools:()=>S.tools };
 })();

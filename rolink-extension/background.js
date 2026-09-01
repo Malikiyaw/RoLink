@@ -40,7 +40,7 @@ function log(...a){ console.log("[rolink-bg]", ...a); }
 function connect(){
   if(ws && (ws.readyState===WebSocket.OPEN || ws.readyState===WebSocket.CONNECTING)) return;
   clearTimeout(reconnectTimer);
-  try{ ws=new WebSocket(URL+"/ws?role=extension&token=dummy"); }
+  try{ ws=new WebSocket(URL); }
   catch(e){ log("WebSocket ctor failed", e); scheduleReconnect(); return; }
   ws.onopen=()=>{
     connected=true; reconnectDelay=RECONNECT_MIN; lastMessageAt=Date.now();
