@@ -1,4 +1,12 @@
 # Changelog
+## 1.1.2 - Fix `'-m' is not recognized`, port 17648 crash loop, separate PS1 files
+- `start.bat`: every `call %PY%` is now `call "%PY%"` (the path contains spaces, e.g. `C:\Users\Administrator\AppData\Local\Programs\Python\RoLinkPython312\python.exe`; without quotes, cmd split on spaces and `-m` became a separate "command").
+- `start.bat`: use **three separate PS1 files** (`rolink-dl.ps1`, `rolink-extract.ps1`, `rolink-patch.ps1`) instead of reusing one — the single-file reuse was fragile (the `_pth` patch PS1 could see content from a prior call depending on write order, which caused the `Cannot find drive 'https'` error).
+- `start.bat` patch script now `Test-Path $p` first and exits cleanly if the file is missing instead of calling `Get-Content` on a bad value.
+- `bridge.py`: bind the listening socket ourselves with `SO_REUSEADDR` so a respawn after a crash can rebind `127.0.0.1:17613` immediately (was holding the port in TIME_WAIT).
+- `core/main.js`: remove the `add_server` call that was spawning a **second** `bridge.py` on `Start session` — that second bridge tried to bind 17613 too, hit `OSError 10048`, crashed, and the bridge kept respawning it. The single bridge is the bridge; nothing to add.
+- Sync 1.1.2 across all versioned files.
+
 ## 1.1.1 - Use -File + temp .ps1 for PowerShell download (no more $args loss)
 - `start.bat` `:direct_dl`: switch all PowerShell invocations from `-Command "..." arg1 arg2` to `-File script.ps1 arg1 arg2`. The `-Command` + trailing args form is fragile: depending on PowerShell version the args may not land in `$args[]` (which is why `Invoke-WebRequest -Uri $args[0]` saw an empty Uri).
 - New approach: write the PS script to `%TEMP%\rolink-download.ps1` via `>` / `>>` redirect, then `powershell -NoProfile -ExecutionPolicy Bypass -File "%DL_PS1%" url out`. `$args[0]` / `$args[1]` are then reliably populated.

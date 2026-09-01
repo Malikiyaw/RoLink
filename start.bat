@@ -130,17 +130,31 @@ REM Hardcoded URLs (no env-var indirection anywhere).
 set "URL_PY=https://www.python.org/ftp/python/3.12.7/python-3.12.7-embed-amd64.zip"
 set "URL_PIP=https://bootstrap.pypa.io/get-pip.py"
 
-call :log "direct_dl: PYEXE=%PYEXE%"
+REM Separate, dedicated PS1 files for each PowerShell call. Reusing one .ps1
+REM across calls is fragile (content depends on order of writes).
+set "PS_DOWNLOAD=%ROlink_TEMP%\rolink-dl.ps1"
+set "PS_EXTRACT=%ROlink_TEMP%\rolink-extract.ps1"
+set "PS_PATCH=%ROlink_TEMP%\rolink-patch.ps1"
 
-REM Write the download PowerShell script to a real .ps1 file and run it with
-REM -File. Passing URLs/paths as separate args via -Command + $args[] is fragile
-REM across PowerShell versions; -File + $args is the documented, reliable path.
-set "DL_PS1=%ROlink_TEMP%\rolink-download.ps1"
-> "%DL_PS1%" echo $ErrorActionPreference = 'Stop'
->> "%DL_PS1%" echo [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
->> "%DL_PS1%" echo try { Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing; exit 0 } catch { Write-Host ('Download failed: ' + $_.Exception.Message); exit 1 }
+> "%PS_DOWNLOAD%" echo $ErrorActionPreference = 'Stop'
+>> "%PS_DOWNLOAD%" echo [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+>> "%PS_DOWNLOAD%" echo try { Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing; exit 0 } catch { Write-Host ('Download failed: ' + $_.Exception.Message); exit 1 }
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%DL_PS1%" "%URL_PY%" "%PYZIP%"
+> "%PS_EXTRACT%" echo $ErrorActionPreference = 'Stop'
+>> "%PS_EXTRACT%" echo try { Expand-Archive -Path $args[0] -DestinationPath $args[1] -Force; exit 0 } catch { Write-Host ('Extract failed: ' + $_.Exception.Message); exit 1 }
+
+> "%PS_PATCH%" echo $ErrorActionPreference = 'Stop'
+>> "%PS_PATCH%" echo $p = $args[0]
+>> "%PS_PATCH%" echo if (Test-Path $p) {
+>> "%PS_PATCH%" echo     $c = Get-Content $p
+>> "%PS_PATCH%" echo     $c = $c -replace '^#import site','import site'
+>> "%PS_PATCH%" echo     $c | Set-Content $p
+>> "%PS_PATCH%" echo     exit 0
+>> "%PS_PATCH%" echo } else { Write-Host ('PYPTH not found: ' + $p); exit 1 }
+
+call :log "direct_dl: PYEXE=%PYEXE% PS_DOWNLOAD=%PS_DOWNLOAD%"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_DOWNLOAD%" "%URL_PY%" "%PYZIP%"
 if errorlevel 1 (
     echo   ERROR: Direct download failed. Install Python manually from
     echo   https://www.python.org/downloads/ ^(tick "Add python.exe to PATH"^).
@@ -151,9 +165,7 @@ if errorlevel 1 (
 call :log "Downloaded Python embeddable zip to %PYZIP%."
 
 if not exist "%PYDIR%" mkdir "%PYDIR%" >nul 2>nul
-> "%DL_PS1%" echo $ErrorActionPreference = 'Stop'
->> "%DL_PS1%" echo try { Expand-Archive -Path $args[0] -DestinationPath $args[1] -Force; exit 0 } catch { Write-Host ('Extract failed: ' + $_.Exception.Message); exit 1 }
-powershell -NoProfile -ExecutionPolicy Bypass -File "%DL_PS1%" "%PYZIP%" "%PYDIR%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_EXTRACT%" "%PYZIP%" "%PYDIR%"
 if errorlevel 1 (
     echo   ERROR: Could not extract Python zip. Install manually.
     call :log "FATAL: extract of embeddable Python zip failed."
@@ -173,16 +185,18 @@ REM Embeddable zip ships python.exe + python312._pth (which DISABLES site-packag
 REM AND pip). Patch python312._pth so site-packages work, then bootstrap pip.
 set "PYPTH=%PYDIR%\python312._pth"
 if exist "%PYPTH%" (
-    > "%DL_PS1%" echo $p = $args[0]
-    >> "%DL_PS1%" echo $c = Get-Content $p
-    >> "%DL_PS1%" echo $c = $c -replace '^#import site','import site'
-    >> "%DL_PS1%" echo $c ^| Set-Content $p
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%DL_PS1%" "%PYPTH%"
-    call :log "Patched %PYPTH% to enable site-packages."
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_PATCH%" "%PYPTH%"
+    if errorlevel 1 (
+        call :log "WARN: python312._pth patch failed; continuing."
+    ) else (
+        call :log "Patched %PYPTH% to enable site-packages."
+    )
+) else (
+    call :log "WARN: %PYPTH% not present; pip may not work."
 )
 
 REM Bootstrap pip into the embeddable Python.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%DL_PS1%" "%URL_PIP%" "%GETPIP%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_DOWNLOAD%" "%URL_PIP%" "%GETPIP%"
 if errorlevel 1 (
     call :log "WARN: get-pip.py download failed; continuing without pip."
 ) else (
@@ -283,7 +297,7 @@ echo  ##                                                        ##
 echo  ############################################################
 echo.
 call :log "Launching bridge.py with %PY%"
-call %PY% "%~dp0bridge.py"
+call "%PY%" "%~dp0bridge.py"
 set "BRIDGE_EXIT=%errorlevel%"
 call :log "bridge.py exited with code %BRIDGE_EXIT%"
 
@@ -300,8 +314,8 @@ pause >nul
 exit /b 0
 
 :validate_py
-call %PY% -m pip --version >nul 2>nul || exit /b 1
-call %PY% -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>nul
+call "%PY%" -m pip --version >nul 2>nul || exit /b 1
+call "%PY%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>nul
 exit /b %errorlevel%
 
 :log

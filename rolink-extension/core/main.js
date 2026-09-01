@@ -46,7 +46,7 @@
   let started=false;
   document.addEventListener("click", (e)=>{
     const t=e.target;
-    if(t && t.id==="rolink-start"){ started=true; setStatus("ready"); t.textContent="Session active"; ws && ws.send(JSON.stringify({id:"start",method:"add_server",name:"rolink",command:"bridge.py"})); }
+    if(t && t.id==="rolink-start"){ started=true; setStatus("ready"); t.textContent="Session active"; }
     if(t && t.id==="rolink-reconnect"){ connect(); }
   });
   // Watch for AI responses and trigger tool execution via WS

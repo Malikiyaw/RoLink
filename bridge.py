@@ -14,7 +14,7 @@ except ImportError:
     print("[RoLink] missing websockets — run: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
-BRIDGE_VERSION = "1.1.1"
+BRIDGE_VERSION = "1.1.2"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT") or "17613")
 CONFIG_PATH = pathlib.Path(__file__).parent / "config.json"
 STUDIO_MCP_PORT = 13469  # Studio MCP squatter detection
@@ -247,7 +247,12 @@ async def http_ws_process_request(path, request_headers):
 
 async def main():
     ensure_servers()
-    ws_server = await serve(ws_handler, "127.0.0.1", PORT, max_size=10*1024*1024, process_request=http_ws_process_request)
+    import socket as _socket
+    _sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    _sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    _sock.bind(("127.0.0.1", PORT))
+    _sock.listen(128)
+    ws_server = await serve(ws_handler, "127.0.0.1", PORT, max_size=10*1024*1024, process_request=http_ws_process_request, sock=_sock)
     log(f"RoLink Bridge {BRIDGE_VERSION} WS ws://127.0.0.1:{PORT} (+ http://127.0.0.1:{PORT}/health)")
     await asyncio.Future()
 
