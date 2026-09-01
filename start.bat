@@ -116,20 +116,24 @@ REM reliable fallback on locked-down machines.
 echo.
 echo   Downloading Python 3.12 (embeddable, no admin needed) from python.org...
 echo.
+REM CRITICAL: do NOT put embedded quotes in these variables. cmd's quote-stripping
+REM turns set "VAR=\"...\"" into literal \"...\" which then breaks later.
+REM Store raw paths/URLs; let the call site add quotes.
 set "PYDIR=%LOCALAPPDATA%\Programs\Python\RoLinkPython312"
+set "PYEXE=%LOCALAPPDATA%\Programs\Python\RoLinkPython312\python.exe"
 set "PYZIP=%TEMP%\rolink-python312.zip"
 set "PYURL=https://www.python.org/ftp/python/3.12.7/python-3.12.7-embed-amd64.zip"
 set "GETPIP=%TEMP%\rolink-get-pip.py"
 set "GETPIPURL=https://bootstrap.pypa.io/get-pip.py"
+call :log "direct_dl: PYEXE=%PYEXE% PYURL=%PYURL%"
 
-REM Use PowerShell for download (more reliable than bitsadmin on Win10+).
-REM Note: we pass URLs as ARGUMENTS, not via %VAR% inside the -Command string,
-REM so PowerShell's quoting / cmd's %-expansion can never mangle the URLs.
+REM Use PowerShell for download. Pass URLs/paths as ARGUMENTS ($args[N]) so
+REM cmd's %-expansion cannot break the -Command string.
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing; exit 0 } catch { Write-Host ('Download failed: ' + $_.Exception.Message); exit 1 }" "%PYURL%" "%PYZIP%"
 if errorlevel 1 (
     echo   ERROR: Direct download failed. Install Python manually from
     echo   https://www.python.org/downloads/ ^(tick "Add python.exe to PATH"^).
-    call :log "FATAL: direct python.org download failed (URL=%PYURL%)."
+    call :log "FATAL: direct python.org download failed (URL=%PYURL%, ZIP=%PYZIP%)."
     pause
     exit /b 1
 )
@@ -139,15 +143,15 @@ if not exist "%PYDIR%" mkdir "%PYDIR%" >nul 2>nul
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; try { Expand-Archive -Path $args[0] -DestinationPath $args[1] -Force; exit 0 } catch { Write-Host ('Extract failed: ' + $_.Exception.Message); exit 1 }" "%PYZIP%" "%PYDIR%"
 if errorlevel 1 (
     echo   ERROR: Could not extract Python zip. Install manually.
-    call :log "FATAL: extract of embeddable Python zip failed."
+    call :log "FATAL: extract of embeddable Python zip failed (ZIP=%PYZIP%, DIR=%PYDIR%)."
     pause
     exit /b 1
 )
 call :log "Extracted Python to %PYDIR%."
 
-if not exist "%PYDIR%\python.exe" (
-    echo   ERROR: python.exe missing in %PYDIR% after extract. Install manually.
-    call :log "FATAL: python.exe missing after extract."
+if not exist "%PYEXE%" (
+    echo   ERROR: %PYEXE% missing after extract. Install manually.
+    call :log "FATAL: python.exe missing after extract (expected at %PYEXE%)."
     pause
     exit /b 1
 )
@@ -156,8 +160,6 @@ REM Embeddable zip ships python.exe + python312._pth (which DISABLES site-packag
 REM AND pip). Patch python312._pth so site-packages work, then bootstrap pip.
 set "PYPTH=%PYDIR%\python312._pth"
 if exist "%PYPTH%" (
-    REM Remove the leading '#' from '#import site' (and from any '#python.exe -s' line
-    REM that explicitly strips the path). PowerShell handles this via arg-passing too.
     powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=$args[0]; $c=Get-Content $p; $c=$c -replace '^#import site','import site'; $c | Set-Content $p" "%PYPTH%"
     call :log "Patched %PYPTH% to enable site-packages."
 )
@@ -167,7 +169,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='
 if errorlevel 1 (
     call :log "WARN: get-pip.py download failed; continuing without pip."
 ) else (
-    "%PYDIR%\python.exe" "%GETPIP%" --no-warn-script-location >nul 2>&1
+    "%PYEXE%" "%GETPIP%" --no-warn-script-location >nul 2>&1
     if errorlevel 1 (
         call :log "WARN: get-pip.py bootstrap failed; pip may be unavailable."
     ) else (
@@ -175,15 +177,17 @@ if errorlevel 1 (
     )
 )
 
-set "PY=\"%PYDIR%\python.exe\""
+REM %PY% holds the RAW path (no embedded quotes). Call sites use call "%PY%".
+set "PY=%PYEXE%"
 call :validate_py
 if errorlevel 1 (
     echo.
     echo   ERROR: Embeddable Python did not validate. Dumping details:
-    echo   %PYDIR%\python.exe --version:
-    call %PY% --version 2>&1
-    echo   %PYDIR%\python.exe -m pip --version:
-    call %PY% -m pip --version 2>&1
+    echo   PYEXE=%PYEXE%
+    echo   "%PYEXE%" --version:
+    call "%PYEXE%" --version 2>&1
+    echo   "%PYEXE%" -m pip --version:
+    call "%PYEXE%" -m pip --version 2>&1
     echo.
     echo   Install Python manually from https://www.python.org/downloads/
     echo   ^(tick "Add python.exe to PATH"^) then run this again.
