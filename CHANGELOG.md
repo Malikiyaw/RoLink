@@ -1,5 +1,7 @@
 # Changelog
-## 1.1.5 - ZeroScript-style bridge + Python 3.14 fix + simple extension
+## 1.1.6 - Fix process_request signature for websockets.asyncio.server
+- `bridge.py`: the new `websockets.asyncio.server` API passes `(connection, request)` to `process_request` (where `request` is a `websockets.http11.Request` object with `.path`/`.headers`), not the old `(path, request_headers)` tuple. Old signature raised `AttributeError: 'ServerConnection' object has no attribute 'split'` on every WS handshake. Now we read `request.path` and use `connection.respond(200, body)` for the health endpoint.
+- Sync 1.1.6 across all versioned files.
 - **bridge.py crash fix on Python 3.14:** the `serve(..., process_request=..., sock=_sock)` combo failed silently (the legacy `from websockets.server import serve` import + own-bound `sock` is the deprecated code path). Switched to the new `from websockets.asyncio.server import serve` import with `serve(..., process_request=...)` only. start.bat reclaims the port, so SO_REUSEADDR is no longer needed.
 - **ZeroScript-style bridge:** the bridge now auto-spawns `launch_studio_mcp.py` as the only MCP server (no Node mcp-server / no `npm run build` needed). A new `config.json` ships with `{"mcpServers":{"roblox":{"command":"launch_studio_mcp.py","args":[]}}}` so the bridge talks to Roblox Studio out of the box.
 - **ZeroScript-style WS protocol in bridge.py:** new message types `list_tools`, `call_tool` (with `server/tool` routing), `restart_mcp`, `add_server`/`remove_server` (auto-write config.json), `studio_status` (tasklist-based Roblox Studio app probe), `ping` → `pong`. Backward-compatible with the legacy method-style frames.

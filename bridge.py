@@ -17,7 +17,7 @@ except ImportError:
     print("[RoLink] missing websockets — run: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
-BRIDGE_VERSION = "1.1.5"
+BRIDGE_VERSION = "1.1.6"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT") or "17613")
 CONFIG_PATH = pathlib.Path(__file__).parent / "config.json"
 STUDIO_MCP_PORT = 13469  # Studio MCP squatter detection
@@ -328,18 +328,36 @@ async def health_handler(reader, writer):
         try: writer.close()
         except: pass
 
-async def http_ws_process_request(path, request_headers):
-    # websockets process_request hook: serve health on HTTP GET, else WS upgrade
-    clean = path.split("?")[0] if path else "/"
-    if clean in ("/health", "/health/", "/"):
-        if request_headers.get("Upgrade", "").lower() != "websocket":
-            tools_count = 0
-            try:
-                for c in servers.values():
-                    if c.proc and c.proc.poll() is None: tools_count += max(0, len(c.tools_cache or []))
-            except Exception: pass
-            body = json.dumps({"ok":True,"version":BRIDGE_VERSION,"bridge":PORT,"clients":len(clients),"servers":list(servers.keys()),"tools":tools_count,"uptime": int(time.time()-start_time)}).encode()
-            return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*"),("Content-Length",str(len(body)))], body)
+async def http_ws_process_request(connection, request):
+    # New websockets.asyncio.server API: process_request(connection, request)
+    # where request is a websockets.http11.Request with .path and .headers.
+    # Older API was process_request(path, request_headers) - that signature
+    # raises "ServerConnection has no attribute 'split'" on the new lib.
+    try:
+        path = getattr(request, "path", "/")
+        headers = getattr(request, "headers", None)
+        # In websockets 13+, headers is a Headers() mapping; in 12 it's a
+        # multidict. Both support .get() with a default.
+        def _hget(name):
+            if headers is None: return ""
+            try: return headers.get(name, "")
+            except Exception: return ""
+        if path.split("?")[0] in ("/health", "/health/", "/"):
+            if _hget("Upgrade").lower() != "websocket":
+                tools_count = 0
+                try:
+                    for c in servers.values():
+                        if c.proc and c.proc.poll() is None:
+                            tools_count += max(0, len(c.tools_cache or []))
+                except Exception: pass
+                body = json.dumps({
+                    "ok": True, "version": BRIDGE_VERSION, "bridge": PORT,
+                    "clients": len(clients), "servers": list(servers.keys()),
+                    "tools": tools_count, "uptime": int(time.time() - start_time),
+                }).encode()
+                return connection.respond(200, body)
+    except Exception as e:
+        log(f"process_request error: {e}", "warn")
     return None
 
 async def main():
