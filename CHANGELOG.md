@@ -1,4 +1,11 @@
 # Changelog
+## 1.0.9 - Fix embeddable-Python direct-download fallback
+- `start.bat` direct-download fallback: pass URLs/paths to PowerShell as **arguments** (`$args[N]`) instead of via `%VAR%` inside the `-Command` string, so paths with spaces or special chars can never mangle the command.
+- Validate the extracted `python.exe` exists *before* calling validate (clearer error if Expand-Archive silently dropped nothing).
+- `python312._pth` patch now also uncomments any `#python.exe -s` line that strips the path.
+- On `validate_py` failure, dump `python --version` and `pip --version` output to the console so the failure mode is obvious (no more silent "Embeddable Python did not validate" with no detail).
+- Sync 1.0.9 across all versioned files.
+
 ## 1.0.8 - Auto-install Python via direct download when winget is broken
 - `start.bat` now falls back to downloading the official Python 3.12 embeddable zip from python.org when winget is missing OR when winget fails with errors like `0x8a15000f : Data required by the source is missing` (common on corporate / locked-down Windows where the winget source DB is broken or restricted).
 - The embeddable zip is self-contained, no admin / no MSI, extracts to `%LOCALAPPDATA%\Programs\Python\RoLinkPython312`. Patches `python312._pth` to enable `site-packages` and bootstraps `pip` from `bootstrap.pypa.io/get-pip.py` so `pip install websockets` still works.

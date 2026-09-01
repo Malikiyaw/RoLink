@@ -119,63 +119,75 @@ echo.
 set "PYDIR=%LOCALAPPDATA%\Programs\Python\RoLinkPython312"
 set "PYZIP=%TEMP%\rolink-python312.zip"
 set "PYURL=https://www.python.org/ftp/python/3.12.7/python-3.12.7-embed-amd64.zip"
+set "GETPIP=%TEMP%\rolink-get-pip.py"
+set "GETPIPURL=https://bootstrap.pypa.io/get-pip.py"
 
-where powershell >nul 2>nul
-if errorlevel 1 (
-    echo   ERROR: winget failed and PowerShell is not available, so the direct
-    echo   download fallback cannot run.
-    echo.
-    echo   Install Python manually: https://www.python.org/downloads/
-    echo   Tick "Add python.exe to PATH" then run this again.
-    echo.
-    call :log "FATAL: no winget and no powershell for direct download."
-    pause
-    exit /b 1
-)
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%PYURL%' -OutFile '%PYZIP%' -UseBasicParsing; exit 0 } catch { Write-Host ('Download failed: ' + $_.Exception.Message); exit 1 }"
+REM Use PowerShell for download (more reliable than bitsadmin on Win10+).
+REM Note: we pass URLs as ARGUMENTS, not via %VAR% inside the -Command string,
+REM so PowerShell's quoting / cmd's %-expansion can never mangle the URLs.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing; exit 0 } catch { Write-Host ('Download failed: ' + $_.Exception.Message); exit 1 }" "%PYURL%" "%PYZIP%"
 if errorlevel 1 (
     echo   ERROR: Direct download failed. Install Python manually from
     echo   https://www.python.org/downloads/ ^(tick "Add python.exe to PATH"^).
-    call :log "FATAL: direct python.org download failed."
+    call :log "FATAL: direct python.org download failed (URL=%PYURL%)."
     pause
     exit /b 1
 )
+call :log "Downloaded Python embeddable zip to %PYZIP%."
 
 if not exist "%PYDIR%" mkdir "%PYDIR%" >nul 2>nul
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "Expand-Archive -Path '%PYZIP%' -DestinationPath '%PYDIR%' -Force"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; try { Expand-Archive -Path $args[0] -DestinationPath $args[1] -Force; exit 0 } catch { Write-Host ('Extract failed: ' + $_.Exception.Message); exit 1 }" "%PYZIP%" "%PYDIR%"
 if errorlevel 1 (
     echo   ERROR: Could not extract Python zip. Install manually.
     call :log "FATAL: extract of embeddable Python zip failed."
     pause
     exit /b 1
 )
+call :log "Extracted Python to %PYDIR%."
+
+if not exist "%PYDIR%\python.exe" (
+    echo   ERROR: python.exe missing in %PYDIR% after extract. Install manually.
+    call :log "FATAL: python.exe missing after extract."
+    pause
+    exit /b 1
+)
 
 REM Embeddable zip ships python.exe + python312._pth (which DISABLES site-packages
-REM and pip). Patch python312._pth so pip + site-packages work, then bootstrap pip.
+REM AND pip). Patch python312._pth so site-packages work, then bootstrap pip.
 set "PYPTH=%PYDIR%\python312._pth"
 if exist "%PYPTH%" (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        "$p='%PYPTH%'; $c=Get-Content $p; if ($c -notmatch '^#import site') { $c = $c -replace '^#import site','import site' }; $c | Set-Content $p"
+    REM Remove the leading '#' from '#import site' (and from any '#python.exe -s' line
+    REM that explicitly strips the path). PowerShell handles this via arg-passing too.
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=$args[0]; $c=Get-Content $p; $c=$c -replace '^#import site','import site'; $c | Set-Content $p" "%PYPTH%"
     call :log "Patched %PYPTH% to enable site-packages."
 )
 
-set "GETPIP=%TEMP%\rolink-get-pip.py"
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "try { Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%GETPIP%' -UseBasicParsing; exit 0 } catch { exit 1 }"
-if not errorlevel 1 (
-    call "%PYDIR%\python.exe" "%GETPIP%" --no-warn-script-location >nul 2>&1
-    call :log "Bootstrap pip into embeddable Python."
+REM Bootstrap pip into the embeddable Python.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri $args[0] -OutFile $args[1] -UseBasicParsing; exit 0 } catch { Write-Host ('get-pip download failed: ' + $_.Exception.Message); exit 1 }" "%GETPIPURL%" "%GETPIP%"
+if errorlevel 1 (
+    call :log "WARN: get-pip.py download failed; continuing without pip."
+) else (
+    "%PYDIR%\python.exe" "%GETPIP%" --no-warn-script-location >nul 2>&1
+    if errorlevel 1 (
+        call :log "WARN: get-pip.py bootstrap failed; pip may be unavailable."
+    ) else (
+        call :log "Bootstrapped pip into embeddable Python."
+    )
 )
 
 set "PY=\"%PYDIR%\python.exe\""
 call :validate_py
 if errorlevel 1 (
-    echo   ERROR: Embeddable Python did not validate. Install manually from
-    echo   https://www.python.org/downloads/ ^(tick "Add python.exe to PATH"^).
-    call :log "FATAL: embeddable Python failed validation."
+    echo.
+    echo   ERROR: Embeddable Python did not validate. Dumping details:
+    echo   %PYDIR%\python.exe --version:
+    call %PY% --version 2>&1
+    echo   %PYDIR%\python.exe -m pip --version:
+    call %PY% -m pip --version 2>&1
+    echo.
+    echo   Install Python manually from https://www.python.org/downloads/
+    echo   ^(tick "Add python.exe to PATH"^) then run this again.
+    call :log "FATAL: embeddable Python failed validation. See console above."
     pause
     exit /b 1
 )
