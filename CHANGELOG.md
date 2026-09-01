@@ -1,4 +1,10 @@
 # Changelog
+## 1.0.7 - start.bat vanish fix (ZeroScript-style rewrite)
+- Rewrite `start.bat` to match ZeroScript's vanishing-free structure: `call %PY%` everywhere (handles `py -3` two-token + quoted full path), `!OLDPID!`/`!STILLTHERE!` delayed-expansion in the port-reclaim block, single bottom-of-script `pause >nul` + `exit /b 0`, and `:log` sub using redirect-first `>>"%LOGFILE%" 2>nul echo(`.
+- Replace `->` with ASCII `^>` / `-` to avoid chcp 65001 race.
+- Add clearer Python-not-found / winget-missing error paths and an `rolink-extension` missing-guard.
+- Sync version 1.0.7 across `VERSION`, `bridge.py`, `launch_studio_mcp.py`, `manifest.json`, `core/config.js`, `popup.html`, `mcp-server/package.json`.
+
 ## 1.0.6 - CSP fix + start.bat vanish fix
 - Extract inline `<script>` from `rolink-extension/options.html:8` into external `rolink-extension/options.js` to fix MV3 inline-script block under default CSP `script-src 'self'`.
 - Rewrite `start.bat` (own code, SPDX header only): remove `cmd /c` relaunch guard (was causing window vanish), normalize `->` (no Unicode arrow), keep window open on exit via `pause >nul`, validate Python with `where py` then `%LOCALAPPDATA%\Programs\Python` scan, guard `winget` via `where winget`, reclaim :17613 with `taskkill /F /T` + `timeout /t 1 /nobreak`, log everything to `logs/start.log` via `:log` sub.

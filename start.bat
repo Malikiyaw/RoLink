@@ -4,154 +4,203 @@ setlocal enabledelayedexpansion
 chcp 65001 >nul
 title RoLink Bridge
 cd /d "%~dp0"
+
 if not exist "%~dp0logs" mkdir "%~dp0logs" >nul 2>nul
 set "LOGFILE=%~dp0logs\start.log"
-call :log "===== %DATE% %TIME% start.bat launched ====="
+call :log "===== %DATE% %TIME%  start.bat launched ====="
 for /f "tokens=*" %%v in ('ver') do call :log "%%v"
 
-REM --- Guard: must be extracted, not zip preview ---
+echo.
+echo   === RoLink Bridge ===
+echo.
+
 if not exist "%~dp0bridge.py" (
-  echo [ERROR] bridge.py not found. Extract the zip first (right-click -> Extract All...).
-  echo Then run start.bat from the extracted folder.
-  call :log "ERROR zip preview bridge.py missing"
-  pause
-  exit /b 1
-)
-if not exist "%~dp0rolink-extension\manifest.json" (
-  echo [WARN] rolink-extension\manifest.json missing - extension will not load.
-  call :log "WARN extension missing"
-)
-
-REM --- Find Python >=3.9 ---
-set "PY="
-call :find_python
-if not defined PY (
-  echo [RoLink] Python 3.9+ not found. Trying winget...
-  call :log "winget install Python"
-  where winget >nul 2>&1
-  if not errorlevel 1 (
-    winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements >nul 2>&1
-    call :find_python
-  )
-)
-if not defined PY (
-  echo [ERROR] Python 3.9+ not found. Install from https://python.org/downloads
-  call :log "ERROR python not found post winget"
-  pause
-  exit /b 1
-)
-call :log "Using PY=%PY%"
-
-REM --- Validate Python ---
-call :validate_py
-if errorlevel 1 (
-  echo [ERROR] Python validation failed. Need 3.9+ with pip.
-  pause
-  exit /b 1
-)
-
-REM --- websockets dep ---
-%PY% -c "import websockets" 2>nul
-if errorlevel 1 (
-  echo [RoLink] Installing websockets...
-  call :log "pip install websockets"
-  %PY% -m pip install --user websockets >> "%LOGFILE%" 2>&1
-  %PY% -c "import websockets" 2>nul
-  if errorlevel 1 (
-    echo [ERROR] Failed to install websockets. Check logs\start.log
-    call :log "ERROR pip install websockets failed"
+    echo   ERROR: bridge.py not found next to start.bat.
+    echo.
+    echo   If you opened start.bat from inside the downloaded ZIP, first EXTRACT
+    echo   the whole ZIP ^(right-click, "Extract All..."^), then run start.bat
+    echo   from the extracted folder.
+    echo.
+    call :log "FATAL: bridge.py missing next to start.bat (run from inside ZIP?)."
     pause
     exit /b 1
-  )
+)
+if not exist "%~dp0rolink-extension\manifest.json" (
+    echo   WARN: rolink-extension\manifest.json not found - the browser extension
+    echo   will not load. Re-download / re-extract the ZIP.
+    call :log "WARN: rolink-extension missing."
 )
 
-REM --- Reclaim :17613 ---
-set "PORTBUSY=0"
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr /C:":17613" ^| findstr LISTENING 2^>nul') do (
-  echo [RoLink] Port 17613 busy, killing PID %%a
-  call :log "killing 17613 pid %%a"
-  taskkill /F /T /PID %%a >nul 2>&1
-  timeout /t 1 /nobreak >nul 2>&1
-  set "PORTBUSY=1"
+REM --- 1. Find Python ---------------------------------------------------------
+echo   [1/3] Looking for Python...
+set "PY="
+
+where py >nul 2>nul && set "PY=py -3"
+call :validate_py && goto :found
+
+set "PY=python"
+call :validate_py && goto :found
+
+for %%R in (
+    "%LOCALAPPDATA%\Programs\Python"
+    "%ProgramFiles%"
+    "%ProgramFiles(x86)%"
+) do (
+    if exist "%%~R" (
+        for /f "delims=" %%D in ('dir /b /ad /o-n "%%~R\Python3*" 2^>nul') do (
+            if exist "%%~R\%%D\python.exe" (
+                set PY="%%~R\%%D\python.exe"
+                call :validate_py && goto :found
+            )
+        )
+    )
 )
-netstat -aon | findstr /C:":17613" | findstr LISTENING >nul 2>&1
-if not errorlevel 1 (
-  echo [WARN] Port 17613 still busy. Close other RoLink bridges.
-  call :log "WARN port still busy"
+
+set "PY="
+call :log "Python not found on PATH or in standard install folders."
+goto :need_install
+
+:found
+for /f "tokens=*" %%v in ('call %PY% --version 2^>^&1') do (
+    echo         Found: %PY%  ^(%%v^)
+    call :log "Python found: %PY% (%%v)"
+)
+goto :install_deps
+
+:need_install
+where winget >nul 2>nul
+if errorlevel 1 (
+    echo   ERROR: Python is not installed and winget ^(Windows package manager^)
+    echo   is not available on this PC, so it cannot be installed automatically.
+    echo.
+    echo   Install Python manually: https://www.python.org/downloads/
+    echo   IMPORTANT: tick "Add python.exe to PATH", then run start.bat again.
+    echo.
+    call :log "FATAL: no Python and no winget on this machine."
+    pause
+    exit /b 1
+)
+echo         Not found. Installing via winget...
+echo.
+winget install --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
+if errorlevel 1 call :log "winget install returned an error (see console output above)."
+echo.
+echo   Checking again...
+set "PY=py -3"
+call :validate_py && goto :ready
+set "PY=python"
+call :validate_py && goto :ready
+for %%R in (
+    "%LOCALAPPDATA%\Programs\Python"
+    "%ProgramFiles%"
+    "%ProgramFiles(x86)%"
+) do (
+    if exist "%%~R" (
+        for /f "delims=" %%D in ('dir /b /ad /o-n "%%~R\Python3*" 2^>nul') do (
+            if exist "%%~R\%%D\python.exe" (
+                set PY="%%~R\%%D\python.exe"
+                call :validate_py && goto :ready
+            )
+        )
+    )
+)
+echo.
+echo   ERROR: Python not found after install.
+echo   Install manually: https://www.python.org/downloads/
+echo   Tick "Add python.exe to PATH" then run this again.
+echo.
+call :log "FATAL: no usable Python found even after winget install."
+pause
+exit /b 1
+:ready
+echo         Python ready!
+call :log "Python ready after winget install: %PY%"
+
+:install_deps
+REM --- 2. Install websockets --------------------------------------------------
+echo.
+echo   [2/3] Checking websockets library...
+call %PY% -c "import websockets" >nul 2>nul
+if errorlevel 1 (
+    echo         Installing websockets - first time only...
+    call %PY% -m pip install --user websockets
+    if errorlevel 1 (
+        echo.
+        echo   ERROR: Could not install websockets ^(see pip output above^).
+        echo   Common causes: no internet, a firewall/antivirus blocking pip,
+        echo   or Python has no working pip. If you used the Microsoft Store
+        echo   python, install from https://www.python.org/downloads/ instead
+        echo   ^(tick "Add to PATH"^).
+        echo.
+        call :log "FATAL: pip install websockets failed."
+        pause
+        exit /b 1
+    )
+)
+echo         OK
+call :log "websockets library OK"
+
+REM --- 3. Run the bridge ------------------------------------------------------
+echo.
+echo   [3/3] Starting bridge...
+
+set "OLDPID="
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr :17613 ^| findstr LISTENING 2^>nul') do (
+    set "OLDPID=%%a"
+)
+if defined OLDPID (
+    echo         A previous bridge ^(pid !OLDPID!^) is already running on this port.
+    echo         Replacing it with this new instance...
+    call :log "Killing previous bridge instance (pid !OLDPID!) on port 17613."
+    taskkill /F /T /PID !OLDPID! >nul 2>nul
+    timeout /t 1 /nobreak >nul
+    set "STILLTHERE="
+    for /f "tokens=5" %%a in ('netstat -aon ^| findstr :17613 ^| findstr LISTENING 2^>nul') do (
+        set "STILLTHERE=%%a"
+    )
+    if defined STILLTHERE (
+        echo.
+        echo   WARNING: port 17613 is still held by pid !STILLTHERE! after trying
+        echo   to close the previous bridge. If the bridge below fails to start,
+        echo   close that process manually in Task Manager ^(or restart Windows^)
+        echo   and run start.bat again.
+        echo.
+        call :log "WARNING: port 17613 still held by pid !STILLTHERE! after taskkill."
+    )
 )
 
 echo.
-echo ============================================
-echo  RoLink Bridge running -- KEEP THIS WINDOW OPEN
-echo  Bridge: ws://127.0.0.1:17613
-echo  Next: load rolink-extension in chrome://extensions
-echo  Then open chat.deepseek.com / chatgpt.com etc.
-echo ============================================
+echo  ############################################################
+echo  ##                                                        ##
+echo  ##   KEEP THIS TERMINAL OPEN - DO NOT CLOSE THIS WINDOW   ##
+echo  ##                                                        ##
+echo  ##   RoLink stops working if you close it. Just           ##
+echo  ##   minimize this window and leave it running.           ##
+echo  ##                                                        ##
+echo  ############################################################
 echo.
-call :log "launch bridge.py"
-"%PY%" "%~dp0bridge.py"
+call :log "Launching bridge.py with %PY%"
+call %PY% "%~dp0bridge.py"
 set "BRIDGE_EXIT=%errorlevel%"
+call :log "bridge.py exited with code %BRIDGE_EXIT%"
+
 echo.
 if not "%BRIDGE_EXIT%"=="0" (
-  echo [RoLink] Bridge exited with code %BRIDGE_EXIT% - check logs\start.log
-  call :log "ERROR bridge exit %BRIDGE_EXIT%"
+    echo   Bridge stopped with ERROR code %BRIDGE_EXIT% - scroll up for the Python
+    echo   error message and include THIS WHOLE WINDOW in any bug report.
+    echo   Log file: logs\start.log
 ) else (
-  echo [RoLink] Bridge stopped normally
-  call :log "bridge exit 0"
+    echo   Bridge stopped normally.
 )
+echo   Press any key to close.
 pause >nul
-exit /b %BRIDGE_EXIT%
-
-:find_python
-REM Try py -3 first (avoids Store stub)
-where py >nul 2>&1
-if not errorlevel 1 (
-  py -3 --version >nul 2>&1
-  if not errorlevel 1 (
-    for /f "tokens=*" %%i in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PY=%%i"
-    if defined PY exit /b 0
-  )
-)
-REM Try python but skip WindowsApps stub (pip check)
-where python >nul 2>&1
-if not errorlevel 1 (
-  python -m pip --version >nul 2>&1
-  if not errorlevel 1 (
-    for /f "tokens=*" %%i in ('python -c "import sys; print(sys.executable)" 2^>nul') do set "PY=%%i"
-    if defined PY exit /b 0
-  )
-)
-REM Scan common locations newest first
-for %%B in ("%LOCALAPPDATA%\Programs\Python" "%ProgramFiles%" "%ProgramFiles(x86)%") do (
-  if exist "%%~B\Python3*" (
-    for /f "delims=" %%P in ('dir /b /o-n "%%~B\Python3*" 2^>nul') do (
-      if exist "%%~B\%%P\python.exe" (
-        "%%~B\%%P\python.exe" -m pip --version >nul 2>&1
-        if not errorlevel 1 (
-          set "PY=%%~B\%%P\python.exe"
-          exit /b 0
-        )
-      )
-    )
-  )
-)
 exit /b 0
 
 :validate_py
-%PY% -c "import sys; assert sys.version_info >= (3,9), 'need 3.9'" 2>nul
-if errorlevel 1 (
-  echo [ERROR] Python below 3.9. Please update.
-  call :log "ERROR python <3.9"
-  exit /b 1
-)
-%PY% -m pip --version >nul 2>&1
-if errorlevel 1 (
-  echo [ERROR] pip not found for %PY%
-  call :log "ERROR pip missing"
-  exit /b 1
-)
-exit /b 0
+call %PY% -m pip --version >nul 2>nul || exit /b 1
+call %PY% -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>nul
+exit /b %errorlevel%
 
 :log
->>"%LOGFILE%" 2>nul echo(%~1 %~2 %~3 %~4 %~5 %~6 %~7 %~8 %~9
+>>"%LOGFILE%" 2>nul echo(%~1
 exit /b 0

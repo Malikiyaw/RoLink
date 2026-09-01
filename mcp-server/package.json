@@ -1,6 +1,6 @@
 {
   "name": "rolink-mcp-server",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "RoLink MCP server - bridge between AI and Roblox Studio",
   "type": "module",
   "scripts": {
