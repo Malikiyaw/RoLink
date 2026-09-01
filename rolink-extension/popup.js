@@ -11,4 +11,11 @@ async function check(){
 check(); setInterval(check,3000);
 document.getElementById("reconnect").onclick=check;
 document.getElementById("restart").onclick=async()=>{ try{ await fetch("http://127.0.0.1:17613",{method:"POST",body:JSON.stringify({id:"rst",method:"restart"})}); }catch{} chrome.tabs.reload(); };
-document.getElementById("settings").onclick=()=> chrome.runtime.openOptionsPage?.();
+document.getElementById("settings").onclick=()=>{
+  if(chrome.runtime.openOptionsPage){
+    try{ chrome.runtime.openOptionsPage(()=>{ if(chrome.runtime.lastError) window.open(chrome.runtime.getURL("options.html")); }); }
+    catch{ window.open(chrome.runtime.getURL("options.html")); }
+  } else {
+    window.open(chrome.runtime.getURL("options.html"));
+  }
+};
