@@ -1,4 +1,11 @@
 # Changelog
+## 1.1.0 - Fix embedded-quote bug in start.bat direct-download fallback
+- `start.bat` `:direct_dl`: `set "PY=\"%PYDIR%\python.exe\""` was the bug — cmd's quote-stripping turned the value into literal `\"...\""`, which then broke every later `call %PY%` invocation (path lost its drive letter, e.g. `'\python.exe\"'`).
+- Variables now hold RAW paths/URLs (no embedded quotes); call sites use `call "%PYEXE%" --version`. The download URLs and the python.exe path are stored in separate variables (`PYEXE`, `PYURL`, `PYZIP`, `GETPIP`, `GETPIPURL`, `PYDIR`).
+- Diagnostic block on `validate_py` failure now prints `PYEXE=...` once, then `call "%PYEXE%" --version` and `call "%PYEXE%" -m pip --version` with proper quoting.
+- All `:log` lines now include the offending var values so future failures are self-diagnosing.
+- Sync 1.1.0 across all versioned files.
+
 ## 1.0.9 - Fix embeddable-Python direct-download fallback
 - `start.bat` direct-download fallback: pass URLs/paths to PowerShell as **arguments** (`$args[N]`) instead of via `%VAR%` inside the `-Command` string, so paths with spaces or special chars can never mangle the command.
 - Validate the extracted `python.exe` exists *before* calling validate (clearer error if Expand-Archive silently dropped nothing).
