@@ -42,6 +42,18 @@
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const log = (...a) => console.log("[rolink]", ...a);
 
+  // ── diagnostics: 300-slot ring buffer for postmortem debugging ────────────
+  function diag(event, data){
+    try{
+      const entry = { t: Date.now(), event, data };
+      A.diag.push(entry);
+      while(A.diag.length > 300) A.diag.shift();
+      if(window.console && console.debug){
+        console.debug("[rolink.diag]", event, data || "");
+      }
+    }catch{}
+  }
+
   // ── chrome.runtime bridge ──────────────────────────────────────────────────
   let bgAvailable = !!(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id);
   function bg(msg){

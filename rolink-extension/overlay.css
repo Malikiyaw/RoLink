@@ -369,3 +369,25 @@
 .rl-tool-hide, .rl-tool-hide-wrap {
   display: none !important;
 }
+
+/* ── Camouflage: hide entire items (system prompt, injected tool results) ── */
+.rl-hidden {
+  display: none !important;
+}
+
+/* ── Launcher: loading state (Starting…) — shows an inline spinner ────── */
+.rl-launcher.is-starting {
+  background: linear-gradient(135deg, rgba(155,89,182,0.95), rgba(122,58,178,0.95));
+  cursor: wait;
+}
+.rl-spinner-inline {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: rl-spin 0.7s linear infinite;
+}
+@keyframes rl-spin {
+  to { transform: rotate(360deg); }
+}

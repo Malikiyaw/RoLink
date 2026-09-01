@@ -1,4 +1,49 @@
 # Changelog
+## 2.3.0 - Start button loading state, AI greeting, sysResendDue, camouflage, inputCover, diagnostics
+The user reported: "when i click the start agent buttons theres must be a loading
+starting just like the zerodev to active the bridge ... that ai web chat just
+gonna say im ready and the user can chat whatever he can chat".
+
+Fixes:
+- **Start button has a proper loading state**: clicking Start now shows a
+  purple "Starting…" pill with an inline spinner (CSS @keyframes spin).
+  When the system prompt is sent, it transitions to the red "■ Stop
+  agent" pill. When the user stops, it returns to the blue "▶ Start
+  RoLink agent" pill.
+- **Bridge-status preflight at Start**: before sending the system prompt,
+  the agent pings the bridge. If the bridge is offline, the user sees
+  a red banner "Bridge offline — run start.bat" and the start is
+  aborted (no half-baked session). If the bridge is up but Studio's
+  MCP server isn't, a warning banner. If everything is connected, a
+  green "Bridge connected · 28 tools · Studio ready" message in the
+  activity feed.
+- **AI greeting**: the new STARTER tells the model to call
+  `get_studio_state` and then reply with one short line ending in
+  "What would you like to build?" — so the user gets a clear "I'm
+  ready" message after clicking Start, and types their actual request
+  next (which auto-re-arms the agent loop via `onUserMessage`).
+- **`sysResendDue` per-conversation system-prompt re-injection**: some
+  sites (esp. ChatGPT) summarize their own context mid-conversation
+  and drop the MECHANISM ("I cannot run commands" failure). The agent
+  now re-anchors the system prompt on the next injected tool result
+  every 12 user turns or 8 tool results, persisted in chrome.storage
+  per conversation so it survives page reloads. Rides on the
+  tool-result carrier — free, invisible to the user.
+- **Camouflage**: the MutationObserver now also hides entire turn
+  elements whose text matches the system-prompt marker OR starts with
+  `[Tool result for X]` / `[Tool error for X]`. So the user sees clean
+  AI replies + tool chips, not the raw injected feedback text.
+- **`inputCover` transparent overlay**: during every agent inject
+  (system prompt, tool result, nudge), a transparent overlay with
+  "🔄 Agent working…" is placed over the input box so the user
+  can't accidentally type or click and abort the send. Removed
+  automatically when inject finishes.
+- **Diagnostics ring buffer**: 300-slot ring of `{t, event, data}`
+  entries for postmortem debugging. `window.ROLINK.diag()` to dump.
+  Every key event (startSession, dispatch, system-prompt rider,
+  loop end) is logged.
+- Version bump 2.2.0 → 2.3.0.
+
 ## 2.2.0 - studio_id auto-inject + agent loop re-arms on user message
 After the 2.1.2 "auto-inject datamodel_type" fix, the bridge revealed
 a SECOND required arg: `studio_id`. Nearly every tool requires it. The
