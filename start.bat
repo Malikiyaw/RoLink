@@ -69,49 +69,120 @@ goto :install_deps
 
 :need_install
 where winget >nul 2>nul
-if errorlevel 1 (
-    echo   ERROR: Python is not installed and winget ^(Windows package manager^)
-    echo   is not available on this PC, so it cannot be installed automatically.
+set "WINGET_OK=1"
+if errorlevel 1 set "WINGET_OK=0"
+
+if "%WINGET_OK%"=="1" (
+    echo         Not found. Trying winget first...
     echo.
-    echo   Install Python manually: https://www.python.org/downloads/
-    echo   IMPORTANT: tick "Add python.exe to PATH", then run start.bat again.
+    winget install --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 (
+        call :log "winget install failed (errorlevel=%errorlevel%). Falling back to direct download."
+        echo.
+        echo         winget failed - downloading Python directly from python.org...
+        echo.
+        goto :direct_dl
+    )
     echo.
-    call :log "FATAL: no Python and no winget on this machine."
-    pause
-    exit /b 1
-)
-echo         Not found. Installing via winget...
-echo.
-winget install --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
-if errorlevel 1 call :log "winget install returned an error (see console output above)."
-echo.
-echo   Checking again...
-set "PY=py -3"
-call :validate_py && goto :ready
-set "PY=python"
-call :validate_py && goto :ready
-for %%R in (
-    "%LOCALAPPDATA%\Programs\Python"
-    "%ProgramFiles%"
-    "%ProgramFiles(x86)%"
-) do (
-    if exist "%%~R" (
-        for /f "delims=" %%D in ('dir /b /ad /o-n "%%~R\Python3*" 2^>nul') do (
-            if exist "%%~R\%%D\python.exe" (
-                set PY="%%~R\%%D\python.exe"
-                call :validate_py && goto :ready
+    echo   Checking again after winget...
+    set "PY=py -3"
+    call :validate_py && goto :ready
+    set "PY=python"
+    call :validate_py && goto :ready
+    for %%R in (
+        "%LOCALAPPDATA%\Programs\Python"
+        "%ProgramFiles%"
+        "%ProgramFiles(x86)%"
+    ) do (
+        if exist "%%~R" (
+            for /f "delims=" %%D in ('dir /b /ad /o-n "%%~R\Python3*" 2^>nul') do (
+                if exist "%%~R\%%D\python.exe" (
+                    set PY="%%~R\%%D\python.exe"
+                    call :validate_py && goto :ready
+                )
             )
         )
     )
+    call :log "winget returned OK but no Python found on PATH. Falling back to direct download."
 )
+
+:direct_dl
+REM --- Direct download fallback: embeddable Python 3.12 zip --------------------
+REM Winget on corporate / restricted Windows often fails with
+REM "0x8a15000f : Data required by the source is missing" (broken winget source).
+REM The embeddable zip from python.org is a self-contained, NO-INSTALLER,
+REM NO-ADMIN bundle that extracts to a folder and just works. This is the most
+REM reliable fallback on locked-down machines.
 echo.
-echo   ERROR: Python not found after install.
-echo   Install manually: https://www.python.org/downloads/
-echo   Tick "Add python.exe to PATH" then run this again.
+echo   Downloading Python 3.12 (embeddable, no admin needed) from python.org...
 echo.
-call :log "FATAL: no usable Python found even after winget install."
-pause
-exit /b 1
+set "PYDIR=%LOCALAPPDATA%\Programs\Python\RoLinkPython312"
+set "PYZIP=%TEMP%\rolink-python312.zip"
+set "PYURL=https://www.python.org/ftp/python/3.12.7/python-3.12.7-embed-amd64.zip"
+
+where powershell >nul 2>nul
+if errorlevel 1 (
+    echo   ERROR: winget failed and PowerShell is not available, so the direct
+    echo   download fallback cannot run.
+    echo.
+    echo   Install Python manually: https://www.python.org/downloads/
+    echo   Tick "Add python.exe to PATH" then run this again.
+    echo.
+    call :log "FATAL: no winget and no powershell for direct download."
+    pause
+    exit /b 1
+)
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%PYURL%' -OutFile '%PYZIP%' -UseBasicParsing; exit 0 } catch { Write-Host ('Download failed: ' + $_.Exception.Message); exit 1 }"
+if errorlevel 1 (
+    echo   ERROR: Direct download failed. Install Python manually from
+    echo   https://www.python.org/downloads/ ^(tick "Add python.exe to PATH"^).
+    call :log "FATAL: direct python.org download failed."
+    pause
+    exit /b 1
+)
+
+if not exist "%PYDIR%" mkdir "%PYDIR%" >nul 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "Expand-Archive -Path '%PYZIP%' -DestinationPath '%PYDIR%' -Force"
+if errorlevel 1 (
+    echo   ERROR: Could not extract Python zip. Install manually.
+    call :log "FATAL: extract of embeddable Python zip failed."
+    pause
+    exit /b 1
+)
+
+REM Embeddable zip ships python.exe + python312._pth (which DISABLES site-packages
+REM and pip). Patch python312._pth so pip + site-packages work, then bootstrap pip.
+set "PYPTH=%PYDIR%\python312._pth"
+if exist "%PYPTH%" (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "$p='%PYPTH%'; $c=Get-Content $p; if ($c -notmatch '^#import site') { $c = $c -replace '^#import site','import site' }; $c | Set-Content $p"
+    call :log "Patched %PYPTH% to enable site-packages."
+)
+
+set "GETPIP=%TEMP%\rolink-get-pip.py"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "try { Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%GETPIP%' -UseBasicParsing; exit 0 } catch { exit 1 }"
+if not errorlevel 1 (
+    call "%PYDIR%\python.exe" "%GETPIP%" --no-warn-script-location >nul 2>&1
+    call :log "Bootstrap pip into embeddable Python."
+)
+
+set "PY=\"%PYDIR%\python.exe\""
+call :validate_py
+if errorlevel 1 (
+    echo   ERROR: Embeddable Python did not validate. Install manually from
+    echo   https://www.python.org/downloads/ ^(tick "Add python.exe to PATH"^).
+    call :log "FATAL: embeddable Python failed validation."
+    pause
+    exit /b 1
+)
+echo         Python ready (embeddable, no admin)!
+call :log "Python ready via direct download: %PY%"
+goto :install_deps
+
 :ready
 echo         Python ready!
 call :log "Python ready after winget install: %PY%"
