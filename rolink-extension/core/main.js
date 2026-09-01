@@ -610,64 +610,211 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   }
 
   // ── wait for the AI to finish a reply, then classify ──────────────────────
+  // Defensive FSM: handles stuck generating flags, blank-read frames, half-
+  // written commands, function-calling JSON envelopes, and Qwen A/B dual turns.
+  // Modeled after ZeroScript's waitForResponse.
   async function waitForReply(){
     const TIMEOUT = (T && T.RESPONSE_TIMEOUT_MS) || 300000;
     const t0 = Date.now();
     const STABLE_MS = (T && T.STABLE_MS) || 9000;
     const WARMUP_MS = (T && T.WARMUP_MS) || 30000;
+    const REASON_NOREPLY_MS = (T && T.REASON_NOREPLY_MS) || 60000;
+    const GEN_STOP_GRACE_MS = 2500;
+    const UNSETTLED_GRACE_MS = 8000;
+    const NO_TURN_GRACE_MS = 30000;
+
     let lastActive = Date.now();
-    let started = false;
+    let started = false, doneSince = 0;
     let lastText = null, lastChange = Date.now();
-    let warmSince = 0;
+    let genFalseSince = 0, genOffFirstAt = 0, prevGen = null, genFlickers = 0;
+    let warmSince = 0, reasonSince = 0, noTurnSince = 0, unsettledSince = 0;
+    let curItem = null, lastGoodReply = "";
+
     const lastSeenAssistantId = P.lastAssistantId ? P.lastAssistantId() : null;
+
     while(Date.now() - lastActive < TIMEOUT){
       if(A.stopping) return {kind:"stopped"};
+
+      // Tab-visibility gate: pause while hidden, slide every deadline forward.
       if(document.hidden){
-        await waitForVisible();
+        const parked = await waitForVisible();
         if(A.stopping) return {kind:"stopped"};
+        // waitForVisible returns true if not stopping, false if stopping. The
+        // duration of the park is best-effort ~500ms per poll.
         lastActive += 500;
+        lastChange += 500;
+        if(genFalseSince) genFalseSince += 500;
+        if(warmSince) warmSince += 500;
+        if(reasonSince) reasonSince += 500;
+        if(noTurnSince) noTurnSince += 500;
+        if(unsettledSince) unsettledSince += 500;
+        if(genOffFirstAt) genOffFirstAt += 500;
+        continue;
       }
+
       const gen = P.isGenerating();
       if(gen) lastActive = Date.now();
-      const newId = P.lastAssistantId ? P.lastAssistantId() : null;
-      const newTurn = lastSeenAssistantId == null
-        ? (P.assistantCount() > 0)
-        : (newId != null && newId !== lastSeenAssistantId);
       const d = P.readAssistant();
       const replyText = (d && d.reply) || "";
-      const replyNorm = replyText.replace(/\s+/g," ").trim();
+      const replyNorm = replyText.replace(/\s+/g, " ").trim();
       if(replyNorm !== lastText){ lastText = replyNorm; lastChange = Date.now(); lastActive = Date.now(); }
+
+      // gen-false tracking
+      if(gen) genFalseSince = 0;
+      else if(!genFalseSince) genFalseSince = Date.now();
+      if(started && !gen && !genOffFirstAt) genOffFirstAt = Date.now();
+      if(prevGen === false && gen && genOffFirstAt) genFlickers++;
+      prevGen = gen;
+
+      // Per-turn state reset
+      if(d.item !== curItem){ curItem = d.item; warmSince = 0; lastGoodReply = ""; }
+      if(replyText && replyText.length) lastGoodReply = replyText;
+
+      // new-turn detection (with provider-id preference, count fallback)
+      const curTok = P.lastAssistantId ? P.lastAssistantId() : undefined;
+      const newTurn = (curTok !== undefined && curTok !== null)
+        ? (curTok !== lastSeenAssistantId)
+        : (P.assistantCount() > 0);
+
       if(!started){
-        if(newTurn && (replyText.length || gen)) started = true;
+        const hasText = !!replyText.length;
+        if(gen || (newTurn && hasText)){ started = true; }
         else {
           if(!warmSince) warmSince = Date.now();
           if(Date.now() - warmSince > 60000) return {kind:"empty"};
           await sleep(200); continue;
         }
       }
-      // Wait for: not generating AND text stable for STABLE_MS AND no open tool block
-      if(!gen && Date.now() - lastChange > STABLE_MS && !ZSParse.hasOpenToolBlock(replyText)){
-        const tools = ZSParse.extractAll(replyText);
-        if(tools && tools.length){
-          const calls = tools.map(ZSParse.normalize).filter(Boolean);
-          if(calls.length){
-            const lastId = newId;
-            return {kind:"tool", calls, item: d.item, lastId};
-          }
-        }
-        if(P.findContinueBtn && P.findContinueBtn()) return {kind:"truncated", text: replyText, item: d.item};
-        if(P.isTooLongMsg && P.isTooLongMsg(replyText)) return {kind:"too_long", text: replyText};
-        const ctx = P.scanError && P.scanError();
-        if(ctx) return {kind:"context_limit", detail: ctx};
-        if(ZSParse.hasToolSignature(replyText)){
-          return {kind:"parse_error", reason:"malformed", raw: replyText, item: d.item};
-        }
-        if(!replyText.trim()) return {kind:"empty"};
-        return {kind:"text", text: replyText, item: d.item};
-      } else {
-        lastChange = Date.now();
-        await sleep(160); continue;
+
+      // Periodically scan for context-limit toasts
+      const ctx = P.scanError && P.scanError();
+      if(ctx) return {kind:"context_limit", detail: ctx};
+
+      // Open tool block: still streaming if gen is on, or if the text changed
+      // recently. Once gen has been off for GEN_STOP_GRACE_MS, the open block
+      // is DOM churn, not live output.
+      const blockActive = ZSParse.hasOpenToolBlock(replyText) && Date.now() - lastChange < 6000;
+      const genStopped = !gen && genFalseSince && Date.now() - genFalseSince > GEN_STOP_GRACE_MS;
+      const effectiveBlock = blockActive && !genStopped;
+
+      // stuckDone: generating flag is stuck ON but text is frozen — wedge case
+      // seen on Gemini after a mid-write halt. Finalize anyway, but NEVER while
+      // a command block is still open and we're genuinely generating.
+      const stuckDone = started && replyText && Date.now() - lastChange > STABLE_MS &&
+        !(gen && ZSParse.hasOpenToolBlock(replyText));
+
+      if((gen || effectiveBlock) && !stuckDone){
+        doneSince = 0;
+        await sleep(160);
+        continue;
       }
+
+      // On providers with RELIABLE counts (no list virtualization), don't
+      // finalize before the reply turn for THIS send exists.
+      if(P.reliableCounts && !newTurn){
+        if(!noTurnSince) noTurnSince = Date.now();
+        if(Date.now() - noTurnSince < NO_TURN_GRACE_MS){ await sleep(200); continue; }
+      } else {
+        noTurnSince = 0;
+      }
+
+      if(!doneSince) doneSince = Date.now();
+      if(Date.now() - doneSince < 500){ await sleep(120); continue; }
+
+      // Turn produced nothing → warming up
+      if(!replyText.trim() && !lastGoodReply){
+        if(!warmSince) warmSince = Date.now();
+        if(Date.now() - warmSince < WARMUP_MS){ await sleep(200); continue; }
+        return {kind:"empty"};
+      }
+
+      // Reasoning/loading phase
+      if(d.thinking && d.thinking.length && !replyText.length && !(P.turnHalted && P.turnHalted(d.item))){
+        if(!reasonSince) reasonSince = Date.now();
+        if(Date.now() - reasonSince < REASON_NOREPLY_MS){ await sleep(200); continue; }
+      } else {
+        reasonSince = 0;
+      }
+
+      // Blank-read fallback: classify the last non-empty read.
+      let r = replyText;
+      if(!r && lastGoodReply) r = lastGoodReply;
+
+      // Short system messages: context-limit, too-long
+      if(r.length < 400 && P.isTooLongMsg && P.isTooLongMsg(r)) return {kind:"too_long", text: r};
+
+      // Qwen A/B "dual" turn: while unresolved the composer is GONE, so we
+      // can't inject. Auto-select Response 1 to collapse the carousel.
+      if(P.isComparisonTurn && P.isComparisonTurn(d.item)){
+        if(P.isGenerating()){ await sleep(250); continue; }
+        if(P.resolveComparison && P.resolveComparison()){
+          await sleep(400); continue;
+        }
+        await sleep(250); continue;
+      }
+
+      // Reply unsettled guard: hold off on parse verdict while the read is
+      // still mid-render (Qwen A/B). Only guards command-shaped text so plain
+      // answers aren't delayed.
+      const cmdShaped = P.replyUnsettled && (
+        ZSParse.hasToolSignature(r) ||
+        (ZSParse.LUA_END_RE && ZSParse.LUA_END_RE.test(r) && ZSParse.LUA_START_RE && !ZSParse.LUA_START_RE.test(r)) ||
+        (/"(?:datamodel_type|edits|old_string|new_string|file_path|target_file)"\s*:/.test(r) &&
+          !/"command"\s*:/.test(r))
+      );
+      if(cmdShaped && P.replyUnsettled(d.item)){
+        if(!unsettledSince) unsettledSince = Date.now();
+        if(Date.now() - unsettledSince < UNSETTLED_GRACE_MS){ await sleep(250); continue; }
+      } else {
+        unsettledSince = 0;
+      }
+
+      // Tool signature present
+      if(ZSParse.hasToolSignature(r)){
+        const blks = ZSParse.extractAll(r);
+        const calls = blks.map(ZSParse.normalize).filter(Boolean);
+        if(calls.length){
+          return {kind:"tool", calls, item: d.item, lastId: curTok};
+        }
+        // Marker present but no valid JSON
+        if(P.findContinueBtn && P.findContinueBtn()) return {kind:"truncated", text: r, item: d.item};
+        if(r.indexOf(ZSParse.START_M) !== -1 || (ZSParse.LUA_START_RE && ZSParse.LUA_START_RE.test(r))){
+          return {kind:"parse_error", reason:"malformed", raw: r, item: d.item};
+        }
+        // Unclosed JSON (cut-off mid-stream) — try to salvage
+        if(ZSParse.hasOpenToolBlock(r)){
+          const salvaged = ZSParse.salvageCutOffCall ? ZSParse.salvageCutOffCall(r) : null;
+          if(salvaged){
+            pushFeed("info", "↻", "Salvaged cut-off tool call: " + (salvaged.name || "?"));
+            return {kind:"tool", calls: [salvaged], item: d.item, lastId: curTok};
+          }
+          return {kind:"parse_error", reason:"unclosed", raw: r, item: d.item};
+        }
+        // Closed-looking JSON with a real tool name but invalid → parse_error
+        const nm = ZSParse.toolNameFromText ? ZSParse.toolNameFromText(r) : null;
+        if(nm && nm !== "command" && Array.isArray(A.tools) && A.tools.some(t => {
+          const tn = (typeof t === "string") ? t : (t && t.name) || "";
+          return tn === nm || tn === nm.replace(/^.*\//, "");
+        })){
+          return {kind:"parse_error", reason:"malformed", raw: r, item: d.item};
+        }
+      }
+
+      // Malformed execute_luau: model wrote ###END_LUA### without ###LUA###
+      if(ZSParse.LUA_END_RE && ZSParse.LUA_END_RE.test(r) &&
+         ZSParse.LUA_START_RE && !ZSParse.LUA_START_RE.test(r) &&
+         r.indexOf(ZSParse.START_M) === -1){
+        return {kind:"parse_error", reason:"luaOpener", raw: r, item: d.item};
+      }
+
+      // Bare JSON function-calling (Gemini style): tool args without envelope
+      if(/"(?:datamodel_type|edits|old_string|new_string|file_path|target_file)"\s*:/.test(r) &&
+         !/"command"\s*:/.test(r)){
+        return {kind:"parse_error", reason:"envelope", raw: r, item: d.item};
+      }
+
+      if(!r.trim()) return {kind:"empty"};
+      return {kind:"text", text: r, item: d.item};
     }
     return {kind:"timeout"};
   }

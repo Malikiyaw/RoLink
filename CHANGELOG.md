@@ -1,4 +1,42 @@
 # Changelog
+## 2.1.0 - Defensive response watcher + cut-off salvage
+After studying ZeroScript v1.5.2's waitForResponse (4374 lines), ported
+the critical defensive logic that prevents the "model said the tool
+call but the agent did nothing" failure:
+
+- **`lastGoodReply` fallback**: if a read comes back empty for a single
+  frame (React re-render of a turn's subtree, a hidden <pre> re-creating
+  itself), classify the last non-empty read instead of declaring the
+  turn "empty" and ending the loop. Reset per turn node.
+- **`stuckDone` fallback**: if the generating flag is stuck ON but the
+  text has been frozen for STABLE_MS (wedged stop button, seen on
+  Gemini), finalize anyway. Bypasses the gen branch entirely.
+  Guarded: NEVER fires while a tool block is open AND gen is genuinely
+  on, so a model that just paused between tokens isn't misfinalized.
+- **`genOffFirstAt` + `genFlickers` tracking**: distinguish "first real
+  stop" from "post-stop DOM churn" so the watcher doesn't wait out a
+  render flicker.
+- **`genStopped` / `effectiveBlock`**: an "open tool block" reading only
+  blocks finalization while gen is still active OR the text has changed
+  in the last 6s. After GEN_STOP_GRACE_MS of gen-off, an open block is
+  treated as DOM churn, not live output.
+- **`salvageCutOffCall`**: when a JSON envelope is missing closing
+  braces (a big multi_edit or execute_luau cut off by the output
+  limit), auto-close and run it instead of burning a retry turn.
+  Refuses amputated content (odd number of unescaped quotes = mid-string
+  cut) so we never run a half-written command.
+- **`replyUnsettled` guard**: for Qwen A/B dual turns, hold off on parse
+  verdict while the provider says the read isn't stable. Bounded by
+  UNSETTLED_GRACE_MS so a genuinely stuck read still resolves.
+- **Multiple parse_error reasons**: `malformed`, `unclosed`, `luaOpener`
+  (model wrote `###END_LUA###` without `###LUA###`), `envelope` (bare
+  function-calling JSON without `{"command":...}` wrapper). Each gets
+  a specific nudge.
+- **Tool-name validation on parse_error**: don't fire parse_error for
+  prose that just MENTIONS a command name. Only fire when the named
+  tool is actually in the live bridge tool list.
+- **Bumped to 2.1.0**.
+
 ## 2.0.1 - Fix: multiple tool calls per reply, malformed-JSON escape hints
 - **CRITICAL FIX in `core/parser.js` `extractAll()`**: the previous version
   called `text.search(LUA_START_RE)` instead of `text.slice(i).search(...)`,

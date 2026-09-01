@@ -55,6 +55,28 @@
     try { return JSON.parse(s); } catch { return null; }
   }
 
+  // Try to recover a single tool call from a cut-off / malformed JSON envelope.
+  // Returns the SAME shape as `normalize()` (so the main loop can dispatch it
+  // directly) or null if no recovery is possible. Refuses amputated content
+  // (mid-string / deep deficit) so we never run a half-written command.
+  function salvageCutOffCall(s) {
+    if(!s) return null;
+    // 1) Find the LAST `###MCP_TOOL###` marker; the body is the JSON after it.
+    const idx = s.lastIndexOf(START_M);
+    if(idx === -1) return null;
+    const body = s.slice(idx + START_M.length);
+    const start = body.indexOf("{");
+    if(start === -1) return null;
+    const chunk = body.slice(start);
+    // Refuse amputated strings: a JSON with an odd number of unescaped quotes
+    // means we cut in the middle of a string. Closing it would corrupt the args.
+    const m = chunk.match(/(?<!\\)"/g) || [];
+    if(m.length % 2 !== 0) return null;
+    const recovered = salvageCutOff(chunk);
+    if(!recovered || typeof recovered !== "object") return null;
+    return normalize({ kind: "mcp", json: recovered, raw: chunk, lua: null });
+  }
+
   // Find the brace-balanced JSON chunk that starts at `b` in `s`. Returns "" if
   // no matching close-brace (caller may then try salvageCutOff).
   function readJsonChunk(s, b) {
@@ -234,7 +256,7 @@
   }
 
   const api = { START_M, LUA_START_RE, LUA_END_RE, CMD_KEY_RE, DSML_RE,
-                matchBrace, parseLoose, salvageCutOff, extract, extractAll,
+                matchBrace, parseLoose, salvageCutOff, salvageCutOffCall, extract, extractAll,
                 hasToolSignature, hasOpenToolBlock, toolNameFromText, normalize };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
