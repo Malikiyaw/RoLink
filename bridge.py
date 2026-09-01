@@ -14,7 +14,7 @@ except ImportError:
     print("[RoLink] missing websockets — run: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
-BRIDGE_VERSION = "1.0.4"
+BRIDGE_VERSION = "1.0.5"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT") or "17613")
 CONFIG_PATH = pathlib.Path(__file__).parent / "config.json"
 STUDIO_MCP_PORT = 13469  # Studio MCP squatter detection
@@ -254,5 +254,6 @@ async def main():
 if __name__ == "__main__":
     try: asyncio.run(main())
     except KeyboardInterrupt: log("shutdown")
+
 
 

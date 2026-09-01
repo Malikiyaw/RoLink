@@ -1,6 +1,6 @@
 :: SPDX-License-Identifier: GPL-3.0-or-later
 @echo off
-:: RoLink start.bat 1.0.4 — keep chcp 65001 for Unicode arrow, auto-detect non-cmd and relaunch via cmd.exe, absolute paths
+:: RoLink start.bat 1.0.5 — keep chcp 65001 for Unicode arrow, auto-detect non-cmd and relaunch via cmd.exe, absolute paths
 :: If launched via bash/powershell (COMSPEC missing or SHELL), re-invoke via cmd.exe
 if "%COMSPEC%"=="" goto :relaunch
 echo %COMSPEC% | find /I "cmd.exe" >nul 2>&1
@@ -153,3 +153,4 @@ exit /b 0
 :log
 >>"%LOGFILE%" echo(%~1 %~2 %~3 %~4 %~5 %~6 %~7 %~8 %~9
 exit /b 0
+

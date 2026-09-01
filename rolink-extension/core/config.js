@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "1.0.4";
+const ROLINK_VERSION = "1.0.5";
 const SYS_MARKER = "\u27E6RL-SYS\u27E7";
 const TOOL_NOTES = `
 You have RoLink MCP tools:
@@ -25,5 +25,6 @@ ${SYS_MARKER}
   return base + (notes[provider] ? "\nProvider note: " + notes[provider] : "");
 }
 const PROVIDER_URLS = ["chat.deepseek.com","chatgpt.com","gemini.google.com","kimi.ai","chat.z.ai","chat.qwen.ai","arena.ai","meta.ai"];
+
 
 

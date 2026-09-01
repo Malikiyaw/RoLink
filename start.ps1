@@ -1,4 +1,4 @@
-# RoLink start.ps1 1.0.4 — PowerShell fallback when .bat association broken (bash -> cmd issue)
+# RoLink start.ps1 1.0.5 — PowerShell fallback when .bat association broken (bash -> cmd issue)
 # Usage: powershell -ExecutionPolicy Bypass -File start.ps1  OR  right-click -> Run with PowerShell
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Continue"
@@ -75,3 +75,4 @@ Write-Host "[RoLink] Bridge exited with code $ec" -ForegroundColor Yellow
 Add-Content -LiteralPath $logFile -Value "exit $ec"
 Read-Host "Press Enter to exit"
 exit $ec
+
