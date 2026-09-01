@@ -215,15 +215,6 @@ if defined OLDPID (
 )
 
 echo.
-echo  ############################################################
-echo  ##                                                        ##
-echo  ##   KEEP THIS TERMINAL OPEN - DO NOT CLOSE THIS WINDOW   ##
-echo  ##                                                        ##
-echo  ##   RoLink stops working if you close it. Just           ##
-echo  ##   minimize this window and leave it running.           ##
-echo  ##                                                        ##
-echo  ############################################################
-echo.
 call :log "Launching bridge.py with %PY%"
 call "%PY%" "%~dp0bridge.py"
 set "BRIDGE_EXIT=%errorlevel%"

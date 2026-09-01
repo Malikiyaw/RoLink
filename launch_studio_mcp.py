@@ -4,60 +4,115 @@ RoLink launch_studio_mcp.py — finds newest StudioMCP.exe paired with RobloxStu
 SPDX-License-Identifier: GPL-3.0-or-later
 Respects ROLINK_STUDIO_MCP_PATH env override.
 """
-import os, sys, pathlib, subprocess, json, time
+import os, sys, pathlib, subprocess
+from pathlib import Path
+from typing import Iterable, Optional
 
-BRIDGE_VERSION = "1.1.6"
+ENV_OVERRIDE = "ROLINK_STUDIO_MCP_PATH"
+WINDOWS_STUDIO_EXECUTABLES = ("RobloxStudioBeta.exe", "RobloxStudio.exe")
+MAC_STUDIO_EXECUTABLES = ("RobloxStudio", "RobloxStudioBeta", "Roblox")
 
-def find_studio_mcp():
-    override = os.environ.get("ROLINK_STUDIO_MCP_PATH")
-    if override and pathlib.Path(override).exists():
-        return override
-    candidates = []
-    # Windows: LOCALAPPDATA\Roblox\Versions
-    for base in [os.environ.get("LOCALAPPDATA"), os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")]:
-        if not base: continue
-        versions = pathlib.Path(base) / "Roblox" / "Versions"
-        if not versions.exists(): continue
-        for v in versions.iterdir():
-            beta = v / "RobloxStudioBeta.exe"
-            mcp = v / "StudioMCP.exe"
-            # macOS bundle check inside
-            mcp_alt = v / "RobloxStudio.app" / "Contents" / "MacOS" / "StudioMCP"
-            found = None
-            if mcp.exists(): found = mcp
-            elif mcp_alt.exists(): found = mcp_alt
-            if found and beta.exists():
-                # sort by mtime newest first
-                candidates.append((found.stat().st_mtime, str(found)))
-    if candidates:
-        candidates.sort(reverse=True)
-        return candidates[0][1]
-    # macOS Applications
-    mac_paths = ["/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP", "/Applications/Roblox Studio.app/Contents/MacOS/StudioMCP"]
-    for p in mac_paths:
-        if pathlib.Path(p).exists():
-            return p
+def _candidate_roots():
+    roots = []
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        roots.append(Path(local_appdata) / "Roblox" / "Versions")
+    for env in ("ProgramFiles", "ProgramFiles(x86)"):
+        value = os.environ.get(env)
+        if value:
+            roots.append(Path(value) / "Roblox" / "Versions")
+    return roots
+
+def _resolve_override_path(path_value):
+    path = Path(path_value).expanduser()
+    if path.is_file():
+        return path
+    if path.is_dir():
+        if sys.platform == "darwin":
+            candidate = path / "Contents" / "MacOS" / "StudioMCP"
+        else:
+            candidate = path / "StudioMCP.exe"
+        if candidate.is_file():
+            return candidate
     return None
 
-def main():
-    mcp = find_studio_mcp()
-    if not mcp:
-        print("[RoLink] StudioMCP.exe not found. Open Roblox Studio and enable: Assistant AI -> ... -> Manage MCP Servers -> Enable Studio as MCP Server", file=sys.stderr)
-        sys.exit(1)
-    print(f"[RoLink] launching StudioMCP: {mcp}", file=sys.stderr)
-    # Proxy stdio to StudioMCP
+def _newest_path(paths):
     try:
-        proc = subprocess.Popen([mcp] if mcp.endswith(".exe") or "/" in mcp else [sys.executable, mcp],
-                                stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
-        proc.wait()
+        return max(paths, key=lambda p: p.stat().st_mtime)
+    except (ValueError, OSError):
+        return None
+
+def _find_studio_mcp_windows():
+    paired, orphans = [], []
+    for root in _candidate_roots():
+        if not root.is_dir():
+            continue
+        try:
+            for version_dir in root.iterdir():
+                if not version_dir.is_dir():
+                    continue
+                studio_mcp = version_dir / "StudioMCP.exe"
+                if not studio_mcp.is_file():
+                    continue
+                if any((version_dir / exe_name).is_file() for exe_name in WINDOWS_STUDIO_EXECUTABLES):
+                    paired.append(studio_mcp)
+                else:
+                    orphans.append(studio_mcp)
+        except OSError:
+            continue
+    return _newest_path(paired) or _newest_path(orphans)
+
+def _mac_app_candidates():
+    home = Path.home()
+    return [
+        Path("/Applications/RobloxStudio.app"),
+        home / "Applications" / "RobloxStudio.app",
+        Path("/Applications/Roblox.app"),
+        home / "Applications" / "Roblox.app",
+        Path("/Applications/RobloxStudioBeta.app"),
+        home / "Applications" / "RobloxStudioBeta.app",
+    ]
+
+def _find_studio_mcp_mac():
+    for app in _mac_app_candidates():
+        macos_dir = app / "Contents" / "MacOS"
+        studio_mcp = macos_dir / "StudioMCP"
+        if not studio_mcp.is_file():
+            continue
+        if any((macos_dir / exe_name).is_file() for exe_name in MAC_STUDIO_EXECUTABLES):
+            return studio_mcp
+    return None
+
+def find_studio_mcp():
+    override_value = os.environ.get(ENV_OVERRIDE)
+    if override_value:
+        override_path = _resolve_override_path(override_value)
+        if override_path:
+            return override_path
+        sys.stderr.write(
+            f"launch_studio_mcp: {ENV_OVERRIDE} is set but does not point to a valid StudioMCP binary: {override_value}\n"
+        )
+    if sys.platform == "darwin":
+        return _find_studio_mcp_mac()
+    return _find_studio_mcp_windows()
+
+def main():
+    exe = find_studio_mcp()
+    binary_name = "StudioMCP" if sys.platform == "darwin" else "StudioMCP.exe"
+    if not exe:
+        sys.stderr.write(
+            f"launch_studio_mcp: no {binary_name} found. Open Roblox Studio and "
+            "enable 'Studio as MCP server' (Assistant Settings > MCP Servers).\n"
+        )
+        return 1
+    sys.stderr.write(f"launch_studio_mcp: using {exe}\n")
+    sys.stderr.flush()
+    proc = subprocess.Popen([str(exe)] + sys.argv[1:])
+    try:
+        return proc.wait()
     except KeyboardInterrupt:
-        sys.exit(0)
-    except Exception as e:
-        print(f"[RoLink] launch failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        proc.terminate()
+        return proc.wait()
 
 if __name__ == "__main__":
-    main()
-
-
-
+    sys.exit(main())
