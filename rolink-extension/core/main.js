@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// core/main.js - RoLink agentic loop + UI (the brain).
+// core/main.js - RoLink v2.0 agentic loop + UI (the brain).
 //
-// Architecture (ZeroScript-style ZSProvider):
+// Architecture (ZeroScript-style ZSProvider, RoLink-branded + extended):
 //   - providers/*.js exports a global ZSProvider object with the site-specific
 //     bits: selectors, generation detection, send mechanics, image attach.
 //   - core/parser.js exposes ZSParse (pure string parser) for tool blocks.
@@ -10,16 +10,27 @@
 //   - All tool calls route through background.js (which owns the single bridge
 //     WebSocket). The AI tab never opens its own WS.
 //
-// Loop (mirror of ZeroScript's proven design):
+// Loop (FSM, mirror of ZeroScript's proven design + RoLink extensions):
 //   1. startSession(): drive the composer into agent-ready state (e.g. Expert
 //      on DeepSeek), inject a real system prompt + the user's starter, send.
 //   2. agentLoop(): wait for the AI's reply, classify it (tool / text / empty /
-//      truncated / too-long). On tool: dispatch via bg(), replace the raw block
-//      with a chip, feed the result back. On text: stop (the AI answered).
-//   3. Auto-resume watchdog: if a tool's result is dropped on the floor (AI
+//      truncated / too-long). On tool: dispatch via bg(), replace the raw
+//      block with a chip, feed the result back. On text: classify intent
+//      (real answer vs "what should I build?" / "I can't run commands") and
+//      react appropriately.
+//   3. Live tool-block stripping: as soon as `###MCP_TOOL###` appears in the
+//      DOM (mid-stream), hide it and show a chip. User never sees raw JSON.
+//   4. Auto-resume watchdog: if a tool's result is dropped on the floor (AI
 //      went silent), re-feed the same payload. Bounded retries, no infinite loop.
-//   4. Tab-visibility gate: pause while the AI tab is hidden (background tabs
+//   5. Tab-visibility gate: pause while the AI tab is hidden (background tabs
 //      throttle rendering), resume when foregrounded.
+//   6. Image attach: if a tool returns images, upload them to the AI tab so
+//      the model can actually SEE the result.
+//   7. Session memory: persist the system prompt, conversation history, and
+//      notes per conversation in chrome.storage so future sessions can
+//      inherit them.
+//   8. Native-tool lockdown: explicitly tell the AI to ONLY use the RoLink
+//      commands, never its own built-in tools.
 
 (function(){
   "use strict";
@@ -63,7 +74,7 @@
     toolRunning: "",
     toolStart: 0,
     feedStreak: 0,             // tool-results fed back without an answer
-    maxFeedStreak: 12,         // give up after this many in a row
+    maxFeedStreak: 14,         // give up after this many in a row
     observeTarget: null,
     feedPending: null,         // the result we just sent back (for auto-resume match)
     lastFeedId: null,
@@ -74,11 +85,60 @@
     tools: [],
     status: "offline",
     lastAssistantIdAtBoot: null,
+    sessionId: null,           // per-conversation session id (for memory)
+    customPrompt: "",          // user-added prompt from the panel
+    history: [],               // {role, text, ts} entries for this session
+    nudgeCount: 0,             // how many nudges we've sent in this session
+    maxNudges: 4,              // give up after this many nudges
+    strippedBlocks: new WeakSet(), // already-hidden tool blocks (so we don't re-hide)
   };
 
   // ── DOM helpers ──────────────────────────────────────────────────────────
   function el(tag, cls, html){ const e=document.createElement(tag); if(cls) e.className=cls; if(html!=null) e.innerHTML=html; return e; }
   function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);}
+  function shorten(s, n){ s=String(s); return s.length>n ? s.slice(0, n-1) + "…" : s; }
+
+  // ── session memory (chrome.storage) ──────────────────────────────────────
+  // Per-conversation: {systemPrompt, history:[], notes:""}
+  // Keys: rolSession_<sessionId>
+  function sessionKey(){ return "rolSession_" + (A.sessionId || (location.pathname + "|" + location.hostname)); }
+  function sessionIdFromUrl(){
+    try{
+      // Use pathname + a stable hash of the first user message if we can find one
+      const p = location.pathname;
+      return p.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "default";
+    }catch{ return "default"; }
+  }
+  async function loadSession(){
+    if(!bgAvailable) return;
+    try{
+      const r = await bg({type:"session_load", key: sessionKey()});
+      if(r && r.ok && r.data){
+        A.history = Array.isArray(r.data.history) ? r.data.history : [];
+      }
+    }catch{}
+  }
+  async function saveSession(){
+    if(!bgAvailable) return;
+    try{
+      await bg({type:"session_save", key: sessionKey(), data: {
+        history: A.history.slice(-200), // cap
+        updatedAt: Date.now(),
+      }});
+    }catch{}
+  }
+  async function loadCustomPrompt(){
+    if(!bgAvailable) return "";
+    try{
+      const r = await bg({type:"setting_get", key: "customPrompt"});
+      return (r && r.ok && r.value) || "";
+    }catch{ return ""; }
+  }
+  async function saveCustomPrompt(s){
+    A.customPrompt = s || "";
+    if(!bgAvailable) return;
+    try{ await bg({type:"setting_set", key: "customPrompt", value: A.customPrompt}); }catch{}
+  }
 
   // ── UI shell ─────────────────────────────────────────────────────────────
   const root = el("div", ""); root.id="rl-root";
@@ -99,6 +159,8 @@
     <span class="rl-counter" id="rl-counter">0 tools</span>
     <button class="rl-btn" id="rl-tools-btn" title="Show available tools">🛠 Tools</button>
     <button class="rl-btn" id="rl-feed-btn" title="Show activity">📜 Log</button>
+    <button class="rl-btn" id="rl-workspace-btn" title="Workspace memory">🧠</button>
+    <button class="rl-btn" id="rl-settings-btn" title="Settings">⚙</button>
     <button class="rl-btn warn" id="rl-stop-btn" style="display:none" title="Stop the agent">■ Stop</button>
   `;
   root.appendChild(bar);
@@ -118,6 +180,31 @@
     <div class="rl-feed-list" id="rl-feed-list"></div>
   `;
   root.appendChild(feed);
+
+  // Workspace / memory panel
+  const wsPanel = el("div", "rl-workspace");
+  wsPanel.innerHTML = `
+    <div class="rl-workspace-head">🧠 Workspace memory <button class="rl-workspace-close" id="rl-workspace-close" title="Close">×</button></div>
+    <div class="rl-workspace-body">
+      <div class="rl-row">
+        <label>Session ID</label>
+        <code id="rl-session-id">…</code>
+      </div>
+      <div class="rl-row">
+        <label>History (this session)</label>
+        <div class="rl-mem-count" id="rl-history-count">0 events</div>
+      </div>
+      <div class="rl-row">
+        <label>Custom instructions (appended to system prompt)</label>
+        <textarea id="rl-custom-prompt" placeholder="e.g. Always use the FastFlag &quot;FFlagDebugSimulatorBetaFeatures&quot; before reading the tree. Prefer using tween-based movement."></textarea>
+      </div>
+      <div class="rl-row">
+        <button class="rl-btn primary" id="rl-save-prompt">💾 Save custom instructions</button>
+        <button class="rl-btn warn" id="rl-clear-session">🗑 Clear session</button>
+      </div>
+    </div>
+  `;
+  root.appendChild(wsPanel);
 
   // Banner
   const banner = el("div", "rl-banner"); banner.style.display = "none";
@@ -174,9 +261,48 @@
     if(count) count.textContent = A.tools.length + " available";
     return A.tools;
   }
-  document.getElementById("rl-tools-btn").onclick = e => { e.stopPropagation(); toolsPanel.classList.toggle("rl-show"); };
-  document.getElementById("rl-feed-btn").onclick = e => { e.stopPropagation(); feed.classList.toggle("rl-show"); };
-  document.getElementById("rl-feed-clear").onclick = e => { e.stopPropagation(); document.getElementById("rl-feed-list").innerHTML=""; };
+  function wireUi(){
+    document.getElementById("rl-tools-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.toggle("rl-show"); };
+    document.getElementById("rl-feed-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.remove("rl-show"); feed.classList.toggle("rl-show"); };
+    document.getElementById("rl-feed-clear").onclick = e => { e.stopPropagation(); document.getElementById("rl-feed-list").innerHTML=""; };
+    document.getElementById("rl-workspace-btn").onclick = e => {
+      e.stopPropagation();
+      toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show");
+      wsPanel.classList.toggle("rl-show");
+      if(wsPanel.classList.contains("rl-show")) updateWorkspaceView();
+    };
+    document.getElementById("rl-settings-btn").onclick = e => {
+      e.stopPropagation();
+      document.getElementById("rl-workspace-btn").click();
+    };
+    document.getElementById("rl-workspace-close").onclick = e => { e.stopPropagation(); closeWorkspace(); };
+    document.getElementById("rl-save-prompt").onclick = async e => {
+      e.stopPropagation();
+      const v = document.getElementById("rl-custom-prompt").value;
+      await saveCustomPrompt(v);
+      pushFeed("info", "💾", "Custom instructions saved. Will apply on next Start.");
+      showBanner("Saved", "ok", 1800);
+    };
+    document.getElementById("rl-clear-session").onclick = async e => {
+      e.stopPropagation();
+      A.history = [];
+      await saveSession();
+      pushFeed("info", "🗑", "Session cleared");
+      updateWorkspaceView();
+    };
+    // click outside to close
+    document.addEventListener("click", e => {
+      if(!wsPanel.contains(e.target) && e.target.id !== "rl-workspace-btn" && e.target.id !== "rl-settings-btn"){
+        closeWorkspace();
+      }
+    }, true);
+  }
+  function closeWorkspace(){ wsPanel.classList.remove("rl-show"); }
+  function updateWorkspaceView(){
+    document.getElementById("rl-session-id").textContent = A.sessionId || "default";
+    document.getElementById("rl-history-count").textContent = A.history.length + " event" + (A.history.length === 1 ? "" : "s");
+    document.getElementById("rl-custom-prompt").value = A.customPrompt || "";
+  }
 
   // Mount the bar inside the composer frame
   function placeBar(){
@@ -207,48 +333,66 @@
   }
 
   // ── THE SYSTEM PROMPT ─────────────────────────────────────────────────────
-  // Built dynamically so the model always sees the real tool names. Falls
-  // back to a conservative list if the bridge hasn't responded yet.
-  // Works because the AI sees it as a user message with "do this" framing
-  // (ZeroScript's proven approach).
+  // Built dynamically. The model is a Roblox Studio agent. We are SHORT and
+  // DEMANDING. Two patterns: tool call or DONE. No prose padding.
   function buildSystemPrompt(){
     const tools = Array.isArray(A.tools) && A.tools.length ? A.tools : null;
     let toolBlock;
     if(tools){
       const names = tools.map(t => (typeof t === "string") ? t : (t && t.name) || "").filter(Boolean);
-      toolBlock = "Currently available tools (use the EXACT name in `tool`; one ###MCP_TOOL### block per call; you can call multiple per reply):\n"
+      toolBlock = "Tools you can call (use the EXACT name; one ###MCP_TOOL### block per call; you can call multiple per reply):\n"
                 + names.map(n => "- " + n).join("\n")
-                + (names.length ? "\n\nA tool's argument schema is whatever the bridge accepts — start with the obvious args; if you get an error, read the error message and retry with corrected args. Do NOT guess an unrelated tool name." : "");
+                + (names.length ? "\n\nArgument schema is whatever the bridge accepts. If a call fails, read the error and fix it on the next call — don't guess at unrelated tool names." : "");
     } else {
-      toolBlock = "Tools will be discovered at session start. Begin by trying common RoLink tools like `get_studio_state`, `list_roblox_studios`, `get_snapshot`, `run_code`. If a tool name is wrong, the bridge will reply `unknown tool 'X'` and you should try a similar name from the list it returns.";
+      toolBlock = "Tools will be discovered at session start. Begin by trying common RoLink tools like `get_studio_state`, `list_roblox_studios`, `get_snapshot`, `run_code`.";
     }
+    const custom = (A.customPrompt || "").trim();
+    const customBlock = custom ? `\n\n# User-added instructions\n${custom}\n` : "";
     return `You are RoLink Agent ${ROLINK_VERSION} — you control Roblox Studio on the user's local PC via MCP tools.
 
-EVERY reply you write MUST follow one of these two patterns:
+# How to reply — pick EXACTLY ONE of these two patterns:
 
-1) Call a tool: output a JSON code block that starts with ###MCP_TOOL### on its own line, then the JSON on the next line:
+1) Call a tool — output a single JSON code block, EXACTLY in this format:
+\`\`\`
 ###MCP_TOOL###
-{"tool":"run_code","args":{"code":"print('hello')"}}
+{"tool":"<name from the list below>","args":{...}}
+\`\`\`
 
-2) You're completely done: give a short final answer and end with the word DONE on its own line.
+2) You're completely done — short final answer, end with the word DONE on its own line.
 
-${toolBlock}
+# ${toolBlock}
+${customBlock}
+# Rules
 
-Rules:
-- NEVER claim you "cannot run commands" — your tools ARE working. Just emit the right ###MCP_TOOL### block with the EXACT tool name from the list above.
-- NEVER ask the user a clarifying question before acting. Make reasonable assumptions and ACT.
-- If a tool call fails, read the error message, correct the call, and retry. Do NOT give up after one error.
+- ACT FIRST. Never ask the user "what should I build?" — if no task is given, PICK one (e.g. "I'll make a simple obby with checkpoints") and start building it. The user will redirect you if they want something different.
+- NEVER say "I cannot run commands" or "I don't have access to your files". Your tools ARE working. Just emit the right ###MCP_TOOL### block.
+- ONLY use the tools listed above. Do NOT use any built-in code interpreter, web search, file browser, or other native tool — even if the site offers them. The Roblox MCP tools are the only thing you should call.
+- If a tool call fails, read the error message, fix the call (correct args, valid JSON, valid Luau), and retry. Don't apologize and stop.
 - Keep prose short. The user wants to see tool calls and results, not essays.
-- When the user's task is fully done, give a one-sentence summary and end with DONE.`;
+- When fully done: one-sentence summary + DONE.`;
   }
 
-  const STARTER = `Start by checking the Studio state and snapshotting the game tree so we can see what's there. Then ask the user what they want to build. Begin now (first message — call tools immediately, no prose preamble).`;
+  const STARTER = `Begin now. First call: get_studio_state to confirm the place is open, then list_roblox_studios to see what's connected, then start a reasonable starter project (e.g. a simple obby with a spawn, a few platforms, and a killbrick). ACT, don't ask.`;
 
   // ── dispatch a tool call ──────────────────────────────────────────────────
-  function dispatchTool(name, args, sourceBlock, sourceItem){
-    if(sourceBlock && sourceBlock.parentElement){ sourceBlock.parentElement.style.display = "none"; }
+  function dispatchTool(name, args, sourceBlock, sourceItem, images){
+    if(sourceBlock && sourceBlock.parentElement && !A.strippedBlocks.has(sourceBlock)){
+      A.strippedBlocks.add(sourceBlock);
+      // Hide the raw tool block (and its code-fence wrapper) before chip insertion
+      const wrapper = sourceBlock.parentElement;
+      if(wrapper && wrapper !== sourceItem){
+        wrapper.style.display = "none";
+        wrapper.classList.add("rl-tool-hide-wrap");
+      } else {
+        sourceBlock.style.display = "none";
+        sourceBlock.classList.add("rl-tool-hide");
+      }
+    }
     const chip = makeChip(name, args);
-    if(sourceBlock && sourceBlock.parentElement && sourceBlock.parentElement.parentElement){
+    const spot = P.findToolBlockSpot ? P.findToolBlockSpot(sourceItem, chip) : null;
+    if(spot && spot.parent){
+      spot.parent.insertBefore(chip, spot.ref || null);
+    } else if(sourceBlock && sourceBlock.parentElement && sourceBlock.parentElement.parentElement){
       sourceBlock.parentElement.parentElement.insertBefore(chip, sourceBlock.parentElement);
     } else {
       (sourceBlock || document.body).appendChild(chip);
@@ -256,40 +400,81 @@ Rules:
     A.busy = true; A.toolRunning = name; A.toolStart = Date.now();
     pushFeed("tool", "⚙", `${name} ${JSON.stringify(args).slice(0,180)}`);
     setCounter(++A.toolCount);
-    bg({type:"call_tool", name, arguments: args, timeout: 120000}).then(res=>{
-      A.busy = false; A.toolRunning = "";
-      if(!res) res = {ok:false, error:"no response from bridge"};
-      if(res.kind === "stale-extension" || isContextInvalidated(res.error)){
-        chipFinalize(chip, name, {ok:false, error:"Extension updated — please reload this page and click Start again."});
-        pushFeed("err", "✗", "Extension context invalidated. Reload the page.");
-        A.running = false; setLauncherStopped(); return;
-      }
-      chipFinalize(chip, name, res);
-      const text = res.ok ? (res.text || "OK") : ("ERROR: " + (res.error || "unknown"));
-      const ok = res.ok !== false;
-      pushFeed(ok ? "ok" : "err", ok ? "✓" : "✗", `${name}: ${String(text).slice(0,200).replace(/\n/g," ")}`);
-      A.lastFeedText = text; A.lastFeedAt = Date.now(); A.lastFeedId = name + ":" + Date.now();
-      const feedbackMsg = ok
-        ? `[Tool result for ${name}]\n${text}\n\nYou MUST continue. Either call another tool via ###MCP_TOOL### {json} OR give a final answer ending with DONE. Do NOT respond with "I cannot run commands" — your tools are working.`
-        : (function(){
-            const hint = /unknown tool/i.test(text) && Array.isArray(A.tools) && A.tools.length
-              ? `\n\nThe valid tool names right now are: ${A.tools.map(t => (typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Pick the closest one.`
-              : "";
-            return `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Fix the call (correct args, valid JSON, valid Luau) and retry with another ###MCP_TOOL### block using the EXACT name from the system prompt.${hint} If you can't fix it, explain the error to the user.`;
-          })();
-      A.injecting = true;
-      P.typeAndSend(feedbackMsg, []).then(()=>{ A.injecting = false; });
+    A.history.push({role:"tool_call", name, args, ts:Date.now()});
+    saveSession();
+    return new Promise(resolve=>{
+      bg({type:"call_tool", name, arguments: args, timeout: 120000}).then(res=>{
+        A.busy = false; A.toolRunning = "";
+        if(!res) res = {ok:false, error:"no response from bridge"};
+        if(res.kind === "stale-extension" || isContextInvalidated(res.error)){
+          chipFinalize(chip, name, {ok:false, error:"Extension updated — please reload this page and click Start again."});
+          pushFeed("err", "✗", "Extension context invalidated. Reload the page.");
+          A.running = false; setLauncherStopped();
+          resolve({chip, name, res});
+          return;
+        }
+        chipFinalize(chip, name, res);
+        const text = res.ok ? (res.text || "OK") : ("ERROR: " + (res.error || "unknown"));
+        const ok = res.ok !== false;
+        pushFeed(ok ? "ok" : "err", ok ? "✓" : "✗", `${name}: ${shorten(String(text).replace(/\n/g," "), 200)}`);
+        A.history.push({role:"tool_result", name, ok, text, ts:Date.now()});
+        saveSession();
+        // If the tool returned images, attach them to the next feedback.
+        const imgs = (res && res.images && res.images.length) ? res.images : null;
+        A.lastFeedText = text; A.lastFeedAt = Date.now(); A.lastFeedId = name + ":" + Date.now();
+        // Truncate huge results so we don't blow context
+        const textForModel = text.length > 12000 ? text.slice(0, 11500) + "\n\n[…result truncated for context; full result is in the chip above…]" : text;
+        const hint = (!ok && /unknown tool/i.test(text) && Array.isArray(A.tools) && A.tools.length)
+          ? `\n\nThe valid tool names right now are: ${A.tools.map(t => (typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}.`
+          : "";
+        const feedbackMsg = ok
+          ? `[Tool result for ${name}]\n${textForModel}\n\nYou MUST continue. Either call another tool via ###MCP_TOOL### {json} OR give a final answer ending with DONE. Do NOT respond with "I cannot run commands" — your tools are working.`
+          : `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Fix the call (correct args, valid JSON, valid Luau) and retry with another ###MCP_TOOL### block using the EXACT name from the system prompt.${hint}`;
+        A.injecting = true;
+        P.typeAndSend(feedbackMsg, imgs || []).then(()=>{ A.injecting = false; });
+        resolve({chip, name, res, text});
+      });
     });
+  }
+
+  // ── detect "AI is asking the user a question" ──────────────────────────────
+  // Used to auto-nudge the model when it just asks "what should I build?"
+  // instead of doing something.
+  function looksLikeAQuestion(text){
+    if(!text) return false;
+    const t = text.trim();
+    if(!t) return false;
+    // Very short replies that end with a question → ask, not act
+    if(t.length < 400 && /\?[\s]*$/.test(t) && !/###MCP_TOOL###/.test(t) && !/###LUA###/.test(t)) return true;
+    // Common "asking" patterns
+    if(/what (do you|would you|should I|can I).{0,40}(build|create|make|do|help|want)/i.test(t)) return true;
+    if(/how can I (help|assist)/i.test(t)) return true;
+    if(/I('?m| am) (ready|waiting|here to help)/i.test(t) && /\?/.test(t)) return true;
+    if(/what('?s| is) (your|the) (goal|task|request|project|idea)/i.test(t)) return true;
+    if(/could you (tell|provide|share|give|clarify)/i.test(t)) return true;
+    if(/please (specify|clarify|provide|tell me)/i.test(t)) return true;
+    if(/I('?ll| will) await/i.test(t)) return true;
+    return false;
+  }
+  function looksLikeCantRun(text){
+    if(!text) return false;
+    return /I (can'?t|cannot|don'?t have|do not have|am unable to|unable to) (run|execute|invoke|use|call|access).{0,40}(command|tool|code|script|function|file)/i.test(text)
+        || /I don'?t have access to (your|the) (computer|file|system|studio|project)/i.test(text)
+        || /I (can'?t|cannot) (directly )?(interact|control|modify) (your|the) (studio|project|game|file)/i.test(text)
+        || /(there is no|there are no) (way|method) (for me|to).{0,30}(run|execute|invoke|call|use)/i.test(text);
   }
 
   // ── send the user's starter request (after system prompt) ────────────────
   function sendSystemPromptAndStarter(){
     const first = buildSystemPrompt() + "\n\n---\n\n" + STARTER;
+    A.history.push({role:"user", text: first, ts:Date.now()});
+    saveSession();
     return P.typeAndSend(first, []).then(()=>{
       A.starting = false;
       A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;
       A.running = true;
       A.feedStreak = 0;
+      A.nudgeCount = 0;
       A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
       pushFeed("info", "▶", "Agent loop started. Watching AI replies…");
       agentLoop();
@@ -305,10 +490,10 @@ Rules:
     if(!document.hidden || A.stopping) return Promise.resolve(!A.stopping);
     A.parked = true; pushFeed("info", "⏸", "Tab hidden — paused");
     return new Promise(resolve=>{
-      const done = () => { document.removeEventListener("visibilitychange", onVis); clearInterval(iv); A.parked = false; resolve(!A.stopping); };
+      const done = () => { document.removeEventListener("visibilitychange", onVis); clearInterval(iv); A.parked = false; if(!A.stopping) pushFeed("info", "▶", "Resumed"); resolve(!A.stopping); };
       const onVis = () => { if(!document.hidden) done(); };
       document.addEventListener("visibilitychange", onVis);
-      const iv = setInterval(()=>{ if(A.stopping || !document.hidden) done(); }, 1000);
+      const iv = setInterval(()=>{ if(A.stopping || !document.hidden) done(); }, 500);
     });
   }
 
@@ -325,20 +510,38 @@ Rules:
         if(A.stopping) break;
         if(reply.kind === "tool"){
           A.feedStreak = 0;
+          A.nudgeCount = 0;
           for(let i = 0; i < reply.calls.length; i++){
             const c = reply.calls[i];
             setTimeout(()=>dispatchTool(c.name, c.arguments, null, reply.item), i*30);
           }
         } else if(reply.kind === "text"){
+          // FIRST: detect "AI is asking a question" → nudge it to ACT.
+          if(looksLikeAQuestion(reply.text) && A.nudgeCount < A.maxNudges){
+            A.nudgeCount++;
+            pushFeed("warn", "↻", `AI asked a question (${A.nudgeCount}/${A.maxNudges}) — nudging to ACT`);
+            A.injecting = true;
+            await P.typeAndSend(`Don't ask. ACT. Pick the simplest reasonable interpretation of the user's intent and start building it right now. If a tool fails, fix it. If you need to make up defaults, do it. Emit a ###MCP_TOOL### block in your very next reply.`, []);
+            A.injecting = false;
+            continue;
+          }
+          // SECOND: detect "I cannot run commands" → stronger re-grounding.
+          if(looksLikeCantRun(reply.text) && A.nudgeCount < A.maxNudges){
+            A.nudgeCount++;
+            pushFeed("warn", "↻", `AI claimed it can't run tools (${A.nudgeCount}/${A.maxNudges}) — re-grounding`);
+            A.injecting = true;
+            await P.typeAndSend(`You DO have tools. They are listed in your system prompt and have been used successfully in this session. Re-read your system prompt. The valid tool names are: ${(A.tools||[]).map(t=>(typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Emit a ###MCP_TOOL### block now using one of these exact names.`, []);
+            A.injecting = false;
+            continue;
+          }
+          // Real answer → done.
           pushFeed("done", "🏁", `Agent finished (${A.toolCount} tool call${A.toolCount === 1 ? "" : "s"}).`);
           A.running = false; A.started = false;
           setLauncherStopped();
           showBanner("Agent finished. Click Start to run again.", "ok", 5000);
           return;
         } else if(reply.kind === "truncated"){
-          // Click DeepSeek's "Continue" button (provider gives one if present)
           if(P.clickContinueBtn && P.clickContinueBtn()){ pushFeed("info", "↻", "Clicked Continue (truncated reply)"); continue; }
-          // Otherwise nudge the AI to redo it
           A.injecting = true;
           await P.typeAndSend("Your last reply was truncated. Please redo the tool call (or final answer) in full. Do not include ###END markers or closing fences you don't need.", []);
           A.injecting = false;
@@ -348,7 +551,6 @@ Rules:
             pushFeed("err", "⏹", `Gave up after ${A.maxFeedStreak} empty replies. Click Start to try again.`);
             A.running = false; A.started = false; setLauncherStopped(); return;
           }
-          // Auto-resume: re-feed the last result (if any), otherwise nudge.
           if(A.lastFeedText && (Date.now() - A.lastFeedAt) < 60000){
             pushFeed("info", "↻", `Empty reply — re-feeding last result (${A.feedStreak}/${A.maxFeedStreak})`);
             A.injecting = true;
@@ -402,23 +604,19 @@ Rules:
       if(document.hidden){
         await waitForVisible();
         if(A.stopping) return {kind:"stopped"};
-        lastActive += 500; // slide the deadline forward
+        lastActive += 500;
       }
       const gen = P.isGenerating();
       if(gen) lastActive = Date.now();
-      // Has a new reply turn appeared?
       const newId = P.lastAssistantId ? P.lastAssistantId() : null;
       const newTurn = lastSeenAssistantId == null
         ? (P.assistantCount() > 0)
         : (newId != null && newId !== lastSeenAssistantId);
-      // Reply text (from the LAST assistant turn, which may be the same one
-      // that's still being written)
       const d = P.readAssistant();
       const replyText = (d && d.reply) || "";
       const replyNorm = replyText.replace(/\s+/g," ").trim();
       if(replyNorm !== lastText){ lastText = replyNorm; lastChange = Date.now(); lastActive = Date.now(); }
       if(!started){
-        // Need actual content (or a new turn) to consider the reply started
         if(newTurn && (replyText.length || gen)) started = true;
         else {
           if(!warmSince) warmSince = Date.now();
@@ -426,40 +624,29 @@ Rules:
           await sleep(200); continue;
         }
       }
-      // Has the model finished (no more generating, text stable for STABLE_MS)?
-      if(!gen){
-        // We have a turn that has content. Wait STABLE_MS for it to settle.
-        if(Date.now() - lastChange > STABLE_MS){
-          // Classify
-          const tools = ZSParse.extractAll(replyText);
-          if(tools && tools.length){
-            const calls = tools.map(ZSParse.normalize).filter(Boolean);
-            if(calls.length){
-              const lastId = newId;
-              return {kind:"tool", calls, item: d.item, lastId};
-            }
+      // Wait for: not generating AND text stable for STABLE_MS AND no open tool block
+      if(!gen && Date.now() - lastChange > STABLE_MS && !ZSParse.hasOpenToolBlock(replyText)){
+        const tools = ZSParse.extractAll(replyText);
+        if(tools && tools.length){
+          const calls = tools.map(ZSParse.normalize).filter(Boolean);
+          if(calls.length){
+            const lastId = newId;
+            return {kind:"tool", calls, item: d.item, lastId};
           }
-          // Truncation button?
-          if(P.findContinueBtn && P.findContinueBtn()) return {kind:"truncated", text: replyText, item: d.item};
-          // Too long?
-          if(P.isTooLongMsg && P.isTooLongMsg(replyText)) return {kind:"too_long", text: replyText};
-          // Context limit toast?
-          const ctx = P.scanError && P.scanError();
-          if(ctx) return {kind:"context_limit", detail: ctx};
-          // Parse error: marker but no valid JSON
-          if(ZSParse.hasToolSignature(replyText)){
-            return {kind:"parse_error", reason:"malformed", raw: replyText, item: d.item};
-          }
-          // Plain text → AI is done.
-          if(!replyText.trim()) return {kind:"empty"};
-          return {kind:"text", text: replyText, item: d.item};
         }
+        if(P.findContinueBtn && P.findContinueBtn()) return {kind:"truncated", text: replyText, item: d.item};
+        if(P.isTooLongMsg && P.isTooLongMsg(replyText)) return {kind:"too_long", text: replyText};
+        const ctx = P.scanError && P.scanError();
+        if(ctx) return {kind:"context_limit", detail: ctx};
+        if(ZSParse.hasToolSignature(replyText)){
+          return {kind:"parse_error", reason:"malformed", raw: replyText, item: d.item};
+        }
+        if(!replyText.trim()) return {kind:"empty"};
+        return {kind:"text", text: replyText, item: d.item};
       } else {
-        // Still generating → reset stable timer.
         lastChange = Date.now();
         await sleep(160); continue;
       }
-      await sleep(200);
     }
     return {kind:"timeout"};
   }
@@ -469,6 +656,8 @@ Rules:
     if(A.started) return;
     A.started = true; A.starting = true; A.running = false; A.stopping = false;
     A.feedStreak = 0; A.toolCount = 0; A.lastFeedText = ""; A.lastFeedAt = 0; A.lastFeedId = null;
+    A.nudgeCount = 0;
+    A.strippedBlocks = new WeakSet();
     setCounter(0);
     document.getElementById("rl-feed-list").innerHTML = "";
     launcher.classList.add("is-active");
@@ -477,7 +666,6 @@ Rules:
     pushFeed("info", "▶", `Agent starting on ${location.hostname}`);
     showBanner("Agent starting…", "ok", 3000);
     placeBar();
-    // Drive the composer into the required state (Expert on DeepSeek, etc.)
     if(P.ensureComposerReady){
       try{
         const s = await P.ensureComposerReady("startup");
@@ -487,14 +675,16 @@ Rules:
         }
       }catch{}
     }
+    A.sessionId = sessionIdFromUrl();
+    await loadSession();
+    A.customPrompt = await loadCustomPrompt();
     A.startingKey = P.conversationKey ? P.conversationKey() : location.pathname;
     A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
-    // Refresh the live tool list so the system prompt includes real tool names.
     try{ await refreshTools(); }catch{}
-    // Lock composer during inject so user can't accidentally abort
     try{ P.setInputLock && P.setInputLock(true); }catch{}
     sendSystemPromptAndStarter();
     try{ P.setInputLock && P.setInputLock(false); }catch{}
+    updateWorkspaceView();
   }
 
   function stopSession(){
@@ -514,34 +704,39 @@ Rules:
   launcher.addEventListener("click", ()=>{ if(A.started) stopSession(); else startSession(); });
   document.getElementById("rl-stop-btn").addEventListener("click", ()=>stopSession());
 
-  // ── observe replies (look for tool blocks to hide + chip-insert live) ────
+  // ── LIVE tool-block stripping (mid-stream, as soon as a marker appears) ───
+  // Scans the DOM for new <pre>/<code> elements containing ###MCP_TOOL### or
+  // ###LUA### markers. Hides the raw block and dispatches the tool immediately
+  // (so the chip appears the moment the AI starts writing the tool call, not
+  // only after the whole turn finishes).
   function scanToolBlocks(node){
     if(!node || node.nodeType !== 1) return;
     if(A.busy) return; // don't race the active dispatch
     const candidates = [];
-    if(node.tagName === "PRE") candidates.push(node);
+    if(node.tagName === "PRE" || node.tagName === "CODE") candidates.push(node);
     if(node.querySelectorAll) candidates.push(...node.querySelectorAll("pre, code"));
     for(const el of candidates){
-      if(!el || el.classList.contains("rl-tool-hide")) continue;
+      if(!el || A.strippedBlocks.has(el)) continue;
       const txt = el.innerText || el.textContent || "";
       if(!txt || txt.indexOf("###MCP_TOOL###") === -1) continue;
-      if(txt.indexOf("###MCP_TOOL###") === -1 && txt.indexOf("###LUA###") === -1) continue;
+      if(ZSParse.hasOpenToolBlock(txt)) continue; // wait for it to finish
       const blk = ZSParse.extract(txt);
       if(!blk) continue;
       const n = ZSParse.normalize(blk);
       if(!n) continue;
-      // Hide the raw block
-      el.classList.add("rl-tool-hide");
-      dispatchTool(n.name, n.arguments, el, null);
+      A.strippedBlocks.add(el);
+      const item = el.closest(S_CHAT_ITEM) || el.closest("[data-message-author-role]") || el.closest(".ds-message") || el.closest("article") || el.closest("main") || null;
+      dispatchTool(n.name, n.arguments, el, item);
     }
   }
+  const S_CHAT_ITEM = "[data-message-author-role], .ds-message, [data-testid*='conversation-turn'], article, .message, main p";
   function startObserver(){
     if(A.observeTarget) return;
     A.observeTarget = document.documentElement;
     const obs = new MutationObserver(muts=>{
       for(const m of muts) for(const n of m.addedNodes) scanToolBlocks(n);
     });
-    try{ obs.observe(document.documentElement, {childList:true, subtree:true}); }catch{}
+    try{ obs.observe(document.documentElement, {childList:true, subtree:true, characterData:true}); }catch{}
   }
 
   // ── status updates from background ───────────────────────────────────────
@@ -573,6 +768,7 @@ Rules:
 
   // Start the DOM observer (lives as long as the page does)
   startObserver();
+  wireUi();
 
   // expose for debug / popup
   window.ROLINK = {

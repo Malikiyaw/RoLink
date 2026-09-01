@@ -311,3 +311,61 @@
 /* When the activity feed is also shown, stack it above the tools panel. */
 .rl-feed.rl-show ~ .rl-tools,
 .rl-feed.rl-show { z-index: 2147483601; }
+
+/* ── Workspace / memory panel ─────────────────────────────────────────── */
+.rl-workspace {
+  position: fixed;
+  top: 60px;
+  right: 16px;
+  width: 380px;
+  max-height: 80vh;
+  background: rgba(14,17,22,0.97);
+  border: 1px solid rgba(155,89,182,0.35);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  backdrop-filter: blur(10px);
+  color: #e6edf3;
+  font-size: 13px;
+  pointer-events: auto;
+  z-index: 2147483602;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+.rl-workspace.rl-show { display: flex; }
+.rl-workspace-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-weight: 700;
+  background: linear-gradient(90deg, rgba(155,89,182,0.20), transparent);
+}
+.rl-workspace-close {
+  background: none; border: none; color: #8b949e;
+  font-size: 20px; cursor: pointer; line-height: 1;
+  pointer-events: auto;
+}
+.rl-workspace-body { padding: 14px; overflow: auto; }
+.rl-workspace .rl-row { margin-bottom: 14px; display: flex; flex-direction: column; gap: 4px; }
+.rl-workspace label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+.rl-workspace code { background: rgba(255,255,255,0.06); padding: 3px 6px; border-radius: 4px; font-size: 11px; color: #c9d1d9; }
+.rl-workspace textarea {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 6px;
+  padding: 8px;
+  color: #c9d1d9;
+  font-family: inherit;
+  font-size: 12px;
+  min-height: 80px;
+  resize: vertical;
+  pointer-events: auto;
+}
+.rl-workspace textarea:focus { outline: 2px solid rgba(155,89,182,0.5); }
+.rl-workspace .rl-btn.primary { background: rgba(47,129,247,0.25); border-color: rgba(47,129,247,0.5); }
+.rl-workspace .rl-mem-count { color: #c9d1d9; font-size: 12px; }
+
+/* ── Tool block hide markers (the raw JSON the AI emits is hidden) ───── */
+.rl-tool-hide, .rl-tool-hide-wrap {
+  display: none !important;
+}

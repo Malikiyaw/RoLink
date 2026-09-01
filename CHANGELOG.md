@@ -1,4 +1,49 @@
 # Changelog
+## 2.0.0 - The "1000x" rewrite: aggressive agent, live stripping, session memory, native-tool lockdown
+- **AI no longer gets away with "What would you like to build?"** The agent now
+  detects when the model's reply is a question (or "I'll await your instructions")
+  and auto-nudges it to ACT, up to 4 times per session. System prompt explicitly
+  says: "Pick one and start building. The user will redirect if they want
+  something different." This is the fix for the demo where the model called one
+  tool, got the result, and then stopped.
+- **AI no longer gets away with "I cannot run commands".** The agent detects
+  the common "I can't run / I don't have access / I'm unable to" patterns and
+  re-grounds the model with the actual live tool list inline.
+- **LIVE tool-block stripping** (`scanToolBlocks` in `core/main.js`): the moment
+  `###MCP_TOOL###` appears in the DOM (mid-stream), the raw block is hidden
+  and the chip is inserted. The user never sees the raw `{"tool":...}` JSON
+  flashing on screen. This runs on every mutation, with a `WeakSet` to dedupe.
+- **Native-tool lockdown** in the system prompt: the model is told to ONLY use
+  the RoLink tools, NEVER its own built-in code interpreter, web search, file
+  browser, etc. (Kimi, Gemini, Qwen all ship with their own native tools and
+  will use them if not told not to.)
+- **Workspace / session memory panel** (🧠 button in the bar): shows the
+  current session ID, event count, and a textarea for **custom instructions**
+  that are appended to the system prompt and persisted across sessions via
+  `chrome.storage.local`. The session history is also persisted per
+  conversation key.
+- **Per-site provider factory pattern** (`providers/generic.js`): rewritten as
+  `window.makeGenericProvider(opts)` that builds a complete ZSProvider with
+  the correct `SELF` id baked into the closure. All 7 thin wrappers
+  (gemini/kimi/glm/qwen/arena/meta/chatgpt) now call this factory instead of
+  doing an `Object.assign` shallow copy (which silently kept the "generic"
+  prefix in `itemKey` ids).
+- **Image attach works on every site**, not just DeepSeek. The generic factory
+  includes a default `attachImages` that tries `input[type="file"]` first,
+  then falls back to a `ClipboardEvent("paste")` with `DataTransfer`. Per-site
+  providers can override.
+- **Arena Direct-mode gate**: clicking Start on arena.ai with Battle /
+  Side-by-Side / Agent selected now refuses and tells the user to switch to
+  Direct.
+- **system_prompt V3**: shorter, more imperative. Two patterns (tool / DONE),
+  no prose padding. Includes the ACT-FIRST rule and the native-tool ban.
+- **Bigger live tool-result truncator**: tool results over 12 000 chars are
+  truncated to 11 500 + a marker so context never blows up on a giant
+  `get_snapshot`.
+- **Reset WeakSet on session start** so re-clicking Start after a session
+  doesn't get confused by already-hidden blocks.
+- **Version bump 1.3.1 → 2.0.0** across all versioned files.
+
 ## 1.3.1 - Dynamic system prompt: real tool names from the bridge
 - The system prompt no longer hardcodes a fake tool list. It is now built
   dynamically from `list_tools` at session start, so the model always sees

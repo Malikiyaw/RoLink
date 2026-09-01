@@ -229,6 +229,34 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse)=>{
         sendResponse({ok:true}); break;
       case "version":
         sendResponse({version:chrome.runtime.getManifest().version}); break;
+      case "session_load": {
+        chrome.storage.local.get([msg.key], r => {
+          if(chrome.runtime.lastError) sendResponse({ok:false, error:chrome.runtime.lastError.message});
+          else sendResponse({ok:true, data: r[msg.key] || null});
+        });
+        return;
+      }
+      case "session_save": {
+        chrome.storage.local.set({[msg.key]: msg.data}, () => {
+          if(chrome.runtime.lastError) sendResponse({ok:false, error:chrome.runtime.lastError.message});
+          else sendResponse({ok:true});
+        });
+        return;
+      }
+      case "setting_get": {
+        chrome.storage.local.get([msg.key], r => {
+          if(chrome.runtime.lastError) sendResponse({ok:false, error:chrome.runtime.lastError.message});
+          else sendResponse({ok:true, value: r[msg.key]});
+        });
+        return;
+      }
+      case "setting_set": {
+        chrome.storage.local.set({[msg.key]: msg.value}, () => {
+          if(chrome.runtime.lastError) sendResponse({ok:false, error:chrome.runtime.lastError.message});
+          else sendResponse({ok:true});
+        });
+        return;
+      }
       default:
         sendResponse({ok:false, error:"unknown message"});
     }
