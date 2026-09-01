@@ -382,6 +382,15 @@ ${customBlock}
 
   // ── dispatch a tool call ──────────────────────────────────────────────────
   function dispatchTool(name, args, sourceBlock, sourceItem, images){
+    // Auto-inject `datamodel_type` for tools that need it. The bridge's
+    // execute_luau / multi_edit / script_read / script_grep / inspect_instance
+    // / start_stop_play / search_game_tree require `datamodel_type` and the
+    // model has no way to know which DataModel is focused without first
+    // calling get_studio_state. We track the focused one and inject silently.
+    if(args && typeof args === "object" && !args.datamodel_type && A.focusedDataModel){
+      const NEEDS_DM = /^(execute_luau|multi_edit|script_read|script_grep|inspect_instance|start_stop_play|search_game_tree|delete_instance|set_property|get_property|generate_asset|search_assets|import_asset|insert_asset|search_asset|get_console_output|get_snapshot)$/i;
+      if(NEEDS_DM.test(name)) args = Object.assign({}, args, { datamodel_type: A.focusedDataModel });
+    }
     if(sourceBlock && sourceBlock.parentElement && !A.strippedBlocks.has(sourceBlock)){
       A.strippedBlocks.add(sourceBlock);
       // Hide the raw tool block (and its code-fence wrapper) before chip insertion
