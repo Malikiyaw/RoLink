@@ -1,5 +1,13 @@
 # Changelog
-## 1.1.4 - "Start agent" button + visible tools + MCP auto-launch
+## 1.1.5 - ZeroScript-style bridge + Python 3.14 fix + simple extension
+- **bridge.py crash fix on Python 3.14:** the `serve(..., process_request=..., sock=_sock)` combo failed silently (the legacy `from websockets.server import serve` import + own-bound `sock` is the deprecated code path). Switched to the new `from websockets.asyncio.server import serve` import with `serve(..., process_request=...)` only. start.bat reclaims the port, so SO_REUSEADDR is no longer needed.
+- **ZeroScript-style bridge:** the bridge now auto-spawns `launch_studio_mcp.py` as the only MCP server (no Node mcp-server / no `npm run build` needed). A new `config.json` ships with `{"mcpServers":{"roblox":{"command":"launch_studio_mcp.py","args":[]}}}` so the bridge talks to Roblox Studio out of the box.
+- **ZeroScript-style WS protocol in bridge.py:** new message types `list_tools`, `call_tool` (with `server/tool` routing), `restart_mcp`, `add_server`/`remove_server` (auto-write config.json), `studio_status` (tasklist-based Roblox Studio app probe), `ping` → `pong`. Backward-compatible with the legacy method-style frames.
+- **start.bat simplified** (matches your reference): just `[1/3] Python` → `[2/3] websockets` → `[3/3] bridge`, no Node, no MCP server, no port-17613 race.
+- **Popup redesigned to ZeroScript style:** small (248px), dark theme, status dot, tools count, tools list (collapsible), activity log, "▶ Start agent" (full-width blue) + Reconnect / Restart Roblox server / Settings buttons. No more 5-button grid; just what the AI needs.
+- **background.js rewritten** to ZeroScript's protocol: `status`, `list_tools`, `call_tool`, `restart_mcp`, `add_server`, `remove_server`, `reconnect`, `version` messages. Proper async sendResponse with `waitForConnection` for SW wake-up.
+- **Removed:** the `mcp-server/` Node dependency from the runtime path (still in repo for power users, but no longer required). The popup no longer shows "MCP server not built" - everything is Python.
+- Sync 1.1.5 across all versioned files.
 - **Extension popup:**
   - New **"▶ Start agent"** button (full-width, gradient blue). It finds the active AI tab (DeepSeek, ChatGPT, Gemini, Kimi, GLM, Qwen, Arena, Meta) and injects the system prompt + a starter question, then auto-clicks Send.
   - **Tools section** shows the live tool list pulled from `bridge.py`'s new `/tools` HTTP endpoint, with a count pill and styled tool tags. Now you can see every tool the AI has access to.

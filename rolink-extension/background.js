@@ -1,124 +1,241 @@
-// RoLink background.js — single WS owner (avoids mixed-content), broadcasts status to all provider tabs
-const BRIDGE="ws://127.0.0.1:17613";
-const HTTP_HEALTH="http://127.0.0.1:17613/health";
-const VERSION=chrome.runtime.getManifest().version;
-const PROVIDER_URLS=["chat.deepseek.com","chatgpt.com","gemini.google.com","kimi.ai","chat.z.ai","chat.qwen.ai","arena.ai","meta.ai"];
-let ws=null, reconnectDelay=1000, heartbeatTimer=null, staleTimer=null;
-let toolsCache=null, studioConnected=false;
-let pending=new Map();
-let offlineSince=null, badgeSet=false;
-let healthFailCount=0;
+// RoLink background.js - service worker.
+// Owns ONE resilient WebSocket to the local bridge (ws://127.0.0.1:17613).
+// Keeping the socket here (not in the content script) avoids https->ws mixed
+// content issues and centralises reconnect / timeout logic.
+//
+// Contract with content.js: every sendMessage ALWAYS gets a response object,
+// even when the bridge is offline. The agentic loop must never hang waiting.
 
-function setBadge(connected){
-  try{
-    if(connected){
-      offlineSince=null; badgeSet=false;
-      chrome.action.setBadgeText({text:""}); chrome.action.setBadgeBackgroundColor({color:"#4caf50"});
-    } else {
-      if(!offlineSince) offlineSince=Date.now();
-      const secs=Math.floor((Date.now()-offlineSince)/1000);
-      if(secs>=30 && !badgeSet){
-        badgeSet=true;
-        chrome.action.setBadgeText({text:"!"}); chrome.action.setBadgeBackgroundColor({color:"#f44336"});
-      }
-    }
-  }catch{}
-}
+const PORT = 17613;
+const URL = `ws://127.0.0.1:${PORT}`;
 
-async function healthProbe(){
-  try{
-    const c=new AbortController(); setTimeout(()=>c.abort(), 800);
-    const r=await fetch(HTTP_HEALTH, {cache:"no-store", signal:c.signal});
-    if(r.ok) { healthFailCount=0; return true; }
-  }catch{}
-  healthFailCount++;
-  return false;
-}
+const PROVIDER_URLS = [
+  "chat.deepseek.com","deepseek.com","chatgpt.com","chat.openai.com",
+  "gemini.google.com","www.kimi.ai","kimi.ai",
+  "chat.z.ai","chat.qwen.ai","arena.ai","www.meta.ai","meta.ai"
+];
 
-async function connect(){
-  // Q2 keep dummy token (no auth) — bridge.py accepts any token. Health probe first to avoid ERR_CONNECTION_REFUSED spam.
-  const healthy = await healthProbe();
-  if(!healthy){
-    if(healthFailCount % 5 === 1) console.warn("[RoLink] bridge offline — run start.bat (health probe failed "+healthFailCount+")");
-    setBadge(false);
-    schedule();
-    return;
-  }
-  try{ ws=new WebSocket(BRIDGE+"/ws?role=extension&token=dummy"); }catch{ setBadge(false); schedule(); return; }
-  ws.onopen=()=>{ reconnectDelay=1000; healthFailCount=0; setBadge(true); heartbeatTimer=setInterval(()=>{ if(ws.readyState===1) ws.send(JSON.stringify({id:"hb",method:"heartbeat"})); resetStale(); },10000); resetStale(); broadcast({type:"bridge", status:"connected"}); };
-  ws.onclose=()=>{ clearInterval(heartbeatTimer); clearTimeout(staleTimer); setBadge(false); broadcast({type:"bridge", status:"disconnected"}); schedule(); };
-  ws.onerror=()=>{ try{ws.close();}catch{}; setBadge(false); };
-  ws.onmessage=(e)=>{
-    resetStale();
-    try{
-      const m=JSON.parse(e.data);
-      if(m.id && pending.has(m.id)){ pending.get(m.id)(m); pending.delete(m.id); setTimeout(()=>pending.delete(m.id), 60000); }
-      if(m.result && m.result.servers) toolsCache=m.result;
-      broadcast({type:"result", data:m});
-    }catch{}
+const RECONNECT_MIN = 1000;
+const RECONNECT_MAX = 5000;
+const HEARTBEAT_MS = 10000;
+const STALE_SOCKET_MS = 25000;
+const REQUEST_TIMEOUT_DEFAULT = 130000;
+
+let ws = null;
+let connected = false;
+let reconnectDelay = RECONNECT_MIN;
+let reconnectTimer = null;
+let heartbeatTimer = null;
+let lastMessageAt = 0;
+let nextId = 1;
+const pending = new Map();
+let toolsCache = [];
+let mcpAlive = false;
+let serversCache = [];
+let studioConnected = null;
+let studioApp = null;
+
+function log(...a){ console.log("[rolink-bg]", ...a); }
+
+function connect(){
+  if(ws && (ws.readyState===WebSocket.OPEN || ws.readyState===WebSocket.CONNECTING)) return;
+  clearTimeout(reconnectTimer);
+  try{ ws=new WebSocket(URL+"/ws?role=extension&token=dummy"); }
+  catch(e){ log("WebSocket ctor failed", e); scheduleReconnect(); return; }
+  ws.onopen=()=>{
+    connected=true; reconnectDelay=RECONNECT_MIN; lastMessageAt=Date.now();
+    log("connected to bridge");
+    startHeartbeat();
+    broadcastStatus();
   };
+  ws.onmessage=(ev)=>{
+    lastMessageAt=Date.now();
+    let msg; try{ msg=JSON.parse(ev.data); }catch{ return; }
+    handleBridgeMessage(msg);
+  };
+  ws.onclose=()=>{
+    connected=false; mcpAlive=false; studioConnected=null; studioApp=null; serversCache=[];
+    stopHeartbeat(); failAllPending("bridge connection closed"); broadcastStatus(); scheduleReconnect();
+  };
+  ws.onerror=()=>{ try{ ws.close(); }catch{} };
 }
-function resetStale(){ clearTimeout(staleTimer); staleTimer=setTimeout(()=>{ try{ws.close();}catch{} },25000); }
-function schedule(){ setTimeout(connect, reconnectDelay); reconnectDelay=Math.min(15000, reconnectDelay*1.7); }
-function broadcast(msg){
-  const urlFilters = PROVIDER_URLS.map(h => "*://" + h + "/*");
-  chrome.tabs.query({ url: urlFilters }, tabs => {
-    for (const t of tabs) {
-      if (t.id == null) continue;
-      const p = chrome.tabs.sendMessage(t.id, msg);
-      if (p && p.catch) p.catch(() => {});
+function scheduleReconnect(){
+  clearTimeout(reconnectTimer);
+  reconnectTimer=setTimeout(connect, reconnectDelay);
+  reconnectDelay=Math.min(reconnectDelay*1.7, RECONNECT_MAX);
+}
+function startHeartbeat(){
+  stopHeartbeat();
+  heartbeatTimer=setInterval(()=>{
+    if(connected){
+      if(lastMessageAt && Date.now()-lastMessageAt>STALE_SOCKET_MS){
+        log("socket stale, forcing reconnect");
+        try{ ws.close(); }catch{}
+        return;
+      }
+      send({type:"ping"}).catch(()=>{});
+      refreshStudioStatus();
+    }
+  }, HEARTBEAT_MS);
+}
+function stopHeartbeat(){ clearInterval(heartbeatTimer); heartbeatTimer=null; }
+function waitForConnection(timeout=8000){
+  return new Promise(resolve=>{
+    if(connected && ws && ws.readyState===WebSocket.OPEN) return resolve(true);
+    connect();
+    const t0=Date.now();
+    const iv=setInterval(()=>{
+      if(connected && ws && ws.readyState===WebSocket.OPEN){ clearInterval(iv); resolve(true); }
+      else if(Date.now()-t0>timeout){ clearInterval(iv); resolve(false); }
+    }, 100);
+  });
+}
+async function send(obj, timeout=REQUEST_TIMEOUT_DEFAULT){
+  if(!connected || !ws || ws.readyState!==WebSocket.OPEN){
+    await waitForConnection(8000);
+  }
+  return new Promise(resolve=>{
+    if(!connected || !ws || ws.readyState!==WebSocket.OPEN){
+      return resolve({ok:false, kind:"disconnected", error:"bridge not connected"});
+    }
+    const id=nextId++;
+    const payload={...obj, id};
+    const timer=setTimeout(()=>{
+      if(pending.has(id)){
+        pending.delete(id);
+        resolve({ok:false, kind:"timeout", error:"bridge did not respond in time"});
+      }
+    }, timeout);
+    pending.set(id, {resolve, timer});
+    try{ ws.send(JSON.stringify(payload)); }
+    catch(e){
+      clearTimeout(timer); pending.delete(id);
+      resolve({ok:false, kind:"disconnected", error:String(e)});
     }
   });
-  if (chrome.runtime.lastError) void chrome.runtime.lastError;
 }
 
-// Ensure single alarm (avoid duplicate on SW restart)
-chrome.alarms.get("rolink-heartbeat", a => { if(!a) chrome.alarms.create("rolink-heartbeat",{periodInMinutes:0.2}); });
+let studioProbing=false;
+async function refreshStudioStatus(){
+  if(studioProbing || !connected) return;
+  studioProbing=true;
+  try{
+    const r=await send({type:"studio_status"}, 12000);
+    const v=r && r.ok && typeof r.studio==="boolean" ? r.studio : null;
+    if(v!==studioConnected){ studioConnected=v; broadcastStatus(); }
+  }finally{ studioProbing=false; }
+}
 
-connect();
-chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
-  if(msg.type==="bridge"){
-    sendResponse({ok:true, status: ws && ws.readyState===1 ? "connected" : "disconnected", tools:toolsCache});
-    return false;
+function handleBridgeMessage(msg){
+  if("studio" in msg && (typeof msg.studio==="boolean" || msg.studio===null)) studioConnected=msg.studio;
+  if("studio_app" in msg && (typeof msg.studio_app==="boolean" || msg.studio_app===null)) studioApp=msg.studio_app;
+  if(msg.type==="studio_status"){ resolvePending(msg.id, {ok:true, studio:studioConnected}); broadcastStatus(); return; }
+  if(msg.type==="connected"){
+    mcpAlive=!!msg.mcp_alive;
+    if(Array.isArray(msg.tools)) toolsCache=msg.tools;
+    if(Array.isArray(msg.servers)) serversCache=msg.servers;
+    broadcastStatus(); return;
   }
-  if(msg.type==="version"){ sendResponse({version:VERSION}); return false; }
-  if(msg.type==="reconnect"){ if(ws){try{ws.close();}catch{}} else { connect(); } sendResponse({ok:true}); return false; }
-  if(msg.type==="start_agent"){
-    (async()=>{
-      const urlFilters = PROVIDER_URLS.map(h => "*://" + h + "/*");
-      chrome.tabs.query({ url: urlFilters }, async (tabs)=>{
-        if(!tabs.length){ sendResponse({ok:false,error:"No AI tab open. Open chat.deepseek.com, chatgpt.com, etc., then try again."}); return; }
-        const tab = tabs.find(t=>t.active) || tabs[0];
-        try{
-          await chrome.scripting.executeScript({ target:{tabId:tab.id, allFrames:false}, files:["core/inject.js"] });
-          sendResponse({ok:true,tabId:tab.id,url:tab.url});
-        }catch(e){ sendResponse({ok:false,error:String(e)}); }
-      });
-    })();
-    return true;
+  if(msg.type==="pong"){ resolvePending(msg.id, {ok:true}); return; }
+  if(msg.type==="tools"){
+    if(Array.isArray(msg.tools)) toolsCache=msg.tools;
+    if(Array.isArray(msg.servers)) serversCache=msg.servers;
+    mcpAlive=!!msg.mcp_alive;
+    resolvePending(msg.id, {ok:true, tools:toolsCache});
+    broadcastStatus(); return;
   }
-  if(msg.type==="inject_done"){
-    broadcast({type:"log", level:"info", text:"[agent] started in "+ (msg.provider||"tab")});
-    return false;
+  if(msg.type==="tool_result"){
+    resolvePending(msg.id, msg.ok
+      ? {ok:true, text:msg.text, images:msg.images||[]}
+      : {ok:false, kind:msg.kind, error:msg.error});
+    return;
   }
-  if(msg.type==="log"){
-    broadcast({type:"log", level:msg.level||"info", text:msg.text||""});
-    return false;
+  if(msg.type==="mcp_status"){
+    mcpAlive=!!msg.alive;
+    if(Array.isArray(msg.tools)) toolsCache=msg.tools;
+    if(Array.isArray(msg.servers)) serversCache=msg.servers;
+    resolvePending(msg.id, {ok:!!msg.ok, alive:msg.alive, error:msg.error});
+    broadcastStatus(); return;
   }
-  if(msg.id){
-    if(ws && ws.readyState===1){
-      pending.set(msg.id, (res)=> { try{ sendResponse(res); }catch{} });
-      try{ ws.send(JSON.stringify(msg)); }catch(e){ pending.delete(msg.id); sendResponse({error:String(e)}); return false; }
-      setTimeout(()=>{ if(pending.has(msg.id)){ pending.delete(msg.id); try{ sendResponse({error:"timeout"});}catch{} } },130000);
-      return true;
-    } else {
-      sendResponse({error:"bridge offline"});
-      return false;
+  if(msg.type==="server_changed"){
+    resolvePending(msg.id, {ok:!!msg.ok, error:msg.error, restarting:!!msg.restarting});
+    return;
+  }
+  if(msg.type==="error"){ resolvePending(msg.id, {ok:false, error:msg.error}); return; }
+  // Generic id-based dispatch for bridge.py which uses simple {id, result/error}
+  if(msg.id!=null && pending.has(msg.id)){
+    if(msg.error){ resolvePending(msg.id, {ok:false, error: typeof msg.error==="string" ? msg.error : JSON.stringify(msg.error)}); }
+    else if("result" in msg){ resolvePending(msg.id, {ok:true, ...(msg.result||{})}); }
+    else { resolvePending(msg.id, msg); }
+    return;
+  }
+  broadcastStatus();
+}
+
+function resolvePending(id, value){
+  const p=pending.get(id); if(!p) return;
+  clearTimeout(p.timer); pending.delete(id); p.resolve(value);
+}
+function failAllPending(reason){
+  for(const [, p] of pending){ clearTimeout(p.timer); p.resolve({ok:false, kind:"disconnected", error:reason}); }
+  pending.clear();
+}
+
+function statusObj(){
+  return {type:"rolink-status", connected, mcpAlive, studio:studioConnected, studioApp, tools:toolsCache.length, servers:serversCache};
+}
+function broadcastStatus(){
+  chrome.runtime.sendMessage(statusObj()).catch(()=>{});
+  chrome.tabs.query({url:PROVIDER_URLS.map(h=>"*://"+h+"/*")}, tabs=>{
+    for(const t of tabs||[]) chrome.tabs.sendMessage(t.id, statusObj()).catch(()=>{});
+  });
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse)=>{
+  (async()=>{
+    switch(msg.type){
+      case "status":
+        if(!connected) connect();
+        sendResponse(statusObj());
+        break;
+      case "list_tools": {
+        const r=await send({type:"list_tools"}, 10000);
+        if(r && r.ok && Array.isArray(r.tools)) sendResponse({ok:true, tools:r.tools});
+        else if(r && Array.isArray(r.tools)) sendResponse({ok:true, tools:r.tools});
+        else sendResponse({ok:toolsCache.length>0, tools:toolsCache, error:r&&r.error});
+        break;
+      }
+      case "call_tool": {
+        const timeout=(msg.timeout||120000)+10000;
+        const r=await send({type:"call_tool", name:msg.name, arguments:msg.arguments, timeout:msg.timeout}, timeout);
+        sendResponse(r);
+        break;
+      }
+      case "restart_mcp": {
+        const r=await send({type:"restart_mcp"}, 30000);
+        sendResponse(r);
+        break;
+      }
+      case "add_server": {
+        const r=await send({type:"add_server", server_id:msg.server_id, command:msg.command, args:msg.args, env:msg.env}, 15000);
+        sendResponse(r); break;
+      }
+      case "remove_server": {
+        const r=await send({type:"remove_server", server_id:msg.server_id}, 15000);
+        sendResponse(r); break;
+      }
+      case "reconnect":
+        reconnectDelay=RECONNECT_MIN; connect();
+        sendResponse({ok:true}); break;
+      case "version":
+        sendResponse({version:chrome.runtime.getManifest().version}); break;
+      default:
+        sendResponse({ok:false, error:"unknown message"});
     }
-  }
+  })();
+  return true;
 });
-chrome.alarms.onAlarm.addListener(async ()=>{ if(!ws || ws.readyState!==1) await connect(); else { try{ ws.send(JSON.stringify({id:"hb",method:"heartbeat"})); }catch{} } });
 
-// Keyboard shortcut Ctrl+Shift+R opens the popup (manifest command "open-popup").
-chrome.commands?.onCommand?.addListener((cmd)=>{ if(cmd==="open-popup") chrome.action.openPopup?.(); });
-
+chrome.runtime.onStartup.addListener(connect);
+chrome.runtime.onInstalled.addListener(connect);
+connect();

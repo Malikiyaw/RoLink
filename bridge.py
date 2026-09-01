@@ -9,12 +9,15 @@ from concurrent.futures import ThreadPoolExecutor
 
 try:
     import websockets
-    from websockets.server import serve
+    try:
+        from websockets.asyncio.server import serve
+    except ImportError:
+        from websockets.server import serve
 except ImportError:
     print("[RoLink] missing websockets — run: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
-BRIDGE_VERSION = "1.1.4"
+BRIDGE_VERSION = "1.1.5"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT") or "17613")
 CONFIG_PATH = pathlib.Path(__file__).parent / "config.json"
 STUDIO_MCP_PORT = 13469  # Studio MCP squatter detection
@@ -152,7 +155,6 @@ async def http_fallback(payload):
 
 # ---------- WS handler ----------
 async def ws_handler(ws):
-    # websockets 12+: ws.request.path
     try:
         path = ws.request.path if hasattr(ws,"request") else "/"
     except: path="/"
@@ -165,53 +167,144 @@ async def ws_handler(ws):
             except:
                 await ws.send(json.dumps({"id":"err","error":"invalid json"}))
                 continue
-            method = msg.get("method") or msg.get("tool")
             mid = msg.get("id") or str(int(time.time()*1000))
-            # heartbeat
-            if method in ("heartbeat","ping"):
-                await ws.send(json.dumps({"id":mid,"result":{"ok":True,"pong":True}}))
+            mtype = msg.get("type") or msg.get("method") or msg.get("tool")
+
+            # ── legacy ping/heartbeat ──
+            if mtype in ("heartbeat","ping"):
+                await ws.send(json.dumps({"id":mid,"type":"pong","ok":True}))
                 continue
-            # config hot-reload
-            if method == "add_server":
+
+            # ── list_tools: aggregate tools across every MCP server ──
+            if mtype == "list_tools":
+                ensure_servers()
+                all_tools=[]
+                alive_servers=[]
+                for name, client in servers.items():
+                    try:
+                        client.ensure()
+                        res = await asyncio.to_thread(client.call, {"jsonrpc":"2.0","id":mid,"method":"tools/list","params":{}}, 10)
+                        if isinstance(res, dict) and "result" in res:
+                            tools = res["result"].get("tools",[]) if isinstance(res["result"], dict) else []
+                            for t in tools:
+                                nm = t.get("name") if isinstance(t, dict) else str(t)
+                                all_tools.append({"name":f"{name}/{nm}","server":name,"base":nm,"description":t.get("description","") if isinstance(t, dict) else ""})
+                        alive_servers.append({"id":name,"alive":True,"tools":len(all_tools)})
+                    except Exception as e:
+                        alive_servers.append({"id":name,"alive":False,"tools":0,"error":str(e)[:120]})
+                await ws.send(json.dumps({"id":mid,"type":"tools","ok":True,"tools":all_tools,"servers":alive_servers,"mcp_alive":len([s for s in alive_servers if s["alive"]])>0}))
+                continue
+
+            # ── call_tool: route to the right server by tool name ──
+            if mtype == "call_tool":
+                ensure_servers()
+                tname = msg.get("name") or ""
+                args = msg.get("arguments") or {}
+                timeout = int(msg.get("timeout") or 120000) / 1000.0
+                # tname may be "server/tool" or just "tool"
+                if "/" in tname:
+                    sname, bname = tname.split("/",1)
+                else:
+                    sname = None; bname = tname
+                # try specified server first, then any
+                order = []
+                if sname and sname in servers: order.append(sname)
+                for n in servers:
+                    if n not in order: order.append(n)
+                last_err=None
+                for sn in order:
+                    if not bname: break
+                    client = servers[sn]
+                    try:
+                        client.ensure()
+                        res = await asyncio.to_thread(client.call, {"jsonrpc":"2.0","id":mid,"method":"tools/call","params":{"name":bname,"arguments":args}}, max(5, int(timeout)))
+                        await ws.send(json.dumps({"id":mid,"type":"tool_result","ok":True,"text":str(res)[:200000],"server":sn}))
+                        break
+                    except Exception as e:
+                        last_err=str(e); continue
+                else:
+                    await ws.send(json.dumps({"id":mid,"type":"tool_result","ok":False,"error":last_err or "no MCP server handled this tool"}))
+                continue
+
+            # ── restart_mcp: kill + respawn all configured servers ──
+            if mtype == "restart_mcp":
+                for c in list(servers.values()):
+                    try: c.stop()
+                    except: pass
+                servers.clear()
+                ensure_servers()
+                await ws.send(json.dumps({"id":mid,"type":"mcp_status","ok":True,"alive":len(servers)>0,"servers":list(servers.keys())}))
+                continue
+
+            # ── add_server ──
+            if mtype == "add_server":
                 cfg = load_config()
-                cfg.setdefault("mcpServers",{})[msg["name"]] = {"command":msg["command"],"args":msg.get("args",[])}
+                cfg.setdefault("mcpServers",{})[msg["server_id"]] = {"command":msg["command"],"args":msg.get("args",[])}
+                if msg.get("env"): cfg["mcpServers"][msg["server_id"]]["env"]=msg["env"]
                 tmp = CONFIG_PATH.with_suffix(".tmp")
                 tmp.write_text(json.dumps(cfg,indent=2),encoding="utf-8")
                 tmp.replace(CONFIG_PATH)
                 ensure_servers()
-                await ws.send(json.dumps({"id":mid,"result":{"ok":True}}))
+                await ws.send(json.dumps({"id":mid,"type":"server_changed","ok":True}))
                 continue
-            if method == "restart":
-                await ws.send(json.dumps({"id":mid,"result":{"ok":True,"restarting":True}}))
-                # kill children then exec self
+
+            # ── remove_server ──
+            if mtype == "remove_server":
+                cfg = load_config()
+                cfg.get("mcpServers",{}).pop(msg.get("server_id"), None)
+                tmp = CONFIG_PATH.with_suffix(".tmp")
+                tmp.write_text(json.dumps(cfg,indent=2),encoding="utf-8")
+                tmp.replace(CONFIG_PATH)
+                if msg.get("server_id") in servers:
+                    try: servers[msg["server_id"]].stop()
+                    except: pass
+                    del servers[msg["server_id"]]
+                await ws.send(json.dumps({"id":mid,"type":"server_changed","ok":True}))
+                continue
+
+            # ── studio_status: probe Roblox Studio app via tasklist ──
+            if mtype == "studio_status":
+                studio_app = False
+                try:
+                    if sys.platform=="win32":
+                        out = subprocess.run(["tasklist","/FI","IMAGENAME eq RobloxStudioBeta.exe"], capture_output=True, text=True, timeout=4).stdout
+                        studio_app = "RobloxStudioBeta.exe" in out
+                    else:
+                        out = subprocess.run(["pgrep","-lf","RobloxStudio"], capture_output=True, text=True, timeout=4).stdout
+                        studio_app = "RobloxStudio" in out
+                except Exception: pass
+                # connected = at least one MCP server is alive and has tools
+                connected = False
+                for c in servers.values():
+                    if c.proc and c.proc.poll() is None and c.tools_cache:
+                        connected = True; break
+                await ws.send(json.dumps({"id":mid,"type":"studio_status","ok":True,"studio":connected,"studio_app":studio_app}))
+                continue
+
+            # ── legacy restart self ──
+            if mtype == "restart":
+                await ws.send(json.dumps({"id":mid,"ok":True,"restarting":True}))
                 if sys.platform=="win32":
                     subprocess.run(["taskkill","/F","/T","/PID",str(os.getpid())], capture_output=True)
                 os.execv(sys.executable, [sys.executable, __file__])
-            # tool dispatch: try roblox server first, then http fallback
+
+            # ── legacy tool dispatch (raw MCP / RoLink enqueue style) ──
             ensure_servers()
-            payload = msg
-            # normalize MCP tool call: {jsonrpc, method: tools/call, params:{name, arguments}}
-            dispatched=False
             for name, client in servers.items():
                 try:
                     client.ensure()
-                    # if msg is already JSON-RPC, send as-is; else wrap
                     if "jsonrpc" in msg:
                         res = await asyncio.to_thread(client.call, msg, 30)
                     else:
-                        # map RoLink enqueue style -> tools/call if needed
                         res = await asyncio.to_thread(client.call, {"jsonrpc":"2.0","id":mid,"method":"tools/call","params":{"name": msg.get("tool") or msg.get("method"), "arguments": msg.get("args") or msg.get("params") or {}}}, 30)
                     await ws.send(json.dumps({"id":mid,"result":res}))
-                    dispatched=True
                     break
                 except Exception as e:
                     log(f"{name} call failed: {e}", "warn")
                     continue
-            if not dispatched:
-                # HTTP fallback to Node mcp-server
-                loop = asyncio.get_event_loop()
-                res = await http_fallback(msg)
-                await ws.send(json.dumps({"id":mid,"result":res}))
+            else:
+                # unknown message
+                await ws.send(json.dumps({"id":mid,"type":"error","ok":False,"error":f"unknown message: {mtype}"}))
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
@@ -237,32 +330,21 @@ async def health_handler(reader, writer):
 
 async def http_ws_process_request(path, request_headers):
     # websockets process_request hook: serve health on HTTP GET, else WS upgrade
-    # path includes "?role=extension&token=dummy"
     clean = path.split("?")[0] if path else "/"
     if clean in ("/health", "/health/", "/"):
         if request_headers.get("Upgrade", "").lower() != "websocket":
-            body = json.dumps({"ok":True,"version":BRIDGE_VERSION,"bridge":PORT,"clients":len(clients),"servers":list(servers.keys()),"uptime": int(time.time()-start_time)}).encode()
-            return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*"),("Content-Length",str(len(body)))], body)
-    if clean in ("/tools", "/tools/"):
-        if request_headers.get("Upgrade", "").lower() != "websocket":
+            tools_count = 0
             try:
-                import urllib.request
-                with urllib.request.urlopen("http://127.0.0.1:3001/tools", timeout=3) as r:
-                    data = r.read()
-                return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*"),("Content-Length",str(len(data)))], data)
-            except Exception:
-                fallback = json.dumps({"ok":True,"tools":[{"name":n} for n in ("create_instance","run_code","get_snapshot","set_property","get_logs","undo","heal_code","rollback","perf_stats","translate_code","validate_code","run_sandbox_tests","plan","get_context","list_templates","use_template","style_profile","generate_tests","git_commit","review_code","compile_visual","collab_broadcast","search_assets","import_asset","report_metrics","generate_gdd","generate_asset","optimize_perf","analytics_report","analytics_suggestions")]}).encode()
-                return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*"),("Content-Length",str(len(fallback)))], fallback)
+                for c in servers.values():
+                    if c.proc and c.proc.poll() is None: tools_count += max(0, len(c.tools_cache or []))
+            except Exception: pass
+            body = json.dumps({"ok":True,"version":BRIDGE_VERSION,"bridge":PORT,"clients":len(clients),"servers":list(servers.keys()),"tools":tools_count,"uptime": int(time.time()-start_time)}).encode()
+            return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*"),("Content-Length",str(len(body)))], body)
     return None
 
 async def main():
     ensure_servers()
-    import socket as _socket
-    _sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-    _sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-    _sock.bind(("127.0.0.1", PORT))
-    _sock.listen(128)
-    ws_server = await serve(ws_handler, sock=_sock, max_size=10*1024*1024, process_request=http_ws_process_request)
+    ws_server = await serve(ws_handler, "127.0.0.1", PORT, max_size=10*1024*1024, process_request=http_ws_process_request)
     log(f"RoLink Bridge {BRIDGE_VERSION} WS ws://127.0.0.1:{PORT} (+ http://127.0.0.1:{PORT}/health)")
     await asyncio.Future()
 

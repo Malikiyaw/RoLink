@@ -214,34 +214,6 @@ if defined OLDPID (
     timeout /t 1 /nobreak >nul
 )
 
-REM --- Optional: launch Node mcp-server in background if built ----------------
-set "MCPDIR=%~dp0mcp-server"
-set "MCPENTRY=%MCPDIR%\dist\mcp-server\src\index.js"
-set "MCPENTRY2=%MCPDIR%\dist\src\index.js"
-if exist "%MCPENTRY%" set "MCPENTRY=%MCPENTRY%"
-if exist "%MCPENTRY2%" if not exist "%MCPENTRY%" set "MCPENTRY=%MCPENTRY2%"
-where node >nul 2>nul
-if not errorlevel 1 (
-    if exist "%MCPENTRY%" (
-        set "MCPBUSY="
-        for /f "tokens=5" %%a in ('netstat -aon ^| findstr :3001 ^| findstr LISTENING 2^>nul') do set "MCPBUSY=%%a"
-        if defined MCPBUSY (
-            echo         MCP server already running on port 3001 ^(pid !MCPBUSY!^).
-            call :log "MCP server already on port 3001 (pid !MCPBUSY!)"
-        ) else (
-            echo         Launching MCP server ^(%MCPENTRY%^)...
-            call :log "Launching MCP server: %MCPENTRY%"
-            start "RoLink MCP" /B node "%MCPENTRY%" > "%~dp0logs\mcp.log" 2>&1
-            timeout /t 2 /nobreak >nul
-        )
-    ) else (
-        echo         MCP server not built ^(run npm -C mcp-server run build to enable 84+ tools^).
-        call :log "MCP server entry not found at %MCPENTRY% (skipped)."
-    )
-) else (
-    call :log "node.exe not on PATH - skipping MCP server (Python bridge only)."
-)
-
 echo.
 echo  ############################################################
 echo  ##                                                        ##
