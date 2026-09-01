@@ -59,7 +59,7 @@
     if(parsed && started && ws && ws.readyState===1){
       const id="tool-"+Date.now();
       ws.send(JSON.stringify({id, ...parsed}));
-      // hide raw block like ZeroScript chip
+      // hide raw block chip
       last.parentElement.style.display="none";
       const chip=document.createElement("div");
       chip.textContent="🔧 RoLink tool: "+(parsed.tool||parsed.method||"run")+"…";

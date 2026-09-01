@@ -12,8 +12,8 @@ jobs:
         run: |
           zip -r RoLink-${{ github.ref_name }}.zip \
             bridge.py config.json launch_studio_mcp.py start.bat MacOS_Start.command \
-            rolink-extension/ extension/ mcp-server/ shared/ studio-plugin/ \
-            README.md LICENSE CHANGELOG.md \
+            rolink-extension/ mcp-server/ shared/ studio-plugin/ \
+            README.md LICENSE CHANGELOG.md VERSION VERSIONING.md \
             -x "*/node_modules/*" "*/dist/*" "*.log" "*/.git/*"
           ls -lh RoLink-*.zip
       - uses: softprops/action-gh-release@v1

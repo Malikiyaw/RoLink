@@ -81,7 +81,7 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr /C:":17613" ^| findstr LISTEN
 REM Verify free
 netstat -aon | findstr /C:":17613" | findstr LISTENING >nul 2>&1
 if not errorlevel 1 (
-  echo [WARN] Port 17613 still busy. Close other RoLink/ZeroScript bridges.
+  echo [WARN] Port 17613 still busy. Close other RoLink bridges.
   call :log "WARN port still busy"
 )
 

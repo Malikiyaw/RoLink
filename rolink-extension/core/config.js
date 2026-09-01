@@ -1,8 +1,8 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "1.5.4";
-const SYS_MARKER = "\u27E6ZS-SYS\u27E7";
+const ROLINK_VERSION = "1.0.0";
+const SYS_MARKER = "\u27E6RL-SYS\u27E7";
 const TOOL_NOTES = `
-You have RoLink MCP tools (more powerful than ZeroScript):
+You have RoLink MCP tools:
 - read/edit scripts: get_snapshot, read_script, edit_script, run_code (Luau sandbox, self-heals)
 - instances: create_instance, delete_instance, set_property
 - assets: search_assets, import_asset (Creator Store), generate_asset (text-to-3D fallback)

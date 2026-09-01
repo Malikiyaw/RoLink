@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
 RoLink launch_studio_mcp.py — finds newest StudioMCP.exe paired with RobloxStudioBeta.exe
-Ported from ZeroScript-Free launch_studio_mcp.py, MIT-adapted.
-Respects ZS_STUDIO_MCP_PATH / ROLINK_STUDIO_MCP_PATH env overrides.
+Respects ROLINK_STUDIO_MCP_PATH env override.
 """
 import os, sys, pathlib, subprocess, json, time
 
-BRIDGE_VERSION = "1.5.4"
+BRIDGE_VERSION = "1.0.0"
 
 def find_studio_mcp():
-    override = os.environ.get("ROLINK_STUDIO_MCP_PATH") or os.environ.get("ZS_STUDIO_MCP_PATH")
+    override = os.environ.get("ROLINK_STUDIO_MCP_PATH")
     if override and pathlib.Path(override).exists():
         return override
     candidates = []
