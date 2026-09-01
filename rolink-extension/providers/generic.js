@@ -226,7 +226,56 @@ window.makeGenericProvider = function(opts){
     const md = item.querySelector("p, div");
     return md ? {parent: md.parentElement, ref: md} : null;
   };
-  function installSendHooks(handlers){ /* optional */ }
+  // ── send-hooks (user-send interception) ──────────────────────────────────
+  // Wires global keydown + click listeners so the core can be notified when:
+  //   - the user typed a real message and pressed Enter / clicked Send
+  //   - the user clicked the site's native Stop button
+  //   - the user clicked the site's native Continue button
+  // Required for the agent loop to re-arm after a session ends.
+  let _hooks = null;
+  function installSendHooks(handlers){
+    _hooks = handlers || null;
+    if(_hooksInstalled) return;
+    _hooksInstalled = true;
+    document.addEventListener("keydown", (e) => {
+      if(e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+      const editor = getEditor();
+      if(!editor || !editor.contains(e.target)) return;
+      const text = editorText().trim();
+      if(!text) return;
+      if(_hooks.isBlocked && _hooks.isBlocked()) return;
+      if(!_hooks.isStarted || !_hooks.isStarted()){
+        if(chatIsEmpty() && _hooks.onBlockedAttempt) _hooks.onBlockedAttempt();
+        return;
+      }
+      if(_hooks.onUserMessage) _hooks.onUserMessage(P ? P.assistantCount() : 0);
+    }, true);
+    document.addEventListener("click", (e) => {
+      if(!getEditor()) return;
+      const t = e.target;
+      if(!t || !t.closest) return;
+      // Native Continue button?
+      const all = t.closest("button");
+      if(all && /^(continue|continuar|continu|继续|fortfahren|seguir|続行)$/i.test((all.innerText||"").trim())){
+        if(_hooks.onNativeContinue) _hooks.onNativeContinue();
+        return;
+      }
+      const btn = t.closest(S.sendBtn);
+      if(!btn) return;
+      if(isStopBtn(btn)){
+        if(_hooks.onNativeStop) _hooks.onNativeStop();
+        return;
+      }
+      if(btn.getAttribute && btn.getAttribute("aria-disabled") === "true") return;
+      if(_hooks.isBlocked && _hooks.isBlocked()) return;
+      if(!_hooks.isStarted || !_hooks.isStarted()){
+        if(chatIsEmpty() && _hooks.onBlockedAttempt) _hooks.onBlockedAttempt();
+        return;
+      }
+      if(_hooks.onUserMessage) _hooks.onUserMessage(P ? P.assistantCount() : 0);
+    }, true);
+  }
+  const _hooksInstalled = false;
   function isFreshChat(){ return chatIsEmpty(); }
 
   // ── the ZSProvider object ────────────────────────────────────────────────

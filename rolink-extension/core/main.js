@@ -84,6 +84,9 @@
     parked: false,             // paused because the tab is hidden
     tools: [],
     focusedDataModel: null,    // last-known focused DataModel from get_studio_state
+    currentStudioId: null,     // last-known studio_id from list_roblox_studios
+    sessionEverStarted: false, // sticky: was Start ever clicked? Used by onUserMessage hook
+    userStopped: false,        // user clicked Stop (latched until next user message)
     status: "offline",
     lastAssistantIdAtBoot: null,
     sessionId: null,           // per-conversation session id (for memory)
@@ -406,6 +409,13 @@ ${customBlock}
       const NEEDS_DM = /^(execute_luau|multi_edit|script_read|script_grep|inspect_instance|start_stop_play|search_game_tree|delete_instance|set_property|get_property|generate_asset|search_assets|import_asset|insert_asset|search_asset|get_console_output|get_snapshot)$/i;
       if(NEEDS_DM.test(name)) args = Object.assign({}, args, { datamodel_type: A.focusedDataModel });
     }
+    // Auto-inject `studio_id` for tools that need it. The bridge requires
+    // studio_id on EVERY tool except list_roblox_studios. We track the
+    // current studio (from list_roblox_studios) and inject it.
+    if(args && typeof args === "object" && !args.studio_id && A.currentStudioId && name !== "list_roblox_studios"){
+      const NEEDS_STUDIO = true; // be permissive: every tool needs it
+      if(NEEDS_STUDIO) args = Object.assign({}, args, { studio_id: A.currentStudioId });
+    }
     if(sourceBlock && sourceBlock.parentElement && !A.strippedBlocks.has(sourceBlock)){
       A.strippedBlocks.add(sourceBlock);
       // Hide the raw tool block (and its code-fence wrapper) before chip insertion
@@ -458,6 +468,18 @@ ${customBlock}
           const m = String(text).match(/Focused DataModel in the viewport:\s*(\w+)/i)
                  || String(text).match(/Available DataModels:\s*(\w+)/i);
           if(m && m[1]) A.focusedDataModel = m[1];
+        }
+        // Capture the studio_id from list_roblox_studios (used for auto-
+        // injecting studio_id on subsequent calls).
+        if(name === "list_roblox_studios" && ok){
+          try{
+            const j = JSON.parse(text);
+            const studios = j && (j.studios || j);
+            if(Array.isArray(studios) && studios.length && studios[0] && studios[0].id){
+              A.currentStudioId = studios[0].id;
+              pushFeed("info", "🎯", `Studio: ${studios[0].name || studios[0].id} (auto-injected)`);
+            }
+          }catch{}
         }
         // Truncate huge results so we don't blow context
         const textForModel = text.length > 12000 ? text.slice(0, 11500) + "\n\n[…result truncated for context; full result is in the chip above…]" : text;
@@ -873,7 +895,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   // ── launcher click: start a session ──────────────────────────────────────
   async function startSession(){
     if(A.started) return;
-    A.started = true; A.starting = true; A.running = false; A.stopping = false;
+    A.started = true; A.sessionEverStarted = true; A.starting = true; A.running = false; A.stopping = false;
     A.feedStreak = 0; A.toolCount = 0; A.lastFeedText = ""; A.lastFeedAt = 0; A.lastFeedId = null;
     A.nudgeCount = 0;
     A.strippedBlocks = new WeakSet();
@@ -900,11 +922,11 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     A.startingKey = P.conversationKey ? P.conversationKey() : location.pathname;
     A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
     try{ await refreshTools(); }catch{}
-    // Auto-probe: discover the focused DataModel up front so we can auto-
-    // inject datamodel_type on every subsequent call. This avoids the
-    // "datamodel_type is required" error cycle.
+    // Auto-probe: discover the focused DataModel and current studio up front
+    // so we can auto-inject datamodel_type and studio_id on every subsequent
+    // call. This avoids the "X is required" error cycle.
     try{
-      const r = await bg({type:"call_tool", name: "get_studio_state", arguments: {}, timeout: 10000});
+      const r = await bg({type:"call_tool", name: "get_studio_state", arguments: { studio_id: A.currentStudioId || "" }, timeout: 10000});
       if(r && r.ok && r.text){
         const m = String(r.text).match(/Focused DataModel in the viewport:\s*(\w+)/i)
                || String(r.text).match(/Available DataModels:\s*(\w+)/i);
@@ -912,6 +934,19 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
           A.focusedDataModel = m[1];
           pushFeed("info", "🎯", `Focused DataModel: ${A.focusedDataModel} (auto-injected into tool args)`);
         }
+      }
+    }catch{}
+    try{
+      const r2 = await bg({type:"call_tool", name: "list_roblox_studios", arguments: {}, timeout: 10000});
+      if(r2 && r2.ok && r2.text){
+        try{
+          const j = JSON.parse(r2.text);
+          const studios = j && (j.studios || j);
+          if(Array.isArray(studios) && studios.length && studios[0] && studios[0].id){
+            A.currentStudioId = studios[0].id;
+            pushFeed("info", "🎯", `Studio: ${studios[0].name || studios[0].id} (auto-injected into tool args)`);
+          }
+        }catch{}
       }
     }catch{}
     try{ P.setInputLock && P.setInputLock(true); }catch{}
@@ -1007,6 +1042,57 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   // Start the DOM observer (lives as long as the page does)
   startObserver();
   wireUi();
+
+  // Wire user-send interception: re-arm the agent loop when the user sends
+  // a new message after the loop ended (or during a session).
+  if(P.installSendHooks){
+    P.installSendHooks({
+      isBlocked: () => A.injecting || A.running || A.starting,
+      // The session is "started" once the user clicked Start; subsequent user
+      // messages re-arm the loop without needing another click. Persist the
+      // started flag across loop iterations so the hook stays "started" even
+      // after the agent's final text reply ended the previous loop.
+      isStarted: () => A.started || A.sessionEverStarted === true,
+      onBlockedAttempt: () => {
+        showBanner("Click Start to begin a RoLink session, or wait for the current one to finish.", "warn", 4000);
+      },
+      onUserMessage: (base) => {
+        // A fresh user message = fresh intent. If the loop is done or never
+        // started, re-arm it so the agent keeps working.
+        pushFeed("info", "💬", "User sent a message — re-arming agent loop");
+        A.userStopped = false;
+        A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
+        // Mark the session as started (sticky across loop iterations)
+        A.started = true; A.sessionEverStarted = true;
+        // Small delay so the site's own UI has time to render the new turn
+        setTimeout(() => {
+          if(A.stopping || A.userStopped) return;
+          if(!A.running && !A.injecting){
+            // Restart the loop with the current assistant count as base
+            A.feedStreak = 0; A.nudgeCount = 0; A.toolCount = 0;
+            A.strippedBlocks = new WeakSet();
+            A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;
+            A.running = true;
+            // Re-show the stop button
+            document.getElementById("rl-stop-btn").style.display = "inline-flex";
+            launcher.classList.add("is-active");
+            launcher.innerHTML = `<span class="rl-stop-dot"></span><span class="rl-label">Stop agent</span>`;
+            agentLoop(typeof base === "number" ? base : (P.assistantCount ? P.assistantCount() : 0));
+          }
+        }, 300);
+      },
+      onNativeStop: () => {
+        A.userStopped = true;
+        if(A.running){ A.stopping = true; A.running = false; }
+        try{ P.stopGeneration && P.stopGeneration(); }catch{}
+        pushFeed("info", "⏸", "Native Stop clicked — agent paused");
+      },
+      onNativeContinue: () => {
+        A.userStopped = false;
+        pushFeed("info", "▶", "Native Continue clicked — agent resumed");
+      },
+    });
+  }
 
   // expose for debug / popup
   window.ROLINK = {

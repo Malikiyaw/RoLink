@@ -1,4 +1,32 @@
 # Changelog
+## 2.2.0 - studio_id auto-inject + agent loop re-arms on user message
+After the 2.1.2 "auto-inject datamodel_type" fix, the bridge revealed
+a SECOND required arg: `studio_id`. Nearly every tool requires it. The
+model had to call `list_roblox_studios` first, get the id, then pass it
+to every subsequent call — but it kept forgetting.
+
+- **Auto-inject `studio_id`**: `dispatchTool` now silently adds
+  `studio_id: A.currentStudioId` to every call (except
+  `list_roblox_studios` itself). Captured at session-start by an
+  auto-probe, or live whenever the model calls `list_roblox_studios`.
+- **Auto-inject `datamodel_type`** (from 2.1.2, kept) — same pattern.
+- **`installSendHooks` wired**: ZeroScript-style user-send interception
+  on every site. The generic factory now installs real keydown + click
+  listeners that call `onUserMessage(assistantCount)` when the user
+  presses Enter or clicks Send. This is what makes the agent loop
+  re-arm after the model says "DONE" — the user types a new message,
+  the agent loop spins up a new iteration automatically.
+- **Sticky `sessionEverStarted`**: once the user clicks Start, the
+  `isStarted` flag stays true across loop iterations. So after the
+  agent's final text reply, the user can keep typing and the loop
+  keeps restarting without needing to click Start again.
+- **Native stop/continue hooks**: clicking the AI site's own stop button
+  latches `userStopped=true` (suppresses auto-resume). Clicking
+  Continue clears it.
+- **Per-site deepseek.js already had real hooks** — this also works
+  for the other 7 sites now via the generic factory.
+- Version bump 2.1.2 → 2.2.0.
+
 ## 2.1.2 - Auto-inject datamodel_type + tool schemas in system prompt
 The bridge returned `datamodel_type is required` for every `execute_luau`
 call because the model has no way to know which DataModel is focused
