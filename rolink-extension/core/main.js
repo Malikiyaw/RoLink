@@ -1191,6 +1191,70 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         }
       }catch{}
     }, 2000);
+    // Whole-item text scan every 1.5s. ZeroScript's decorate.sweep pattern.
+    // Critical for sites that split a tool block across multiple <p>/<div>
+    // elements (DeepSeek renders `###LUA### ... ###END_LUA###` across many
+    // paragraphs). The live stripper only sees one element at a time; this
+    // joins all text and runs extractAll() on the joined string.
+    setInterval(()=>{
+      try{
+        if(!P || !P.allItems) return;
+        const items = P.allItems();
+        for(const it of items){
+          if(!it || A.dispatchedItems && A.dispatchedItems.has(it)) continue;
+          // Get full text of the item (excluding our own UI)
+          const text = joinItemText(it);
+          if(!text || text.indexOf("###MCP_TOOL###") === -1) continue;
+          if(ZSParse.hasOpenToolBlock(text)) continue;
+          const blks = ZSParse.extractAll(text);
+          const calls = blks.map(ZSParse.normalize).filter(Boolean);
+          if(!calls.length) continue;
+          // Check if we already have a chip for this item
+          if(it.querySelector(".rl-chip")) continue;
+          // Dispatch all calls
+          A.dispatchedItems = A.dispatchedItems || new WeakSet();
+          A.dispatchedItems.add(it);
+          A.strippedBlocks = A.strippedBlocks || new WeakSet();
+          A.strippedBlocks.add(it);
+          // Hide raw tool blocks in the item
+          it.querySelectorAll("pre, code, p, div").forEach(el => {
+            if(A.strippedBlocks.has(el)) return;
+            const t = (el.innerText || el.textContent || "");
+            if(t.indexOf("###MCP_TOOL###") !== -1 || ZSParse.hasOpenToolBlock(t)){
+              A.strippedBlocks.add(el);
+              el.style.display = "none";
+            }
+          });
+          for(let i = 0; i < calls.length; i++){
+            setTimeout(()=>dispatchTool(calls[i].name, calls[i].arguments, null, it), i*30);
+          }
+        }
+      }catch{}
+    }, 1500);
+  }
+  // Join all text nodes in an item into a single string, excluding our UI
+  function joinItemText(item){
+    if(!item) return "";
+    // Use a tree walker to get all text, excluding hidden elements and our UI
+    const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => {
+        if(!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        let p = n.parentElement;
+        while(p && p !== item){
+          if(p.id && (p.id === "rl-root" || p.id === "rl-bar" || p.id === "rl-tools" ||
+                      p.id === "rl-feed" || p.id === "rl-workspace" || p.id === "rl-banner" ||
+                      p.id === "rl-input-cover")) return NodeFilter.FILTER_REJECT;
+          if(p.classList && p.classList.contains("rl-chip")) return NodeFilter.FILTER_REJECT;
+          if(p.style && p.style.display === "none") return NodeFilter.FILTER_REJECT;
+          p = p.parentElement;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const parts = [];
+    let n;
+    while((n = walker.nextNode())) parts.push(n.nodeValue);
+    return parts.join(" ");
   }
 
   // ── status updates from background ───────────────────────────────────────
@@ -1254,6 +1318,39 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         }
         // Mark the session as started (sticky across loop iterations)
         A.started = true; A.sessionEverStarted = true;
+        // SAFETY NET: force-scan the entire chat RIGHT NOW for any tool
+        // blocks the live stripper may have missed. Critical for sites
+        // where the model's tool block was added then re-rendered, or
+        // mounted before the MutationObserver attached. The 1.5s
+        // interval scan would also catch it, but we want immediate
+        // dispatch so the user sees the chip appear right away.
+        try{
+          const items = (P && P.allItems) ? P.allItems() : [];
+          for(const it of items){
+            if(!it || (A.dispatchedItems && A.dispatchedItems.has(it))) continue;
+            const text = joinItemText(it);
+            if(!text || text.indexOf("###MCP_TOOL###") === -1) continue;
+            if(ZSParse.hasOpenToolBlock(text)) continue;
+            const blks = ZSParse.extractAll(text);
+            const calls = blks.map(ZSParse.normalize).filter(Boolean);
+            if(!calls.length) continue;
+            if(it.querySelector(".rl-chip")) continue;
+            A.dispatchedItems = A.dispatchedItems || new WeakSet();
+            A.dispatchedItems.add(it);
+            // Hide raw blocks
+            it.querySelectorAll("pre, code, p, div").forEach(el => {
+              if(A.strippedBlocks.has(el)) return;
+              const t = (el.innerText || el.textContent || "");
+              if(t.indexOf("###MCP_TOOL###") !== -1 || ZSParse.hasOpenToolBlock(t)){
+                A.strippedBlocks.add(el);
+                el.style.display = "none";
+              }
+            });
+            for(let i = 0; i < calls.length; i++){
+              setTimeout(()=>dispatchTool(calls[i].name, calls[i].arguments, null, it), i*30);
+            }
+          }
+        }catch{}
         // Small delay so the site's own UI has time to render the new turn
         setTimeout(() => {
           if(A.stopping || A.userStopped) return;
@@ -1261,6 +1358,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
             // Restart the loop with the current assistant count as base
             A.feedStreak = 0; A.nudgeCount = 0; A.toolCount = 0;
             A.strippedBlocks = new WeakSet();
+            A.dispatchedItems = new WeakSet();
             A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;
             A.running = true;
             // Re-show the stop button

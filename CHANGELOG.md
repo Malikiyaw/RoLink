@@ -1,4 +1,30 @@
 # Changelog
+## 2.3.3 - Robust tool-block detection: whole-item text scan + immediate onUserMessage scan
+The user reported: "the ai web said ###MCP_TOOL### search_game_tree ...
+didnt execute". The tool block was in the chat but the agent never
+dispatched it. After 2.3.2 fixed the multi-tool-in-one-turn race, a
+new failure mode remained: a single tool block in a turn where the
+`###MCP_TOOL###` marker is split across multiple DOM elements
+(DeepSeek renders LUA blocks across many `<p>` elements; the live
+stripper only sees one element at a time).
+
+**Fixes**:
+- **Whole-item text scan every 1.5s**. ZeroScript's `decorate.sweep`
+  pattern. Walks every message item, joins all text nodes (excluding
+  our own UI), runs `ZSParse.extractAll()` on the joined string.
+  Catches tool blocks the per-element live stripper misses, because
+  the marker + JSON are split across paragraphs/divs.
+- **Immediate force-scan on user message**. When the user types a new
+  message, the `onUserMessage` hook force-scans the entire chat for
+  tool blocks RIGHT NOW. Catches any blocks the MutationObserver and
+  the interval scan might have missed.
+- **`A.dispatchedItems` WeakSet** tracks which message items have
+  already been processed, so the same item doesn't get re-dispatched
+  on every 1.5s tick.
+- **TreeWalker-based text join** (`joinItemText`) respects the agent's
+  own UI: skips `#rl-root`, `#rl-bar`, chips, hidden elements, etc.
+- Version bump 2.3.2 → 2.3.3.
+
 ## 2.3.2 - Fix: second tool block in same turn was silently dropped
 When the model emitted two `###MCP_TOOL###` blocks in one reply (e.g.
 `search_game_tree` + `script_search`), only the first one was dispatched

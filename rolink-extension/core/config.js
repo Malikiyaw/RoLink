@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "2.3.2";
+const ROLINK_VERSION = "2.3.3";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const TOOL_NOTES = `
 You have RoLink MCP tools. To call one, output a single JSON code block like:
