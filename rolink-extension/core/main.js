@@ -151,14 +151,28 @@
     else { state.innerHTML = `RoLink: <small>offline — run start.bat</small>`; }
   }
   async function refreshTools(){
-    const r = await bg({type:"list_tools"});
-    const arr = (r && Array.isArray(r.tools)) ? r.tools : [];
-    A.tools = arr;
     const list = document.getElementById("rl-tools-list"), count = document.getElementById("rl-tools-count");
+    let arr = null, lastErr = null;
+    for(let attempt = 0; attempt < 4; attempt++){
+      try{
+        const r = await bg({type:"list_tools"});
+        if(r && Array.isArray(r.tools) && r.tools.length){ arr = r.tools; break; }
+        lastErr = r && r.error;
+      }catch(e){ lastErr = e.message; }
+      await new Promise(r => setTimeout(r, 600 + attempt * 600));
+    }
+    A.tools = arr || [];
     if(!list) return;
-    if(!arr.length){ list.textContent = r && r.error ? ("bridge: " + r.error) : "no tools — open Roblox Studio and enable MCP"; }
-    else { list.innerHTML = arr.map(t => { const nm = (typeof t === "string") ? t : (t.name || JSON.stringify(t)); return `<span class="t" title="${escapeHtml((typeof t==="object"&&t&&t.description)||"")}">${escapeHtml(nm)}</span>`; }).join(""); }
-    if(count) count.textContent = arr.length + " available";
+    if(!A.tools.length){
+      list.textContent = lastErr ? ("bridge: " + lastErr) : "no tools — open Roblox Studio and enable MCP";
+    } else {
+      list.innerHTML = A.tools.map(t => {
+        const nm = (typeof t === "string") ? t : (t.name || JSON.stringify(t));
+        return `<span class="t" title="${escapeHtml((typeof t==="object"&&t&&t.description)||"")}">${escapeHtml(nm)}</span>`;
+      }).join("");
+    }
+    if(count) count.textContent = A.tools.length + " available";
+    return A.tools;
   }
   document.getElementById("rl-tools-btn").onclick = e => { e.stopPropagation(); toolsPanel.classList.toggle("rl-show"); };
   document.getElementById("rl-feed-btn").onclick = e => { e.stopPropagation(); feed.classList.toggle("rl-show"); };
@@ -193,9 +207,22 @@
   }
 
   // ── THE SYSTEM PROMPT ─────────────────────────────────────────────────────
-  // Strong, explicit. Works because the AI sees it as a user message with
-  // "do this" framing (ZeroScript's proven approach).
-  const SYSTEM_PROMPT = `You are RoLink Agent v1.0 — you control Roblox Studio on the user's local PC via MCP tools.
+  // Built dynamically so the model always sees the real tool names. Falls
+  // back to a conservative list if the bridge hasn't responded yet.
+  // Works because the AI sees it as a user message with "do this" framing
+  // (ZeroScript's proven approach).
+  function buildSystemPrompt(){
+    const tools = Array.isArray(A.tools) && A.tools.length ? A.tools : null;
+    let toolBlock;
+    if(tools){
+      const names = tools.map(t => (typeof t === "string") ? t : (t && t.name) || "").filter(Boolean);
+      toolBlock = "Currently available tools (use the EXACT name in `tool`; one ###MCP_TOOL### block per call; you can call multiple per reply):\n"
+                + names.map(n => "- " + n).join("\n")
+                + (names.length ? "\n\nA tool's argument schema is whatever the bridge accepts — start with the obvious args; if you get an error, read the error message and retry with corrected args. Do NOT guess an unrelated tool name." : "");
+    } else {
+      toolBlock = "Tools will be discovered at session start. Begin by trying common RoLink tools like `get_studio_state`, `list_roblox_studios`, `get_snapshot`, `run_code`. If a tool name is wrong, the bridge will reply `unknown tool 'X'` and you should try a similar name from the list it returns.";
+    }
+    return `You are RoLink Agent ${ROLINK_VERSION} — you control Roblox Studio on the user's local PC via MCP tools.
 
 EVERY reply you write MUST follow one of these two patterns:
 
@@ -205,31 +232,17 @@ EVERY reply you write MUST follow one of these two patterns:
 
 2) You're completely done: give a short final answer and end with the word DONE on its own line.
 
-Available tools (use ###MCP_TOOL### {json} for any of these — one block per call, you can call multiple per reply):
-- run_code / execute_luau { code: "..." }  — run Luau in a sandbox, self-heals on syntax errors
-- create_instance { className, parent, name, properties }
-- delete_instance { path }
-- set_property { path, property, value }
-- get_property { path, property }
-- get_snapshot / get_instance_tree { maxDepth, filter }
-- get_studio_state {}  — is a place open?
-- list_roblox_studios {}  — which Studios are connected
-- search_assets { keyword, limit, category }  — Creator Store
-- import_asset { assetId, parent }
-- generate_asset { prompt, kind }
-- start_stop_play { action: "play"|"stop" }
-- screen_capture {}  — only if you're on a Vision-capable model
-- open_external { url }
-- …and more (the exact list is in the "🛠 Tools" panel of the extension)
+${toolBlock}
 
 Rules:
-- NEVER claim you "cannot run commands" — your tools ARE working. Just emit the right ###MCP_TOOL### block.
+- NEVER claim you "cannot run commands" — your tools ARE working. Just emit the right ###MCP_TOOL### block with the EXACT tool name from the list above.
 - NEVER ask the user a clarifying question before acting. Make reasonable assumptions and ACT.
-- If a tool call fails, read the error message and fix the call. Don't apologize and stop.
+- If a tool call fails, read the error message, correct the call, and retry. Do NOT give up after one error.
 - Keep prose short. The user wants to see tool calls and results, not essays.
 - When the user's task is fully done, give a one-sentence summary and end with DONE.`;
+  }
 
-  const STARTER = `Start by taking a snapshot of the game tree so we can see what's there. Then ask the user what they want to build.`;
+  const STARTER = `Start by checking the Studio state and snapshotting the game tree so we can see what's there. Then ask the user what they want to build. Begin now (first message — call tools immediately, no prose preamble).`;
 
   // ── dispatch a tool call ──────────────────────────────────────────────────
   function dispatchTool(name, args, sourceBlock, sourceItem){
@@ -258,7 +271,12 @@ Rules:
       A.lastFeedText = text; A.lastFeedAt = Date.now(); A.lastFeedId = name + ":" + Date.now();
       const feedbackMsg = ok
         ? `[Tool result for ${name}]\n${text}\n\nYou MUST continue. Either call another tool via ###MCP_TOOL### {json} OR give a final answer ending with DONE. Do NOT respond with "I cannot run commands" — your tools are working.`
-        : `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Fix the call (correct args, valid JSON, valid Luau) and retry with another ###MCP_TOOL### block. If you can't fix it, explain the error to the user.`;
+        : (function(){
+            const hint = /unknown tool/i.test(text) && Array.isArray(A.tools) && A.tools.length
+              ? `\n\nThe valid tool names right now are: ${A.tools.map(t => (typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Pick the closest one.`
+              : "";
+            return `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Fix the call (correct args, valid JSON, valid Luau) and retry with another ###MCP_TOOL### block using the EXACT name from the system prompt.${hint} If you can't fix it, explain the error to the user.`;
+          })();
       A.injecting = true;
       P.typeAndSend(feedbackMsg, []).then(()=>{ A.injecting = false; });
     });
@@ -266,7 +284,7 @@ Rules:
 
   // ── send the user's starter request (after system prompt) ────────────────
   function sendSystemPromptAndStarter(){
-    const first = SYSTEM_PROMPT + "\n\n---\n\n" + STARTER;
+    const first = buildSystemPrompt() + "\n\n---\n\n" + STARTER;
     return P.typeAndSend(first, []).then(()=>{
       A.starting = false;
       A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;
@@ -471,6 +489,8 @@ Rules:
     }
     A.startingKey = P.conversationKey ? P.conversationKey() : location.pathname;
     A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
+    // Refresh the live tool list so the system prompt includes real tool names.
+    try{ await refreshTools(); }catch{}
     // Lock composer during inject so user can't accidentally abort
     try{ P.setInputLock && P.setInputLock(true); }catch{}
     sendSystemPromptAndStarter();

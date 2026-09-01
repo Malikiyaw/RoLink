@@ -1,4 +1,23 @@
 # Changelog
+## 1.3.1 - Dynamic system prompt: real tool names from the bridge
+- The system prompt no longer hardcodes a fake tool list. It is now built
+  dynamically from `list_tools` at session start, so the model always sees
+  the exact tool names the bridge currently advertises. Falls back to a
+  generic starter list if the bridge isn't ready yet.
+- `refreshTools()` now retries up to 4 times with backoff (0.6/1.2/1.8/2.4s)
+  so the bridge has time to come up. `startSession()` awaits it before
+  building the prompt, so the model never gets sent into the AI with stale
+  or missing tool names.
+- When the model gets back `unknown tool 'X'`, the error feedback now
+  includes the actual current tool list inline: "The valid tool names
+  right now are: a, b, c… Pick the closest one." This breaks the
+  'try-tool → fail → claim I can't run code' loop that the demo showed.
+- Starter prompt tightened: "Begin now (first message — call tools
+  immediately, no prose preamble)" + asks for `get_studio_state` /
+  `list_roblox_studios` first (so the model doesn't fire `get_snapshot`
+  on a closed place).
+- Version bumped to 1.3.1 across all files.
+
 ## 1.3.0 - Real ZeroScript-style ZSProvider architecture (the way ZeroDev does it)
 - **`core/parser.js` is back as a proper ZSParse module** with `extract`, `extractAll`, `hasToolSignature`, `hasOpenToolBlock`, `toolNameFromText`, `normalize`. Recognizes: `###MCP_TOOL### {json}`, `###LUA### ... ###END_LUA###`, raw JSON code blocks (`{"command":...}`), function-calling flavour (bare JSON with `tool`/`command`/`function` key). Tolerant of cut-off JSON (auto-closes braces), DeepSeek `<|DSML|>` stripping, tab escaping.
 - **`providers/deepseek.js` is now a full ZeroScript-quality ZSProvider** (1000+ lines, transcribed from the proven v1.5.3 codebase and rebranded to RoLink):
