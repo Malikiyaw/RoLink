@@ -1,14 +1,14 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "2.1.0";
-const SYS_MARKER = "\u27E6RL-SYS\u27E7";
+const ROLINK_VERSION = "2.1.1";
+const SYS_MARKER = "⟪RL-SYS⟫";
 const TOOL_NOTES = `
 You have RoLink MCP tools. To call one, output a single JSON code block like:
 ###MCP_TOOL###
-{"tool":"run_code","args":{"code":"print('hi')"}}
+{"tool":"execute_luau","args":{"code":"print('hi')"}}
 or for queued tools:
 ###MCP_TOOL###
-{"tool":"get_snapshot"}
-Available: read/edit scripts (get_snapshot, run_code with Luau sandbox, self-heals), instances (create_instance, delete_instance, set_property), assets (search_assets, import_asset, generate_asset), power (heal_code, rollback, perf_stats, translate_code, validate_code, run_sandbox_tests, plan, generate_gdd, optimize_perf, analytics_report, analytics_suggestions, compile_visual).
+{"tool":"get_studio_state"}
+Available: read/edit scripts (execute_luau with Luau sandbox, self-heals), instances (create_instance, delete_instance, set_property), assets (search_assets, import_asset, generate_asset), power (heal_code, rollback, perf_stats, translate_code, validate_code, run_sandbox_tests, plan, generate_gdd, optimize_perf, analytics_report, analytics_suggestions, compile_visual).
 Always call tools via ###MCP_TOOL### JSON. Never claim "I cannot run commands".
 `.trim();
 
@@ -27,6 +27,3 @@ ${SYS_MARKER}
   return base + (notes[provider] ? "\nProvider note: " + notes[provider] : "");
 }
 const PROVIDER_URLS = ["chat.deepseek.com","chatgpt.com","gemini.google.com","kimi.ai","chat.z.ai","chat.qwen.ai","arena.ai","meta.ai"];
-
-
-

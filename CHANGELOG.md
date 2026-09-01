@@ -1,4 +1,28 @@
 # Changelog
+## 2.1.1 - Critical fix: ###LUA### blocks were dispatched as 'run_code' (not the real tool name)
+The bridge log `20:23:51 <- run_code (0.0s): unknown tool 'run_code'` revealed a
+real bug: the parser was hardcoded to wrap `###LUA###` blocks as
+`{tool: "run_code"}`, but the bridge only advertises `execute_luau`. The system
+prompt correctly told the model to use `execute_luau`, but the parser silently
+rewrote the model's `###LUA###` form into a different tool name that the
+bridge rejected, putting the model into an infinite parse_error loop.
+
+This is also why the model in the bug report kept emitting the same broken
+JSON: it tried `###LUA###` first (correct per the prompt), the parser mangled
+it to `run_code`, the bridge said "unknown tool", the model then tried the
+JSON form with `execute_luau` and missed the quote-escaping, and so on.
+
+- **`parser.js`**: `###LUA###` blocks now wrap to `{tool: "execute_luau"}` (the
+  real advertised name), not `run_code`.
+- **`config.js` + `main.js` system-prompt template**: example calls now use
+  `execute_luau` (and the fallback "begin by trying..." list no longer
+  mentions `run_code`).
+- **`parser.js` `hasToolSignature` regex**: removed `run_code` from the
+  tool-name list (it's not a real tool), added the names the bridge
+  actually advertises (multi_edit, script_read, script_grep, inspect_instance,
+  search_game_tree) so the agent's "is this a tool call?" check is correct.
+- **Version bump 2.1.0 → 2.1.1**.
+
 ## 2.1.0 - Defensive response watcher + cut-off salvage
 After studying ZeroScript v1.5.2's waitForResponse (4374 lines), ported
 the critical defensive logic that prevents the "model said the tool

@@ -127,8 +127,8 @@
         body = body.replace(/^[\r\n]+/, "").replace(/```\s*$/, "").trim();
       }
       if (body) {
-        // Wrap as a run_code tool call.
-        return { kind: "lua", json: { tool: "run_code", args: { code: body } }, raw: body, lua: body };
+        // Wrap as an execute_luau tool call (the real name the bridge advertises).
+        return { kind: "lua", json: { tool: "execute_luau", args: { code: body } }, raw: body, lua: body };
       }
     }
 
@@ -209,7 +209,7 @@
     if (text.indexOf(START_M) !== -1) return true;
     if (LUA_START_RE.test(text)) return true;
     if (/```(?:json)?\s*\n?\s*\{[\s\S]+?"(?:command|tool)"\s*:/.test(text)) return true;
-    if (/\{[\s\S]*?"(?:tool|command|function)"\s*:\s*"(execute_luau|run_code|create_instance|set_property|get_snapshot|get_studio_state|list_roblox_studios|get_instance_tree|search_assets|import_asset|generate_asset|start_stop_play|run_command|publish_place)\b/.test(text)) return true;
+    if (/\{[\s\S]*?"(?:tool|command|function)"\s*:\s*"(execute_luau|create_instance|set_property|get_snapshot|get_studio_state|list_roblox_studios|get_instance_tree|search_assets|import_asset|generate_asset|start_stop_play|run_command|publish_place|multi_edit|script_read|script_grep|inspect_instance|search_game_tree)\b/.test(text)) return true;
     return false;
   }
 
