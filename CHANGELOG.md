@@ -1,4 +1,34 @@
 # Changelog
+## 2.1.2 - Auto-inject datamodel_type + tool schemas in system prompt
+The bridge returned `datamodel_type is required` for every `execute_luau`
+call because the model has no way to know which DataModel is focused
+without first calling `get_studio_state`. The model had to guess the
+field name, then got the JSON escaping wrong, then looped.
+
+- **`startSession` auto-probes** `get_studio_state` before sending the
+  starter, captures the focused DataModel into `A.focusedDataModel`,
+  and surfaces it in the activity feed.
+- **`dispatchTool` auto-injects** `datamodel_type` for the 16 tools that
+  require it (execute_luau, multi_edit, script_read, script_grep,
+  inspect_instance, start_stop_play, search_game_tree, delete_instance,
+  set_property, get_property, generate_asset, search_assets, import_asset,
+  insert_asset, search_asset, get_console_output, get_snapshot). The
+  model never needs to know this argument exists.
+- **`buildSystemPrompt` now embeds the inputSchema for every tool** so
+  the model sees the exact required/optional args. Signature is shown as
+  `toolName(arg1*, arg2, arg3)` where `*` marks required. Descriptions
+  are truncated to 100 chars.
+- **Better error feedback on `X is required`**: the agent now parses
+  the bridge's error text, finds the missing field, looks up the tool's
+  inputSchema, and tells the model exactly what to add:
+  > "The 'execute_luau' tool requires these arguments:
+  >  code (required): string — Luau code to execute
+  >  datamodel_type (required): string
+  > You were missing: 'datamodel_type'."
+- The system prompt now also notes that datamodel_type is auto-injected,
+  so the model doesn't try to pass it itself.
+- Version bump 2.1.1 → 2.1.2.
+
 ## 2.1.1 - Critical fix: ###LUA### blocks were dispatched as 'run_code' (not the real tool name)
 The bridge log `20:23:51 <- run_code (0.0s): unknown tool 'run_code'` revealed a
 real bug: the parser was hardcoded to wrap `###LUA###` blocks as

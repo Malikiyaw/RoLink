@@ -83,6 +83,7 @@
     lastTextAt: 0,
     parked: false,             // paused because the tab is hidden
     tools: [],
+    focusedDataModel: null,    // last-known focused DataModel from get_studio_state
     status: "offline",
     lastAssistantIdAtBoot: null,
     sessionId: null,           // per-conversation session id (for memory)
@@ -339,10 +340,24 @@
     const tools = Array.isArray(A.tools) && A.tools.length ? A.tools : null;
     let toolBlock;
     if(tools){
-      const names = tools.map(t => (typeof t === "string") ? t : (t && t.name) || "").filter(Boolean);
-      toolBlock = "Tools you can call (use the EXACT name; one ###MCP_TOOL### block per call; you can call multiple per reply):\n"
-                + names.map(n => "- " + n).join("\n")
-                + (names.length ? "\n\nArgument schema is whatever the bridge accepts. If a call fails, read the error and fix it on the next call — don't guess at unrelated tool names." : "");
+      // Include each tool's name + required args + brief description so the
+      // model knows what to pass. The bridge returns full inputSchemas.
+      const lines = tools.map(t => {
+        if(typeof t === "string") return "- " + t;
+        const nm = (t && t.name) || "?";
+        const schema = t.inputSchema || t.input_schema;
+        if(!schema || !schema.properties) return "- " + nm;
+        const req = Array.isArray(schema.required) ? schema.required : [];
+        const props = Object.keys(schema.properties);
+        const sig = props.length
+          ? "(" + props.map(p => `${p}${req.includes(p) ? "*" : ""}`).join(", ") + ")"
+          : "()";
+        const desc = t.description ? " — " + String(t.description).slice(0, 100) : "";
+        return `- ${nm} ${sig}${desc}`;
+      });
+      toolBlock = "Tools you can call (use the EXACT name; one ###MCP_TOOL### block per call; you can call multiple per reply). `*` = required.\n"
+                + lines.join("\n")
+                + "\n\nThe focused DataModel (" + (A.focusedDataModel || "auto-detected") + ") is auto-injected for tools that need it. If a call fails, read the error and fix it on the next call — don't guess at unrelated tool names.";
     } else {
       toolBlock = "Tools will be discovered at session start. Begin by trying common RoLink tools like `get_studio_state`, `list_roblox_studios`, `get_snapshot`, `execute_luau`.";
     }
@@ -437,11 +452,38 @@ ${customBlock}
         // If the tool returned images, attach them to the next feedback.
         const imgs = (res && res.images && res.images.length) ? res.images : null;
         A.lastFeedText = text; A.lastFeedAt = Date.now(); A.lastFeedId = name + ":" + Date.now();
+        // Capture the focused DataModel from get_studio_state (used for auto-
+        // injecting datamodel_type on subsequent calls).
+        if(name === "get_studio_state" && ok){
+          const m = String(text).match(/Focused DataModel in the viewport:\s*(\w+)/i)
+                 || String(text).match(/Available DataModels:\s*(\w+)/i);
+          if(m && m[1]) A.focusedDataModel = m[1];
+        }
         // Truncate huge results so we don't blow context
         const textForModel = text.length > 12000 ? text.slice(0, 11500) + "\n\n[…result truncated for context; full result is in the chip above…]" : text;
-        const hint = (!ok && /unknown tool/i.test(text) && Array.isArray(A.tools) && A.tools.length)
-          ? `\n\nThe valid tool names right now are: ${A.tools.map(t => (typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}.`
-          : "";
+        // Build actionable error feedback: which tool names are valid, what
+        // schema this tool actually needs, and which required arg is missing.
+        let hint = "";
+        if(!ok){
+          if(/unknown tool/i.test(text) && Array.isArray(A.tools) && A.tools.length){
+            hint += `\n\nThe valid tool names right now are: ${A.tools.map(t => (typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}.`;
+          }
+          // Detect "X is required" errors and tell the model the schema.
+          const required = String(text).match(/['"]?(\w+)['"]? is required/i);
+          if(required){
+            const toolSchema = Array.isArray(A.tools) ? A.tools.find(t => t && t.name === name) : null;
+            const schema = toolSchema && (toolSchema.inputSchema || toolSchema.input_schema);
+            if(schema && schema.properties){
+              const props = Object.entries(schema.properties).map(([k,v]) => {
+                const isReq = (schema.required || []).includes(k);
+                return `${k}${isReq ? " (required)" : ""}: ${v.type || "any"} — ${(v.description || "").slice(0,80)}`;
+              }).join("\n  ");
+              hint += `\n\nThe "${name}" tool requires these arguments:\n  ${props}\n\nYou were missing: "${required[1]}".`;
+            } else {
+              hint += `\n\nThe "${name}" tool is missing a required argument: "${required[1]}". Check the tool's schema.`;
+            }
+          }
+        }
         const feedbackMsg = ok
           ? `[Tool result for ${name}]\n${textForModel}\n\nYou MUST continue. Either call another tool via ###MCP_TOOL### {json} OR give a final answer ending with DONE. Do NOT respond with "I cannot run commands" — your tools are working.`
           : `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Fix the call (correct args, valid JSON, valid Luau) and retry with another ###MCP_TOOL### block using the EXACT name from the system prompt.${hint}`;
@@ -858,6 +900,20 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     A.startingKey = P.conversationKey ? P.conversationKey() : location.pathname;
     A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
     try{ await refreshTools(); }catch{}
+    // Auto-probe: discover the focused DataModel up front so we can auto-
+    // inject datamodel_type on every subsequent call. This avoids the
+    // "datamodel_type is required" error cycle.
+    try{
+      const r = await bg({type:"call_tool", name: "get_studio_state", arguments: {}, timeout: 10000});
+      if(r && r.ok && r.text){
+        const m = String(r.text).match(/Focused DataModel in the viewport:\s*(\w+)/i)
+               || String(r.text).match(/Available DataModels:\s*(\w+)/i);
+        if(m && m[1]){
+          A.focusedDataModel = m[1];
+          pushFeed("info", "🎯", `Focused DataModel: ${A.focusedDataModel} (auto-injected into tool args)`);
+        }
+      }
+    }catch{}
     try{ P.setInputLock && P.setInputLock(true); }catch{}
     sendSystemPromptAndStarter();
     try{ P.setInputLock && P.setInputLock(false); }catch{}
