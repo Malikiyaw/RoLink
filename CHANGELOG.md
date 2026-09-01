@@ -1,5 +1,19 @@
 # Changelog
-## 1.1.9 - Fix manifest: drop core/parser.js + core/inject.js from content_scripts
+## 1.2.0 - Real agentic loop: system prompt injection + nudge + activity feed
+- **`core/main.js` is now a real agentic loop**, not a "send one message and watch" stub. Inspired by ZeroDev/Lemonade:
+  - **Strong system prompt as the first message** — injected as a user message (the AI treats it as directives). Lists EVERY tool with the exact `###MCP_TOOL### {json}` format, with a "DONE" stop signal, and the rule "Never claim you cannot run commands".
+  - **Automatic tool dispatch** — scans every new `<pre>` block in the AI's replies for `###MCP_TOOL###` JSON, dispatches via `bg({type:"call_tool"})`, replaces the raw block with a **beautiful tool chip** (icon + tool name + args + live result). Supports multiple tool calls per AI reply.
+  - **Automatic result feed-back** — after each tool runs, the result is sent back to the AI as a hidden message so the loop continues until the AI is done.
+  - **Plain-text nudge** — if the AI replies with text (no tool block), the agent automatically sends a nudge: "If you want to act, output `###MCP_TOOL### {json}`. If done, answer the user." Capped at 6 nudges to avoid infinite loops.
+  - **Question detection** — if the AI asks a clarifying question, the agent nudges it to make reasonable assumptions and ACT (the ZeroDev pattern: agents should not ask, they should build).
+  - **Stop signal** — the loop ends when the AI's reply is plain text AND there's no tool signature AND no recent feed-back (the AI is done).
+  - **Robust tool detection** — also recognizes `"command":` / `"tool":` / `"name":"execute_luau"` etc. in function-calling JSON shapes (DeepSeek function-calling, Kimi native tools).
+- **Activity feed** (right side of the page) — live scroll of every event: agent started, tool call (icon + name + args), tool result (✓ or ✗ + preview), nudge sent, finished. Color-coded. Timestamps. Clearable. The user sees exactly what the AI is doing in real time.
+- **Tool counter** in the status bar — "3 tools" badge so the user knows progress.
+- **Wider tool detection** — `run_code`, `execute_luau`, `create_instance`, `set_property`, `get_snapshot`, `get_instance_tree`, `list_roblox_studios`, `get_studio_state`, `search_assets`, `import_asset`, `generate_asset`, `start_stop_play`, `screen_capture`, `publish_place`, etc. all recognized.
+- **Popup "Start" button** now sends `rolink-start` to the in-page launcher (the AI tab), with a fallback `chrome.scripting.executeScript` that programmatically clicks the page button if the content script isn't ready yet.
+- **Manifest version sync + activity feed styling in `overlay.css`** (with proper color-coded event rows, monospace timestamps, scrollbar styling).
+- Sync 1.2.0 across all versioned files.
 - `manifest.json`: every `content_scripts` entry referenced `core/parser.js` (deleted in 1.1.8) and `web_accessible_resources` referenced `core/inject.js` (also deleted) — Chrome refused to load the extension with "Could not load javascript 'core/parser.js' for script." All entries now list only the files that exist: `core/config.js`, the per-site `providers/*.js` (sets `window.ROLINK_PROVIDER`), and `core/main.js`. Added `www.kimi.ai` to the Kimi match pattern. Dropped `inject.js` from `web_accessible_resources`.
 - Sync 1.1.9 across all versioned files.
 - **WS path fix:** `background.js` was still trying `ws://127.0.0.1:17613/ws?role=extension&token=dummy` (a path ZeroScript's bridge doesn't serve). Now connects to the root `ws://127.0.0.1:17613`, matching the bridge. Fixes the `ERR_CONNECTION_REFUSED` spam and the 7-client / 7-disconnect thrash.

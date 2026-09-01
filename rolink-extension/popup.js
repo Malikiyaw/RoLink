@@ -64,9 +64,14 @@ document.getElementById("startAgent").addEventListener("click", async ()=>{
       chrome.tabs.create({url:DEFAULT_AI_URL});
     } else {
       chrome.tabs.update(any.id,{active:true});
-      // Tell the in-page launcher to start
-      try{ await chrome.tabs.sendMessage(any.id,{type:"rolink-start"}); }catch{}
-      toast("Agent starting in "+new URL(any.url).hostname);
+      // Tell the in-page launcher to start (one message, one response)
+      try{
+        const resp = await chrome.tabs.sendMessage(any.id,{type:"rolink-start"});
+        toast(resp && resp.ok ? "Agent started in "+new URL(any.url).hostname : "Agent starting…");
+      }catch{
+        // Content script might not be loaded yet — click the page button as fallback
+        try{ await chrome.scripting.executeScript({target:{tabId:any.id,allFrames:false},func:()=>{ const b=document.querySelector("#rl-root .rl-launcher"); if(b) b.click(); }}); toast("Started (fallback)"); }catch{}
+      }
     }
   }catch(e){ toast(String(e),true); }
   setTimeout(()=>{ btn.disabled=false; btn.innerHTML='<span class="ic">R</span> Start RoLink agent'; },1500);

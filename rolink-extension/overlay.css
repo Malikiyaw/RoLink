@@ -202,3 +202,112 @@
 }
 .rl-banner.err { background: linear-gradient(135deg, rgba(248,81,73,0.18), rgba(248,81,73,0.10)); border-color: rgba(248,81,73,0.5); color: #ffa198; }
 .rl-banner.ok { background: linear-gradient(135deg, rgba(63,185,80,0.18), rgba(63,185,80,0.10)); border-color: rgba(63,185,80,0.5); color: #7ee787; }
+
+/* ── Counter (small pill in the bar) ───────────────────────────────────── */
+.rl-counter {
+  font-size: 10.5px;
+  color: #8b949e;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 2px 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-weight: 600;
+}
+
+/* ── Activity feed (right side, live scroll) ──────────────────────────── */
+.rl-feed {
+  position: fixed;
+  top: 60px;
+  right: 16px;
+  width: 320px;
+  max-height: 60vh;
+  background: rgba(14,17,22,0.97);
+  border: 1px solid rgba(47,129,247,0.30);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  backdrop-filter: blur(10px);
+  color: #e6edf3;
+  font-size: 11.5px;
+  pointer-events: auto;
+  z-index: 2147483600;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+.rl-feed.rl-show { display: flex; }
+.rl-feed-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.rl-feed-title { font-weight: 600; font-size: 12px; }
+.rl-feed-clear {
+  margin-left: auto;
+  background: transparent; border: 1px solid rgba(255,255,255,0.1);
+  color: #8b949e; padding: 2px 7px; border-radius: 5px;
+  font-size: 11px; cursor: pointer;
+}
+.rl-feed-clear:hover { color: #e6edf3; background: rgba(255,255,255,0.05); }
+.rl-feed-list {
+  overflow-y: auto;
+  padding: 6px 8px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.rl-feed-item {
+  display: grid;
+  grid-template-columns: 60px 18px 1fr;
+  align-items: start;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+  word-break: break-word;
+  background: rgba(255,255,255,0.02);
+  border-left: 2px solid transparent;
+}
+.rl-feed-item .rl-feed-ts { color: #6e7681; font-size: 9.5px; padding-top: 1px; }
+.rl-feed-item .rl-feed-ico { font-size: 11px; text-align: center; }
+.rl-feed-item .rl-feed-text { white-space: pre-wrap; }
+.rl-feed-info { border-left-color: #2f81f7; }
+.rl-feed-info .rl-feed-ico { color: #79c0ff; }
+.rl-feed-ok { border-left-color: #3fb950; }
+.rl-feed-ok .rl-feed-ico { color: #7ee787; }
+.rl-feed-err { border-left-color: #f85149; background: rgba(248,81,73,0.06); }
+.rl-feed-err .rl-feed-ico { color: #ffa198; }
+.rl-feed-tool { border-left-color: #d29922; background: rgba(210,153,34,0.04); }
+.rl-feed-tool .rl-feed-ico { color: #f0d479; }
+.rl-feed-nudge { border-left-color: #a371f7; background: rgba(163,113,247,0.04); }
+.rl-feed-nudge .rl-feed-ico { color: #d2a8ff; }
+.rl-feed-done { border-left-color: #3fb950; background: rgba(63,185,80,0.06); font-weight: 600; }
+.rl-feed-done .rl-feed-ico { color: #7ee787; }
+.rl-feed-list::-webkit-scrollbar { width: 6px; }
+.rl-feed-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+
+/* Tools panel moved into the bar to save screen space; the feed takes over the right side. */
+.rl-tools {
+  position: fixed;
+  top: 60px;
+  right: 16px;
+  width: 280px;
+  max-height: 70vh;
+  background: rgba(14,17,22,0.97);
+  border: 1px solid rgba(47,129,247,0.30);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  backdrop-filter: blur(10px);
+  color: #e6edf3;
+  font-size: 12px;
+  pointer-events: auto;
+  z-index: 2147483600;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+.rl-tools.rl-show { display: flex; }
+
+/* When the activity feed is also shown, stack it above the tools panel. */
+.rl-feed.rl-show ~ .rl-tools,
+.rl-feed.rl-show { z-index: 2147483601; }
