@@ -14,7 +14,7 @@ except ImportError:
     print("[RoLink] missing websockets — run: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
-BRIDGE_VERSION = "1.0.1"
+BRIDGE_VERSION = "1.0.2"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT") or "17613")
 CONFIG_PATH = pathlib.Path(__file__).parent / "config.json"
 STUDIO_MCP_PORT = 13469  # Studio MCP squatter detection
@@ -222,24 +222,33 @@ async def health_handler(reader, writer):
     try:
         data = await reader.read(1024)
         txt = data.decode(errors="ignore")
+        # Minimal CORS preflight
+        if "OPTIONS" in txt.split("\r\n")[0]:
+            resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\nContent-Length: 0\r\n\r\n"
+            writer.write(resp.encode()); await writer.drain()
+            writer.close(); return
         body = json.dumps({"ok":True,"version":BRIDGE_VERSION,"bridge":PORT,"clients":len(clients),"servers":list(servers.keys()),"uptime": int(time.time()-start_time)})
-        resp = f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nAccess-Control-Allow-Origin: *\r\n\r\n{body}"
+        resp = f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\n\r\n{body}"
         writer.write(resp.encode()); await writer.drain()
     except: pass
     finally:
         try: writer.close()
         except: pass
 
+async def http_ws_process_request(path, request_headers):
+    # websockets process_request hook: serve health on HTTP GET, else WS upgrade
+    # path includes "?role=extension&token=dummy"
+    clean = path.split("?")[0] if path else "/"
+    if clean in ("/health", "/health/", "/"):
+        if request_headers.get("Upgrade", "").lower() != "websocket":
+            body = json.dumps({"ok":True,"version":BRIDGE_VERSION,"bridge":PORT,"clients":len(clients),"servers":list(servers.keys()),"uptime": int(time.time()-start_time)}).encode()
+            return (200, [("Content-Type","application/json"),("Access-Control-Allow-Origin","*"),("Content-Length",str(len(body)))], body)
+    return None
+
 async def main():
     ensure_servers()
-    # also try to ensure HTTP mcp-server health (optional)
-    # start WS + tiny HTTP health on same port via raw TCP? Use websockets serve + separate health server
-    # websockets serve on 17613
-    ws_server = await serve(ws_handler, "127.0.0.1", PORT, max_size=10*1024*1024)
-    log(f"RoLink Bridge {BRIDGE_VERSION} WS ws://127.0.0.1:{PORT} (StudioMCP + HTTP fallback)")
-    # health HTTP on same port fallback via asyncio TCP (if websockets doesn't handle /health, use separate port 17613+1? Instead also listen on 127.0.0.1:17613 for HTTP via small server on 17614 for health)
-    # Simple health TCP on 127.0.0.1:17613 is occupied by WS; add health on 87613 for probes (not needed). We handle health via WS heartbeat and also expose HTTP on 3001 passthrough.
-    # Keep WS alive
+    ws_server = await serve(ws_handler, "127.0.0.1", PORT, max_size=10*1024*1024, process_request=http_ws_process_request)
+    log(f"RoLink Bridge {BRIDGE_VERSION} WS ws://127.0.0.1:{PORT} (+ http://127.0.0.1:{PORT}/health)")
     await asyncio.Future()
 
 if __name__ == "__main__":

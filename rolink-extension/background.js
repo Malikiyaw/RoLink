@@ -1,15 +1,53 @@
 // RoLink background.js — single WS owner (avoids mixed-content), broadcasts status to all provider tabs
 const BRIDGE="ws://127.0.0.1:17613";
+const HTTP_HEALTH="http://127.0.0.1:17613/health";
 const PROVIDER_URLS=["chat.deepseek.com","chatgpt.com","gemini.google.com","kimi.ai","chat.z.ai","chat.qwen.ai","arena.ai","meta.ai"];
 let ws=null, reconnectDelay=1000, heartbeatTimer=null, staleTimer=null;
 let toolsCache=null, studioConnected=false;
 let pending=new Map();
+let offlineSince=null, badgeSet=false;
+let healthFailCount=0;
 
-function connect(){
-  try{ ws=new WebSocket(BRIDGE+"/ws?role=extension&token=dummy"); }catch{ schedule(); return; }
-  ws.onopen=()=>{ reconnectDelay=1000; heartbeatTimer=setInterval(()=>{ if(ws.readyState===1) ws.send(JSON.stringify({id:"hb",method:"heartbeat"})); resetStale(); },10000); resetStale(); broadcast({type:"bridge", status:"connected"}); };
-  ws.onclose=()=>{ clearInterval(heartbeatTimer); clearTimeout(staleTimer); broadcast({type:"bridge", status:"disconnected"}); schedule(); };
-  ws.onerror=()=>{ try{ws.close();}catch{} };
+function setBadge(connected){
+  try{
+    if(connected){
+      offlineSince=null; badgeSet=false;
+      chrome.action.setBadgeText({text:""}); chrome.action.setBadgeBackgroundColor({color:"#4caf50"});
+    } else {
+      if(!offlineSince) offlineSince=Date.now();
+      const secs=Math.floor((Date.now()-offlineSince)/1000);
+      if(secs>=30 && !badgeSet){
+        badgeSet=true;
+        chrome.action.setBadgeText({text:"!"}); chrome.action.setBadgeBackgroundColor({color:"#f44336"});
+      }
+    }
+  }catch{}
+}
+
+async function healthProbe(){
+  try{
+    const c=new AbortController(); setTimeout(()=>c.abort(), 800);
+    const r=await fetch(HTTP_HEALTH, {cache:"no-store", signal:c.signal});
+    if(r.ok) { healthFailCount=0; return true; }
+  }catch{}
+  healthFailCount++;
+  return false;
+}
+
+async function connect(){
+  // Q2 keep dummy token (no auth) — bridge.py accepts any token. Health probe first to avoid ERR_CONNECTION_REFUSED spam.
+  const healthy = await healthProbe();
+  if(!healthy){
+    // throttle log: only every 5 fails (~25s at 5s backoff) to avoid console flood
+    if(healthFailCount % 5 === 1) console.warn("[RoLink] bridge offline — run start.bat (health probe failed "+healthFailCount+")");
+    setBadge(false);
+    schedule();
+    return;
+  }
+  try{ ws=new WebSocket(BRIDGE+"/ws?role=extension&token=dummy"); }catch{ setBadge(false); schedule(); return; }
+  ws.onopen=()=>{ reconnectDelay=1000; healthFailCount=0; setBadge(true); heartbeatTimer=setInterval(()=>{ if(ws.readyState===1) ws.send(JSON.stringify({id:"hb",method:"heartbeat"})); resetStale(); },10000); resetStale(); broadcast({type:"bridge", status:"connected"}); };
+  ws.onclose=()=>{ clearInterval(heartbeatTimer); clearTimeout(staleTimer); setBadge(false); broadcast({type:"bridge", status:"disconnected"}); schedule(); };
+  ws.onerror=()=>{ try{ws.close();}catch{}; setBadge(false); };
   ws.onmessage=(e)=>{
     resetStale();
     try{
@@ -21,7 +59,7 @@ function connect(){
   };
 }
 function resetStale(){ clearTimeout(staleTimer); staleTimer=setTimeout(()=>{ try{ws.close();}catch{} },25000); }
-function schedule(){ setTimeout(connect, reconnectDelay); reconnectDelay=Math.min(5000, reconnectDelay*1.5); }
+function schedule(){ setTimeout(connect, reconnectDelay); reconnectDelay=Math.min(15000, reconnectDelay*1.7); }
 function broadcast(msg){
   // Only broadcast to provider tabs to avoid "Receiving end does not exist" on unrelated tabs,
   // and swallow Promise rejections (MV3 returns Promise; try/catch does not catch).
@@ -36,6 +74,9 @@ function broadcast(msg){
   // Also handle case where query url filter not supported — fallback silent
   if (chrome.runtime.lastError) void chrome.runtime.lastError;
 }
+
+// Ensure single alarm (avoid duplicate on SW restart)
+chrome.alarms.get("rolink-heartbeat", a => { if(!a) chrome.alarms.create("rolink-heartbeat",{periodInMinutes:0.2}); });
 
 connect();
 chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
@@ -55,5 +96,4 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
     }
   }
 });
-chrome.alarms.create("rolink-heartbeat",{periodInMinutes:0.2});
-chrome.alarms.onAlarm.addListener(()=>{ if(!ws || ws.readyState!==1) connect(); else ws.send(JSON.stringify({id:"hb",method:"heartbeat"})); });
+chrome.alarms.onAlarm.addListener(async ()=>{ if(!ws || ws.readyState!==1) await connect(); else { try{ ws.send(JSON.stringify({id:"hb",method:"heartbeat"})); }catch{} } });

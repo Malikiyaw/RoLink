@@ -5,7 +5,7 @@ Respects ROLINK_STUDIO_MCP_PATH env override.
 """
 import os, sys, pathlib, subprocess, json, time
 
-BRIDGE_VERSION = "1.0.1"
+BRIDGE_VERSION = "1.0.2"
 
 def find_studio_mcp():
     override = os.environ.get("ROLINK_STUDIO_MCP_PATH")
