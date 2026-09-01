@@ -1,4 +1,69 @@
 # Changelog
+## 3.0.0 - The architectural rewrite: ZeroScript-aligned core
+After weeks of patch-driven fixes (v2.0.0 → v2.3.3), the agent loop was
+fundamentally less robust than ZeroScript's. v3.0.0 rewrites
+`core/main.js` to match ZeroScript v1.5.2's architecture: same state
+model, same `submitAndGetBase` (with textarea-clear detection + retry),
+same `waitForResponse` (all defensive logic), same `syncSessionState`
+(chat-switch handling), same whole-item camouflage sweep, same
+`installSendHooks` (onUserMessage re-arms the loop on user send).
+
+**Key architectural ports from ZeroScript v1.5.2:**
+
+- **`submitAndGetBase(text, images)`** — reliable send with the proven
+  pattern: pre-hide window, settle-check (200ms), retry loop with
+  textarea-clear as the fast gate, fallback to assistantCount. Tagged
+  with `myGen` so a chat switch mid-send invalidates the in-flight
+  bootstrap and lifts the input cover.
+
+- **`syncSessionState()`** — runs every 1.5s + on visibility change.
+  If the user opens a NEW empty chat while a session is active, the
+  loop is abandoned cleanly (A.stopping=true, A.loopKey=null). The
+  bootstrap is invalidated via `A.startGen++` so its `finally` doesn't
+  leave the input cover stuck.
+
+- **`captureSendToken()`** — captures `P.lastAssistantId()` BEFORE
+  the send. `waitForResponse` uses this as the `lastSeenAssistantId`
+  to detect the new turn. Stable per-turn identity, not count-based.
+
+- **`preHideWholeItems()`** — synchronous pre-hide of freshly injected
+  result turns, called from `submitAndGetBase`'s finally block (200ms
+  + 700ms). The very next NEW user turn is treated as ours and
+  masked on sight (with the `injectHideUntil` window), so the raw
+  "Output of '…'" doesn't flash for 200/700ms before the camouflage
+  sweep catches it.
+
+- **`wholeItemScan()`** — ZeroScript's `decorate.sweep` pattern.
+  Runs every 1.5s. Walks every message item, joins all text nodes
+  (excluding our UI), runs `ZSParse.extractAll()` on the joined
+  string. Catches tool blocks the per-element live stripper misses
+  when the marker + JSON are split across multiple `<p>`/`<div>`
+  elements (DeepSeek LUA blocks).
+
+- **`joinItemText(item)`** — TreeWalker-based text join that respects
+  the agent's own UI: skips `#rl-root`, `#rl-bar`, chips, hidden
+  elements, etc.
+
+- **`waitFor(pred, timeout)`** — promise-based generic wait helper
+  (replaces ad-hoc `await sleep()` loops).
+
+- **`jitterBeforeSend()`** — 30-100ms random delay before each send
+  attempt. ZeroScript does this to avoid race conditions with the
+  site's own React render passes.
+
+- **`A.startGen`** — generation counter bumped on abandon, so
+  bootstrap's `finally` checks `myGen === A.startGen` and lifts the
+  cover only if it's still the live bootstrap.
+
+- **All the v2.x improvements kept**: lastGoodReply, stuckDone,
+  effectiveBlock, genFlickers, sysResendDue, auto-inject
+  `datamodel_type` + `studio_id`, camouflage, inputCover, sync
+  sentToken on user message, sticky `sessionEverStarted`, etc.
+
+- **Version bump 2.3.3 → 3.0.0** — this is a MAJOR release because
+  the agent loop semantics changed (chat-switch handling, send
+  reliability, defensive state machine).
+
 ## 2.3.3 - Robust tool-block detection: whole-item text scan + immediate onUserMessage scan
 The user reported: "the ai web said ###MCP_TOOL### search_game_tree ...
 didnt execute". The tool block was in the chat but the agent never

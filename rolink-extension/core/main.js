@@ -1,29 +1,30 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// core/main.js - RoLink v2.0 agentic loop + UI (the brain).
+// core/main.js - RoLink v3.0 agentic loop + UI + camouflage (the brain).
 //
-// Architecture (ZeroScript-style ZSProvider, RoLink-branded + extended):
+// Architecture (ZeroScript-compatible, ported to RoLink):
 //   - providers/*.js exports a global ZSProvider object with the site-specific
 //     bits: selectors, generation detection, send mechanics, image attach.
 //   - core/parser.js exposes ZSParse (pure string parser) for tool blocks.
-//   - This file owns the agent loop, UI, session state. It NEVER touches the
-//     host site's DOM directly - everything goes through ZSProvider.
+//   - This file owns the agent loop, UI, session state, camouflage. It NEVER
+//     touches the host site's DOM directly - everything goes through ZSProvider.
 //   - All tool calls route through background.js (which owns the single bridge
 //     WebSocket). The AI tab never opens its own WS.
 //
-// Loop (FSM, mirror of ZeroScript's proven design + RoLink extensions):
-//   1. startSession(): drive the composer into agent-ready state (e.g. Expert
-//      on DeepSeek), inject a real system prompt + the user's starter, send.
+// Loop (FSM, ported from ZeroScript v1.5.2's waitForResponse + agentLoop):
+//   1. startSession(): drive the composer into agent-ready state, probe the
+//      bridge + Studio, inject the real system prompt + the user's starter, send.
 //   2. agentLoop(): wait for the AI's reply, classify it (tool / text / empty /
 //      truncated / too-long). On tool: dispatch via bg(), replace the raw
 //      block with a chip, feed the result back. On text: classify intent
 //      (real answer vs "what should I build?" / "I can't run commands") and
 //      react appropriately.
 //   3. Live tool-block stripping: as soon as `###MCP_TOOL###` appears in the
-//      DOM (mid-stream), hide it and show a chip. User never sees raw JSON.
+//      DOM, hide it and show a chip. Whole-item text scan every 1.5s catches
+//      multi-element blocks the per-element stripper misses.
 //   4. Auto-resume watchdog: if a tool's result is dropped on the floor (AI
 //      went silent), re-feed the same payload. Bounded retries, no infinite loop.
-//   5. Tab-visibility gate: pause while the AI tab is hidden (background tabs
-//      throttle rendering), resume when foregrounded.
+//   5. Tab-visibility gate: pause while the AI tab is hidden, resume when
+//      foregrounded. Background tabs throttle rendering.
 //   6. Image attach: if a tool returns images, upload them to the AI tab so
 //      the model can actually SEE the result.
 //   7. Session memory: persist the system prompt, conversation history, and
@@ -31,6 +32,15 @@
 //      inherit them.
 //   8. Native-tool lockdown: explicitly tell the AI to ONLY use the RoLink
 //      commands, never its own built-in tools.
+//   9. syncSessionState: track which conversation the loop is bound to. If
+//      the user opens a NEW empty chat, abandon the loop cleanly.
+//  10. Auto-inject `datamodel_type` and `studio_id` for tools that need them
+//      (model never has to know these args exist).
+//  11. sysResendDue: re-anchor the system prompt on the next tool result
+//      every N turns (fixes the "I cannot run commands" failure on long
+//      sessions).
+//  12. Camouflage: hide raw tool blocks AND injected feedback turns from the
+//      user's view. They see clean AI replies + tool chips only.
 
 (function(){
   "use strict";
@@ -42,7 +52,7 @@
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const log = (...a) => console.log("[rolink]", ...a);
 
-  // ── diagnostics: 300-slot ring buffer for postmortem debugging ────────────
+  // ── diagnostics: 300-slot ring buffer for postmortem debugging ──────────
   function diag(event, data){
     try{
       const entry = { t: Date.now(), event, data };
@@ -72,42 +82,48 @@
   }
   function isContextInvalidated(m){ return /Extension context invalidated|message port closed|Receiving end does not exist/i.test(m||""); }
 
-  // ── state ────────────────────────────────────────────────────────────────
+  // ── state (ported from ZeroScript's A) ───────────────────────────────────
   const A = {
     started: false,            // user clicked Start; an active session exists
-    starting: false,           // bootstrap in progress (system prompt + send)
-    startingKey: null,         // conversation the bootstrap belongs to
+    sessionEverStarted: false, // sticky: was Start ever clicked? Used by onUserMessage hook
+    starting: false,           // bootstrap in progress
+    startingKey: null,         // conversation the bootstrap is bound to
     running: false,            // agent loop is running
-    stopping: false,           // user clicked Stop, winding down
+    stopping: false,           // user clicked Stop
     loopKey: null,             // conversation the loop is bound to
-    lastGenAt: 0,              // timestamp of last observed generation
-    injecting: false,          // currently feeding something back to the AI
-    busy: false,               // a tool is currently executing
+    lastGenAt: 0,
+    injecting: false,
+    busy: false,
     toolRunning: "",
     toolStart: 0,
-    feedStreak: 0,             // tool-results fed back without an answer
-    maxFeedStreak: 14,         // give up after this many in a row
+    feedStreak: 0,
+    maxFeedStreak: 14,
     observeTarget: null,
-    feedPending: null,         // the result we just sent back (for auto-resume match)
+    feedPending: null,
     lastFeedId: null,
     lastFeedAt: 0,
     lastFeedText: "",
     lastTextAt: 0,
-    parked: false,             // paused because the tab is hidden
+    parked: false,
     tools: [],
-    focusedDataModel: null,    // last-known focused DataModel from get_studio_state
-    currentStudioId: null,     // last-known studio_id from list_roblox_studios
-    sessionEverStarted: false, // sticky: was Start ever clicked? Used by onUserMessage hook
-    userStopped: false,        // user clicked Stop (latched until next user message)
-    diag: [],                  // 300-slot ring buffer of diag() events for debugging
     status: "offline",
     lastAssistantIdAtBoot: null,
-    sessionId: null,           // per-conversation session id (for memory)
-    customPrompt: "",          // user-added prompt from the panel
-    history: [],               // {role, text, ts} entries for this session
-    nudgeCount: 0,             // how many nudges we've sent in this session
-    maxNudges: 4,              // give up after this many nudges
-    strippedBlocks: new WeakSet(), // already-hidden tool blocks (so we don't re-hide)
+    currentStudioId: null,
+    userStopped: false,
+    focusedDataModel: null,
+    diag: [],
+    startGen: 0,              // bumped on abandon so startSession's own finally is invalidated
+    sentToken: null,          // identity of the assistant turn BEFORE this send (used by waitForResponse)
+    bootstrapBase: null,      // assistantCount at the time of bootstrap send
+    injectPreUser: null,      // userCount at the time of inject (used by preHideWholeItems)
+    injectHideUntil: 0,       // one-shot pre-hide window for injected result turns
+    activeTurnItem: null,     // the current assistant turn being processed
+    nudgesLeft: 4,            // how many question-nudges we can send before giving up
+    toolNames: new Set(),     // known tool names from the live tool list
+    turnedStopped: false,     // the AI's own stop button was clicked
+    stoppedAt: 0,             // timestamp of stop (for grace windows)
+    strippedBlocks: new WeakSet(),
+    dispatchedItems: new WeakSet(),  // message items we've already processed
   };
 
   // ── DOM helpers ──────────────────────────────────────────────────────────
@@ -116,12 +132,9 @@
   function shorten(s, n){ s=String(s); return s.length>n ? s.slice(0, n-1) + "…" : s; }
 
   // ── session memory (chrome.storage) ──────────────────────────────────────
-  // Per-conversation: {systemPrompt, history:[], notes:""}
-  // Keys: rolSession_<sessionId>
   function sessionKey(){ return "rolSession_" + (A.sessionId || (location.pathname + "|" + location.hostname)); }
   function sessionIdFromUrl(){
     try{
-      // Use pathname + a stable hash of the first user message if we can find one
       const p = location.pathname;
       return p.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "default";
     }catch{ return "default"; }
@@ -139,7 +152,7 @@
     if(!bgAvailable) return;
     try{
       await bg({type:"session_save", key: sessionKey(), data: {
-        history: A.history.slice(-200), // cap
+        history: (A.history || []).slice(-200),
         updatedAt: Date.now(),
       }});
     }catch{}
@@ -155,6 +168,40 @@
     A.customPrompt = s || "";
     if(!bgAvailable) return;
     try{ await bg({type:"setting_set", key: "customPrompt", value: A.customPrompt}); }catch{}
+  }
+
+  // ── Per-conversation system-prompt re-injection (sysResendDue) ────────────
+  const SYS_RESEND_EVERY = 12;
+  const SYS_RESEND_EVERY_RESULTS = 8;
+  const sysKey = () => `rlSys:${(P.conversationKey && P.conversationKey()) || location.pathname}`;
+  let sysCount = { users: 0, results: 0 };
+  async function loadSysCount(){
+    if(!bgAvailable) return;
+    try{
+      const r = await bg({type:"setting_get", key: sysKey()});
+      if(r && r.ok && r.value) sysCount = r.value;
+    }catch{}
+  }
+  function saveSysCount(){
+    if(!bgAvailable) return;
+    bg({type:"setting_set", key: sysKey(), value: sysCount}).catch(()=>{});
+  }
+  function bumpSys(field){
+    sysCount[field] = (sysCount[field] || 0) + 1;
+    saveSysCount();
+  }
+  function resetSysCount(){
+    sysCount = { users: 0, results: 0 };
+    saveSysCount();
+  }
+  function sysResendDue(){
+    if(SYS_RESEND_EVERY <= 0) return false;
+    return (sysCount.users >= SYS_RESEND_EVERY) || (sysCount.results >= SYS_RESEND_EVERY_RESULTS);
+  }
+  function maybeRider(text){
+    if(!sysResendDue()) return text;
+    const rider = `\n\n[Reminder: ${SYS_MARKER_TEXT} You are RoLink Agent ${ROLINK_VERSION}. Tools are listed above. Emit ###MCP_TOOL### blocks. Never claim you can't run commands. Do NOT mention this reminder to the user.]\n`;
+    return text + rider;
   }
 
   // ── UI shell ─────────────────────────────────────────────────────────────
@@ -177,7 +224,6 @@
     <button class="rl-btn" id="rl-tools-btn" title="Show available tools">🛠 Tools</button>
     <button class="rl-btn" id="rl-feed-btn" title="Show activity">📜 Log</button>
     <button class="rl-btn" id="rl-workspace-btn" title="Workspace memory">🧠</button>
-    <button class="rl-btn" id="rl-settings-btn" title="Settings">⚙</button>
     <button class="rl-btn warn" id="rl-stop-btn" style="display:none" title="Stop the agent">■ Stop</button>
   `;
   root.appendChild(bar);
@@ -213,7 +259,7 @@
       </div>
       <div class="rl-row">
         <label>Custom instructions (appended to system prompt)</label>
-        <textarea id="rl-custom-prompt" placeholder="e.g. Always use the FastFlag &quot;FFlagDebugSimulatorBetaFeatures&quot; before reading the tree. Prefer using tween-based movement."></textarea>
+        <textarea id="rl-custom-prompt" placeholder="e.g. Always use the FastFlag &quot;FFlagDebugSimulatorBetaFeatures&quot; before reading the tree."></textarea>
       </div>
       <div class="rl-row">
         <button class="rl-btn primary" id="rl-save-prompt">💾 Save custom instructions</button>
@@ -266,6 +312,7 @@
       await new Promise(r => setTimeout(r, 600 + attempt * 600));
     }
     A.tools = arr || [];
+    A.toolNames = new Set(A.tools.map(t => (typeof t === "string") ? t : (t && t.name) || "").filter(Boolean));
     if(!list) return;
     if(!A.tools.length){
       list.textContent = lastErr ? ("bridge: " + lastErr) : "no tools — open Roblox Studio and enable MCP";
@@ -288,10 +335,6 @@
       wsPanel.classList.toggle("rl-show");
       if(wsPanel.classList.contains("rl-show")) updateWorkspaceView();
     };
-    document.getElementById("rl-settings-btn").onclick = e => {
-      e.stopPropagation();
-      document.getElementById("rl-workspace-btn").click();
-    };
     document.getElementById("rl-workspace-close").onclick = e => { e.stopPropagation(); closeWorkspace(); };
     document.getElementById("rl-save-prompt").onclick = async e => {
       e.stopPropagation();
@@ -307,7 +350,6 @@
       pushFeed("info", "🗑", "Session cleared");
       updateWorkspaceView();
     };
-    // click outside to close
     document.addEventListener("click", e => {
       if(!wsPanel.contains(e.target) && e.target.id !== "rl-workspace-btn" && e.target.id !== "rl-settings-btn"){
         closeWorkspace();
@@ -317,7 +359,7 @@
   function closeWorkspace(){ wsPanel.classList.remove("rl-show"); }
   function updateWorkspaceView(){
     document.getElementById("rl-session-id").textContent = A.sessionId || "default";
-    document.getElementById("rl-history-count").textContent = A.history.length + " event" + (A.history.length === 1 ? "" : "s");
+    document.getElementById("rl-history-count").textContent = (A.history || []).length + " event" + ((A.history || []).length === 1 ? "" : "s");
     document.getElementById("rl-custom-prompt").value = A.customPrompt || "";
   }
 
@@ -350,14 +392,11 @@
   }
 
   // ── THE SYSTEM PROMPT ─────────────────────────────────────────────────────
-  // Built dynamically. The model is a Roblox Studio agent. We are SHORT and
-  // DEMANDING. Two patterns: tool call or DONE. No prose padding.
+  const SYS_MARKER_TEXT = "⟪RL-SYS⟫";
   function buildSystemPrompt(){
     const tools = Array.isArray(A.tools) && A.tools.length ? A.tools : null;
     let toolBlock;
     if(tools){
-      // Include each tool's name + required args + brief description so the
-      // model knows what to pass. The bridge returns full inputSchemas.
       const lines = tools.map(t => {
         if(typeof t === "string") return "- " + t;
         const nm = (t && t.name) || "?";
@@ -373,7 +412,7 @@
       });
       toolBlock = "Tools you can call (use the EXACT name; one ###MCP_TOOL### block per call; you can call multiple per reply). `*` = required.\n"
                 + lines.join("\n")
-                + "\n\nThe focused DataModel (" + (A.focusedDataModel || "auto-detected") + ") is auto-injected for tools that need it. If a call fails, read the error and fix it on the next call — don't guess at unrelated tool names.";
+                + "\n\nThe focused DataModel (" + (A.focusedDataModel || "auto-detected") + ") and studio_id are auto-injected for tools that need them. If a call fails, read the error and fix it on the next call — don't guess at unrelated tool names.";
     } else {
       toolBlock = "Tools will be discovered at session start. Begin by trying common RoLink tools like `get_studio_state`, `list_roblox_studios`, `get_snapshot`, `execute_luau`.";
     }
@@ -402,7 +441,7 @@ ${customBlock}
 # Rules
 
 - ACT FIRST. Never ask the user "what should I build?" — if no task is given, PICK one (e.g. "I'll make a simple obby with checkpoints") and start building it. The user will redirect you if they want something different.
-- NEVER say "I cannot run commands" or "I don't have access to your files". Your tools ARE working. Just emit the right ###MCP_TOOL### block.
+- NEVER say "I cannot run commands" or "I don't have access to your files". Your tools ARE working. Just emit the right ###MCP_TOOL### block with the EXACT tool name from the list above.
 - ONLY use the tools listed above. Do NOT use any built-in code interpreter, web search, file browser, or other native tool — even if the site offers them. The Roblox MCP tools are the only thing you should call.
 - If a tool call fails, read the error message, fix the call (correct args, valid JSON, valid Luau), and retry. Don't apologize and stop.
 - Keep prose short. The user wants to see tool calls and results, not essays.
@@ -414,71 +453,25 @@ ${customBlock}
 ###MCP_TOOL###
 {"tool":"get_studio_state","args":{}}`;
 
-  const SYS_MARKER_TEXT = "⟪RL-SYS⟫";
-
-  // ── Per-conversation system-prompt re-injection (sysResendDue) ────────────
-  // Some sites (esp. ChatGPT) summarize their own context mid-conversation,
-  // dropping the MECHANISM (forget that the extension reads their replies and
-  // executes them), so the model starts saying "I cannot run commands" while
-  // the extension sits there ready. Fix: re-inject the system prompt on the
-  // next tool-result carrier (no extra message) every N turns, persisted per
-  // conversation in chrome.storage so it survives page reloads.
-  const SYS_RESEND_EVERY = 12;       // re-inject after N user turns
-  const SYS_RESEND_EVERY_RESULTS = 8; // or after N injected tool results
-  const sysKey = () => `rlSys:${(P.conversationKey && P.conversationKey()) || location.pathname}`;
-  let sysCount = { users: 0, results: 0 };
-  async function loadSysCount(){
-    if(!bgAvailable) return;
-    try{
-      const r = await bg({type:"setting_get", key: sysKey()});
-      if(r && r.ok && r.value) sysCount = r.value;
-    }catch{}
-  }
-  function saveSysCount(){
-    if(!bgAvailable) return;
-    bg({type:"setting_set", key: sysKey(), value: sysCount}).catch(()=>{});
-  }
-  function bumpSys(field){
-    sysCount[field] = (sysCount[field] || 0) + 1;
-    saveSysCount();
-  }
-  function resetSysCount(){
-    sysCount = { users: 0, results: 0 };
-    saveSysCount();
-  }
-  function sysResendDue(){
-    if(SYS_RESEND_EVERY <= 0) return false;
-    return (sysCount.users >= SYS_RESEND_EVERY) || (sysCount.results >= SYS_RESEND_EVERY_RESULTS);
-  }
-  // Returns the prompt text with the sys marker RE-APPENDED if the resend is
-  // due. This rides on the next injected tool result (free, invisible).
-  function maybeRider(text){
-    if(!sysResendDue()) return text;
-    const rider = `\n\n[Reminder: ${SYS_MARKER_TEXT} You are RoLink Agent ${ROLINK_VERSION}. Tools are listed above. Emit ###MCP_TOOL### blocks. Never claim you can't run commands. Do NOT mention this reminder to the user.]\n`;
-    return text + rider;
+  // ── capture send token (for stable per-turn identity) ─────────────────────
+  function captureSendToken(){
+    A.sentToken = P.lastAssistantId ? P.lastAssistantId() : null;
   }
 
   // ── dispatch a tool call ──────────────────────────────────────────────────
   function dispatchTool(name, args, sourceBlock, sourceItem, images){
-    // Auto-inject `datamodel_type` for tools that need it. The bridge's
-    // execute_luau / multi_edit / script_read / script_grep / inspect_instance
-    // / start_stop_play / search_game_tree require `datamodel_type` and the
-    // model has no way to know which DataModel is focused without first
-    // calling get_studio_state. We track the focused one and inject silently.
-    if(args && typeof args === "object" && !args.datamodel_type && A.focusedDataModel){
-      const NEEDS_DM = /^(execute_luau|multi_edit|script_read|script_grep|inspect_instance|start_stop_play|search_game_tree|delete_instance|set_property|get_property|generate_asset|search_assets|import_asset|insert_asset|search_asset|get_console_output|get_snapshot)$/i;
-      if(NEEDS_DM.test(name)) args = Object.assign({}, args, { datamodel_type: A.focusedDataModel });
-    }
-    // Auto-inject `studio_id` for tools that need it. The bridge requires
-    // studio_id on EVERY tool except list_roblox_studios. We track the
-    // current studio (from list_roblox_studios) and inject it.
-    if(args && typeof args === "object" && !args.studio_id && A.currentStudioId && name !== "list_roblox_studios"){
-      const NEEDS_STUDIO = true; // be permissive: every tool needs it
-      if(NEEDS_STUDIO) args = Object.assign({}, args, { studio_id: A.currentStudioId });
+    // Auto-inject `datamodel_type` and `studio_id` for tools that need them.
+    if(args && typeof args === "object"){
+      if(!args.datamodel_type && A.focusedDataModel){
+        const NEEDS_DM = /^(execute_luau|multi_edit|script_read|script_grep|inspect_instance|start_stop_play|search_game_tree|delete_instance|set_property|get_property|generate_asset|search_assets|import_asset|insert_asset|search_asset|get_console_output|get_snapshot)$/i;
+        if(NEEDS_DM.test(name)) args = Object.assign({}, args, { datamodel_type: A.focusedDataModel });
+      }
+      if(!args.studio_id && A.currentStudioId && name !== "list_roblox_studios"){
+        args = Object.assign({}, args, { studio_id: A.currentStudioId });
+      }
     }
     if(sourceBlock && sourceBlock.parentElement && !A.strippedBlocks.has(sourceBlock)){
       A.strippedBlocks.add(sourceBlock);
-      // Hide the raw tool block (and its code-fence wrapper) before chip insertion
       const wrapper = sourceBlock.parentElement;
       if(wrapper && wrapper !== sourceItem){
         wrapper.style.display = "none";
@@ -500,7 +493,7 @@ ${customBlock}
     A.busy = true; A.toolRunning = name; A.toolStart = Date.now();
     pushFeed("tool", "⚙", `${name} ${JSON.stringify(args).slice(0,180)}`);
     setCounter(++A.toolCount);
-    A.history.push({role:"tool_call", name, args, ts:Date.now()});
+    (A.history = A.history || []).push({role:"tool_call", name, args, ts:Date.now()});
     saveSession();
     return new Promise(resolve=>{
       bg({type:"call_tool", name, arguments: args, timeout: 120000}).then(res=>{
@@ -517,20 +510,14 @@ ${customBlock}
         const text = res.ok ? (res.text || "OK") : ("ERROR: " + (res.error || "unknown"));
         const ok = res.ok !== false;
         pushFeed(ok ? "ok" : "err", ok ? "✓" : "✗", `${name}: ${shorten(String(text).replace(/\n/g," "), 200)}`);
-        A.history.push({role:"tool_result", name, ok, text, ts:Date.now()});
+        (A.history = A.history || []).push({role:"tool_result", name, ok, text, ts:Date.now()});
         saveSession();
-        // If the tool returned images, attach them to the next feedback.
-        const imgs = (res && res.images && res.images.length) ? res.images : null;
-        A.lastFeedText = text; A.lastFeedAt = Date.now(); A.lastFeedId = name + ":" + Date.now();
-        // Capture the focused DataModel from get_studio_state (used for auto-
-        // injecting datamodel_type on subsequent calls).
+        // Capture the focused DataModel and studio_id from results.
         if(name === "get_studio_state" && ok){
           const m = String(text).match(/Focused DataModel in the viewport:\s*(\w+)/i)
                  || String(text).match(/Available DataModels:\s*(\w+)/i);
           if(m && m[1]) A.focusedDataModel = m[1];
         }
-        // Capture the studio_id from list_roblox_studios (used for auto-
-        // injecting studio_id on subsequent calls).
         if(name === "list_roblox_studios" && ok){
           try{
             const j = JSON.parse(text);
@@ -541,16 +528,14 @@ ${customBlock}
             }
           }catch{}
         }
-        // Truncate huge results so we don't blow context
+        const imgs = (res && res.images && res.images.length) ? res.images : null;
+        A.lastFeedText = text; A.lastFeedAt = Date.now(); A.lastFeedId = name + ":" + Date.now();
         const textForModel = text.length > 12000 ? text.slice(0, 11500) + "\n\n[…result truncated for context; full result is in the chip above…]" : text;
-        // Build actionable error feedback: which tool names are valid, what
-        // schema this tool actually needs, and which required arg is missing.
         let hint = "";
         if(!ok){
           if(/unknown tool/i.test(text) && Array.isArray(A.tools) && A.tools.length){
             hint += `\n\nThe valid tool names right now are: ${A.tools.map(t => (typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}.`;
           }
-          // Detect "X is required" errors and tell the model the schema.
           const required = String(text).match(/['"]?(\w+)['"]? is required/i);
           if(required){
             const toolSchema = Array.isArray(A.tools) ? A.tools.find(t => t && t.name === name) : null;
@@ -569,10 +554,13 @@ ${customBlock}
         const feedbackMsg = ok
           ? `[Tool result for ${name}]\n${textForModel}\n\nYou MUST continue. Either call another tool via ###MCP_TOOL### {json} OR give a final answer ending with DONE. Do NOT respond with "I cannot run commands" — your tools are working.`
           : `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Fix the call (correct args, valid JSON, valid Luau) and retry with another ###MCP_TOOL### block using the EXACT name from the system prompt.${hint}`;
-        // Bump result count (for sysResendDue) and attach rider if due.
         bumpSys("results");
         const withRider = maybeRider(feedbackMsg);
         A.injecting = true;
+        // Pre-hide the injected turn (set window; preHideWholeItems in observer will mask it).
+        const preUser = (P.userCount && P.userCount()) || 0;
+        A.injectPreUser = preUser;
+        A.injectHideUntil = Date.now() + 2500;
         try{ inputCover(true); }catch{}
         P.typeAndSend(withRider, imgs || []).then(()=>{
           A.injecting = false;
@@ -584,15 +572,11 @@ ${customBlock}
   }
 
   // ── detect "AI is asking the user a question" ──────────────────────────────
-  // Used to auto-nudge the model when it just asks "what should I build?"
-  // instead of doing something.
   function looksLikeAQuestion(text){
     if(!text) return false;
     const t = text.trim();
     if(!t) return false;
-    // Very short replies that end with a question → ask, not act
     if(t.length < 400 && /\?[\s]*$/.test(t) && !/###MCP_TOOL###/.test(t) && !/###LUA###/.test(t)) return true;
-    // Common "asking" patterns
     if(/what (do you|would you|should I|can I).{0,40}(build|create|make|do|help|want)/i.test(t)) return true;
     if(/how can I (help|assist)/i.test(t)) return true;
     if(/I('?m| am) (ready|waiting|here to help)/i.test(t) && /\?/.test(t)) return true;
@@ -613,19 +597,20 @@ ${customBlock}
   // ── send the user's starter request (after system prompt) ────────────────
   function sendSystemPromptAndStarter(){
     const first = buildSystemPrompt() + "\n\n---\n\n" + STARTER;
-    A.history.push({role:"user", text: first, ts:Date.now()});
+    (A.history = A.history || []).push({role:"user", text: first, ts:Date.now()});
     saveSession();
     setLauncherRunning();
-    return P.typeAndSend(first, []).then(()=>{
+    return submitAndGetBase(first, []).then(base => {
+      A.bootstrapBase = base;
       A.starting = false;
       A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;
       A.running = true;
       A.feedStreak = 0;
-      A.nudgeCount = 0;
+      A.nudgesLeft = 4;
       A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
       pushFeed("info", "▶", "Agent loop started. Watching AI replies…");
       showBanner("Agent running. Watch the chat — the AI will start calling tools.", "ok", 5000);
-      agentLoop();
+      agentLoop(base);
     }).catch(e=>{
       A.starting = false; A.started = false;
       pushFeed("err", "✗", "Could not send system prompt: " + e.message);
@@ -633,20 +618,102 @@ ${customBlock}
     });
   }
 
-  // ── visibility gate (pause while the AI tab is hidden) ──────────────────
-  function waitForVisible(){
+  // ── submitAndGetBase: reliable send with retry + textarea-clear detect ─
+  // Ported from ZeroScript. The site clears the textarea as soon as the send
+  // is accepted; that's our primary fast gate. The assistantCount check is
+  // the fallback for long chats where list virtualization keeps counts flat.
+  async function submitAndGetBase(text, images){
+    captureSendToken();
+    diag("send", { text: String(text).slice(0, 60), busy: P.isBusyNow && P.isBusyNow() });
+    A.injecting = true;
+    inputCover(true);
+    try{
+      // Quick 2-point settle: sample the previous response's stream length
+      // before and after a 200ms yield. A one-shot React batch flush shows no
+      // growth and costs only 200ms. A still-generating stream shows growth
+      // → fall back to the full idle wait.
+      const settleItem = P.lastAssistant && P.lastAssistant();
+      const settleLen0 = settleItem ? (P.streamLen ? P.streamLen(settleItem) : 0) : 0;
+      await sleep(200);
+      if(settleItem && settleItem === P.lastAssistant() && P.streamLen && P.streamLen(settleItem) > settleLen0){
+        // Still generating; wait for it to stop
+        await waitFor(() => !P.isGenerating(), 4000);
+      }
+      const base = P.assistantCount();
+      const preUser = (P.userCount && P.userCount()) || 0;
+      A.injectPreUser = preUser;
+      A.injectHideUntil = Date.now() + 2500;
+      const landed = () => (P.userCount && P.userCount() > preUser) || (P.assistantCount && P.assistantCount() > base);
+      // CRITICAL: never type/send while the tab is HIDDEN. Background tabs
+      // throttle rendering, which made landed-check unreliable.
+      let tries = 0, messageSent = false;
+      const myGen = A.startGen;
+      while(!messageSent && !landed() && tries < 4 && A.startGen === myGen && !A.stopping){
+        if(document.hidden){
+          if(!(await waitForVisible()) || A.stopping) break;
+        }
+        await jitterBeforeSend();
+        diag("submit.typeAndSend", { hasImages: !!(images && images.length) });
+        await P.typeAndSend(text, images);
+        // Re-arm the pre-hide window NOW that typeAndSend has returned.
+        A.injectHideUntil = Date.now() + 2500;
+        // Fast gate: textarea cleared = send accepted.
+        const ok = await waitFor(() => {
+          if(P.editorText && P.editorText().trim() === "") return true;
+          return landed();
+        }, 3500);
+        if(ok) messageSent = true;
+        tries++;
+      }
+      if(!messageSent && !landed() && A.startGen === myGen && !A.stopping){
+        diag("send.failed", { tries });
+        pushFeed("err", "✗", `${P.displayName} did not accept the injected message after ${tries} attempts. Send a short message yourself to resume.`);
+        showBanner("Send failed — type a short message to resume", "warn", 6000);
+      }
+      return base;
+    }finally{
+      if(!A.starting && !A.running) inputCover(false);
+      setTimeout(() => (A.injecting = false), 400);
+      setTimeout(preHideWholeItems, 200);
+      setTimeout(preHideWholeItems, 700);
+    }
+  }
+  async function waitFor(pred, timeout){
+    const t0 = Date.now();
+    while(Date.now() - t0 < timeout){
+      try{ if(pred()) return true; }catch{}
+      await sleep(50);
+    }
+    return false;
+  }
+  function jitterBeforeSend(){
+    return new Promise(r => setTimeout(r, 30 + Math.random() * 70));
+  }
+  async function waitForVisible(){
     if(!document.hidden || A.stopping) return Promise.resolve(!A.stopping);
     A.parked = true; pushFeed("info", "⏸", "Tab hidden — paused");
     return new Promise(resolve=>{
       const done = () => { document.removeEventListener("visibilitychange", onVis); clearInterval(iv); A.parked = false; if(!A.stopping) pushFeed("info", "▶", "Resumed"); resolve(!A.stopping); };
       const onVis = () => { if(!document.hidden) done(); };
       document.addEventListener("visibilitychange", onVis);
-      const iv = setInterval(()=>{ if(A.stopping || !document.hidden) done(); }, 500);
+      const iv = setInterval(() => { if(A.stopping || !document.hidden) done(); }, 500);
+    });
+  }
+
+  // ── visibility gate (pause while the AI tab is hidden) ──────────────────
+  function waitForVisible_old(){
+    if(!document.hidden || A.stopping) return Promise.resolve(!A.stopping);
+    A.parked = true; pushFeed("info", "⏸", "Tab hidden — paused");
+    return new Promise(resolve=>{
+      const done = () => { document.removeEventListener("visibilitychange", onVis); clearInterval(iv); A.parked = false; resolve(!A.stopping); };
+      const onVis = () => { if(!document.hidden) done(); };
+      document.addEventListener("visibilitychange", onVis);
+      const iv = setInterval(()=>{ if(A.stopping || !document.hidden) done(); }, 1000);
     });
   }
 
   // ── the main agent loop ───────────────────────────────────────────────────
-  function agentLoop(){
+  function agentLoop(base){
     if(A.stopping){ A.running = false; setLauncherStopped(); return; }
     (async function tick(){
       while(A.running && !A.stopping){
@@ -654,64 +721,75 @@ ${customBlock}
           await waitForVisible();
           if(A.stopping) break;
         }
-        const reply = await waitForReply();
+        const reply = await waitForReply(base);
         if(A.stopping) break;
         if(reply.kind === "tool"){
           A.feedStreak = 0;
-          A.nudgeCount = 0;
+          A.nudgesLeft = 4;
           for(let i = 0; i < reply.calls.length; i++){
             const c = reply.calls[i];
             setTimeout(()=>dispatchTool(c.name, c.arguments, null, reply.item), i*30);
           }
         } else if(reply.kind === "text"){
-          // FIRST: detect "AI is asking a question" → nudge it to ACT.
-          if(looksLikeAQuestion(reply.text) && A.nudgeCount < A.maxNudges){
-            A.nudgeCount++;
-            pushFeed("warn", "↻", `AI asked a question (${A.nudgeCount}/${A.maxNudges}) — nudging to ACT`);
+          if(looksLikeAQuestion(reply.text) && A.nudgesLeft > 0){
+            A.nudgesLeft--;
+            pushFeed("warn", "↻", `AI asked a question (${4 - A.nudgesLeft}/4) — nudging to ACT`);
             A.injecting = true;
+            try{ inputCover(true); }catch{}
             await P.typeAndSend(`Don't ask. ACT. Pick the simplest reasonable interpretation of the user's intent and start building it right now. If a tool fails, fix it. If you need to make up defaults, do it. Emit a ###MCP_TOOL### block in your very next reply.`, []);
+            try{ inputCover(false); }catch{}
             A.injecting = false;
             continue;
           }
-          // SECOND: detect "I cannot run commands" → stronger re-grounding.
-          if(looksLikeCantRun(reply.text) && A.nudgeCount < A.maxNudges){
-            A.nudgeCount++;
-            pushFeed("warn", "↻", `AI claimed it can't run tools (${A.nudgeCount}/${A.maxNudges}) — re-grounding`);
+          if(looksLikeCantRun(reply.text) && A.nudgesLeft > 0){
+            A.nudgesLeft--;
+            pushFeed("warn", "↻", `AI claimed it can't run tools (${4 - A.nudgesLeft}/4) — re-grounding`);
             A.injecting = true;
+            try{ inputCover(true); }catch{}
             await P.typeAndSend(`You DO have tools. They are listed in your system prompt and have been used successfully in this session. Re-read your system prompt. The valid tool names are: ${(A.tools||[]).map(t=>(typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Emit a ###MCP_TOOL### block now using one of these exact names.`, []);
+            try{ inputCover(false); }catch{}
             A.injecting = false;
             continue;
           }
-          // Real answer → done.
           pushFeed("done", "🏁", `Agent finished (${A.toolCount} tool call${A.toolCount === 1 ? "" : "s"}).`);
-          A.running = false; A.started = false;
+          A.running = false;
+          // Keep A.started true so onUserMessage re-arms on next user message.
           setLauncherStopped();
-          showBanner("Agent finished. Click Start to run again.", "ok", 5000);
+          showBanner("Agent finished. Type your next request to re-arm.", "ok", 5000);
           return;
         } else if(reply.kind === "truncated"){
           if(P.clickContinueBtn && P.clickContinueBtn()){ pushFeed("info", "↻", "Clicked Continue (truncated reply)"); continue; }
           A.injecting = true;
+          try{ inputCover(true); }catch{}
           await P.typeAndSend("Your last reply was truncated. Please redo the tool call (or final answer) in full. Do not include ###END markers or closing fences you don't need.", []);
+          try{ inputCover(false); }catch{}
           A.injecting = false;
         } else if(reply.kind === "empty"){
           A.feedStreak++;
           if(A.feedStreak > A.maxFeedStreak){
             pushFeed("err", "⏹", `Gave up after ${A.maxFeedStreak} empty replies. Click Start to try again.`);
-            A.running = false; A.started = false; setLauncherStopped(); return;
+            A.running = false;
+            setLauncherStopped();
+            return;
           }
           if(A.lastFeedText && (Date.now() - A.lastFeedAt) < 60000){
             pushFeed("info", "↻", `Empty reply — re-feeding last result (${A.feedStreak}/${A.maxFeedStreak})`);
             A.injecting = true;
+            try{ inputCover(true); }catch{}
             await P.typeAndSend(`[No reply received. Reminder: the last tool result was]\n${A.lastFeedText}\n\nPlease continue. Either call another tool via ###MCP_TOOL### or give a final answer ending with DONE.`, []);
+            try{ inputCover(false); }catch{}
             A.injecting = false;
           } else {
             A.injecting = true;
+            try{ inputCover(true); }catch{}
             await P.typeAndSend("Please continue. Use ###MCP_TOOL### {json} to call a tool, or end with DONE when finished.", []);
+            try{ inputCover(false); }catch{}
             A.injecting = false;
           }
         } else if(reply.kind === "parse_error"){
           pushFeed("err", "✗", "Malformed tool call — sending fix-it nudge");
           A.injecting = true;
+          try{ inputCover(true); }catch{}
           await P.typeAndSend(`Your last tool call was malformed JSON (${reply.reason}).
 
 To pass a code string to execute_luau, you MUST escape every double quote in the code with a backslash, and put the whole code on one logical line with \\n for newlines. For example:
@@ -728,18 +806,23 @@ print("hi")
 ###END_LUA###
 
 Retry now with valid JSON (or use the ###LUA### form).`, []);
+          try{ inputCover(false); }catch{}
           A.injecting = false;
         } else if(reply.kind === "context_limit"){
           pushFeed("err", "⏹", "Context limit reached: " + (reply.detail||"").slice(0,200));
-          A.running = false; A.started = false; setLauncherStopped();
+          A.running = false;
+          setLauncherStopped();
           showBanner("Context limit reached. Open a new chat and click Start again.", "err", 8000);
           return;
         } else if(reply.kind === "too_long"){
           A.injecting = true;
+          try{ inputCover(true); }catch{}
           await P.typeAndSend("Your reply exceeded the model's context window. Please start a new chat (click the '+' / new chat button) and re-send your last request. I'll resume from there.", []);
+          try{ inputCover(false); }catch{}
           A.injecting = false;
         } else if(reply.kind === "stopped" || reply.kind === "timeout"){
-          A.running = false; A.started = false; setLauncherStopped();
+          A.running = false;
+          setLauncherStopped();
           pushFeed("info", "⏸", "Agent stopped: " + reply.kind);
           return;
         }
@@ -747,15 +830,14 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     })().catch(e=>{
       console.error("[rolink] loop error", e);
       pushFeed("err", "✗", "Loop crashed: " + (e && e.message || e));
-      A.running = false; A.started = false; setLauncherStopped();
+      A.running = false;
+      setLauncherStopped();
     });
   }
 
   // ── wait for the AI to finish a reply, then classify ──────────────────────
-  // Defensive FSM: handles stuck generating flags, blank-read frames, half-
-  // written commands, function-calling JSON envelopes, and Qwen A/B dual turns.
-  // Modeled after ZeroScript's waitForResponse.
-  async function waitForReply(){
+  // Defensive FSM with lastGoodReply, stuckDone, genFlickers, effectiveBlock.
+  async function waitForReply(base){
     const TIMEOUT = (T && T.RESPONSE_TIMEOUT_MS) || 300000;
     const t0 = Date.now();
     const STABLE_MS = (T && T.STABLE_MS) || 9000;
@@ -771,18 +853,15 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     let genFalseSince = 0, genOffFirstAt = 0, prevGen = null, genFlickers = 0;
     let warmSince = 0, reasonSince = 0, noTurnSince = 0, unsettledSince = 0;
     let curItem = null, lastGoodReply = "";
-
-    const lastSeenAssistantId = P.lastAssistantId ? P.lastAssistantId() : null;
+    const lastSeenAssistantId = A.sentToken;
+    const baseline = (typeof base === "number") ? base : (A.bootstrapBase || 0);
 
     while(Date.now() - lastActive < TIMEOUT){
       if(A.stopping) return {kind:"stopped"};
 
-      // Tab-visibility gate: pause while hidden, slide every deadline forward.
       if(document.hidden){
         const parked = await waitForVisible();
         if(A.stopping) return {kind:"stopped"};
-        // waitForVisible returns true if not stopping, false if stopping. The
-        // duration of the park is best-effort ~500ms per poll.
         lastActive += 500;
         lastChange += 500;
         if(genFalseSince) genFalseSince += 500;
@@ -801,22 +880,19 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       const replyNorm = replyText.replace(/\s+/g, " ").trim();
       if(replyNorm !== lastText){ lastText = replyNorm; lastChange = Date.now(); lastActive = Date.now(); }
 
-      // gen-false tracking
       if(gen) genFalseSince = 0;
       else if(!genFalseSince) genFalseSince = Date.now();
       if(started && !gen && !genOffFirstAt) genOffFirstAt = Date.now();
       if(prevGen === false && gen && genOffFirstAt) genFlickers++;
       prevGen = gen;
 
-      // Per-turn state reset
       if(d.item !== curItem){ curItem = d.item; warmSince = 0; lastGoodReply = ""; }
       if(replyText && replyText.length) lastGoodReply = replyText;
 
-      // new-turn detection (with provider-id preference, count fallback)
       const curTok = P.lastAssistantId ? P.lastAssistantId() : undefined;
       const newTurn = (curTok !== undefined && curTok !== null)
         ? (curTok !== lastSeenAssistantId)
-        : (P.assistantCount() > 0);
+        : (P.assistantCount && P.assistantCount() > baseline);
 
       if(!started){
         const hasText = !!replyText.length;
@@ -828,20 +904,13 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         }
       }
 
-      // Periodically scan for context-limit toasts
       const ctx = P.scanError && P.scanError();
       if(ctx) return {kind:"context_limit", detail: ctx};
 
-      // Open tool block: still streaming if gen is on, or if the text changed
-      // recently. Once gen has been off for GEN_STOP_GRACE_MS, the open block
-      // is DOM churn, not live output.
       const blockActive = ZSParse.hasOpenToolBlock(replyText) && Date.now() - lastChange < 6000;
       const genStopped = !gen && genFalseSince && Date.now() - genFalseSince > GEN_STOP_GRACE_MS;
       const effectiveBlock = blockActive && !genStopped;
 
-      // stuckDone: generating flag is stuck ON but text is frozen — wedge case
-      // seen on Gemini after a mid-write halt. Finalize anyway, but NEVER while
-      // a command block is still open and we're genuinely generating.
       const stuckDone = started && replyText && Date.now() - lastChange > STABLE_MS &&
         !(gen && ZSParse.hasOpenToolBlock(replyText));
 
@@ -851,8 +920,6 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         continue;
       }
 
-      // On providers with RELIABLE counts (no list virtualization), don't
-      // finalize before the reply turn for THIS send exists.
       if(P.reliableCounts && !newTurn){
         if(!noTurnSince) noTurnSince = Date.now();
         if(Date.now() - noTurnSince < NO_TURN_GRACE_MS){ await sleep(200); continue; }
@@ -863,14 +930,12 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       if(!doneSince) doneSince = Date.now();
       if(Date.now() - doneSince < 500){ await sleep(120); continue; }
 
-      // Turn produced nothing → warming up
       if(!replyText.trim() && !lastGoodReply){
         if(!warmSince) warmSince = Date.now();
         if(Date.now() - warmSince < WARMUP_MS){ await sleep(200); continue; }
         return {kind:"empty"};
       }
 
-      // Reasoning/loading phase
       if(d.thinking && d.thinking.length && !replyText.length && !(P.turnHalted && P.turnHalted(d.item))){
         if(!reasonSince) reasonSince = Date.now();
         if(Date.now() - reasonSince < REASON_NOREPLY_MS){ await sleep(200); continue; }
@@ -878,15 +943,11 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         reasonSince = 0;
       }
 
-      // Blank-read fallback: classify the last non-empty read.
       let r = replyText;
       if(!r && lastGoodReply) r = lastGoodReply;
 
-      // Short system messages: context-limit, too-long
       if(r.length < 400 && P.isTooLongMsg && P.isTooLongMsg(r)) return {kind:"too_long", text: r};
 
-      // Qwen A/B "dual" turn: while unresolved the composer is GONE, so we
-      // can't inject. Auto-select Response 1 to collapse the carousel.
       if(P.isComparisonTurn && P.isComparisonTurn(d.item)){
         if(P.isGenerating()){ await sleep(250); continue; }
         if(P.resolveComparison && P.resolveComparison()){
@@ -895,9 +956,6 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         await sleep(250); continue;
       }
 
-      // Reply unsettled guard: hold off on parse verdict while the read is
-      // still mid-render (Qwen A/B). Only guards command-shaped text so plain
-      // answers aren't delayed.
       const cmdShaped = P.replyUnsettled && (
         ZSParse.hasToolSignature(r) ||
         (ZSParse.LUA_END_RE && ZSParse.LUA_END_RE.test(r) && ZSParse.LUA_START_RE && !ZSParse.LUA_START_RE.test(r)) ||
@@ -911,19 +969,16 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         unsettledSince = 0;
       }
 
-      // Tool signature present
       if(ZSParse.hasToolSignature(r)){
         const blks = ZSParse.extractAll(r);
         const calls = blks.map(ZSParse.normalize).filter(Boolean);
         if(calls.length){
           return {kind:"tool", calls, item: d.item, lastId: curTok};
         }
-        // Marker present but no valid JSON
         if(P.findContinueBtn && P.findContinueBtn()) return {kind:"truncated", text: r, item: d.item};
         if(r.indexOf(ZSParse.START_M) !== -1 || (ZSParse.LUA_START_RE && ZSParse.LUA_START_RE.test(r))){
           return {kind:"parse_error", reason:"malformed", raw: r, item: d.item};
         }
-        // Unclosed JSON (cut-off mid-stream) — try to salvage
         if(ZSParse.hasOpenToolBlock(r)){
           const salvaged = ZSParse.salvageCutOffCall ? ZSParse.salvageCutOffCall(r) : null;
           if(salvaged){
@@ -932,24 +987,18 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
           }
           return {kind:"parse_error", reason:"unclosed", raw: r, item: d.item};
         }
-        // Closed-looking JSON with a real tool name but invalid → parse_error
         const nm = ZSParse.toolNameFromText ? ZSParse.toolNameFromText(r) : null;
-        if(nm && nm !== "command" && Array.isArray(A.tools) && A.tools.some(t => {
-          const tn = (typeof t === "string") ? t : (t && t.name) || "";
-          return tn === nm || tn === nm.replace(/^.*\//, "");
-        })){
+        if(nm && nm !== "command" && A.toolNames && (A.toolNames.has(nm) || A.toolNames.has(nm.replace(/^.*\//, "")))){
           return {kind:"parse_error", reason:"malformed", raw: r, item: d.item};
         }
       }
 
-      // Malformed execute_luau: model wrote ###END_LUA### without ###LUA###
       if(ZSParse.LUA_END_RE && ZSParse.LUA_END_RE.test(r) &&
          ZSParse.LUA_START_RE && !ZSParse.LUA_START_RE.test(r) &&
          r.indexOf(ZSParse.START_M) === -1){
         return {kind:"parse_error", reason:"luaOpener", raw: r, item: d.item};
       }
 
-      // Bare JSON function-calling (Gemini style): tool args without envelope
       if(/"(?:datamodel_type|edits|old_string|new_string|file_path|target_file)"\s*:/.test(r) &&
          !/"command"\s*:/.test(r)){
         return {kind:"parse_error", reason:"envelope", raw: r, item: d.item};
@@ -964,27 +1013,24 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   // ── launcher click: start a session ──────────────────────────────────────
   async function startSession(){
     if(A.started) return;
+    const myGen = ++A.startGen;
     A.started = true; A.sessionEverStarted = true; A.starting = true; A.running = false; A.stopping = false;
     A.feedStreak = 0; A.toolCount = 0; A.lastFeedText = ""; A.lastFeedAt = 0; A.lastFeedId = null;
-    A.nudgeCount = 0;
-    A.strippedBlocks = new WeakSet();
+    A.nudgesLeft = 4; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
     setCounter(0);
     document.getElementById("rl-feed-list").innerHTML = "";
-    // Loading state on the launcher — shows a spinner + "Starting…" so the
-    // user has immediate visual feedback. ZeroScript does this too.
     launcher.classList.add("is-active", "is-starting");
     launcher.innerHTML = `<span class="rl-spinner-inline"></span><span class="rl-label">Starting…</span>`;
     document.getElementById("rl-stop-btn").style.display = "inline-flex";
     pushFeed("info", "▶", `Agent starting on ${location.hostname}`);
     showBanner("Activating RoLink bridge…", "ok", 2500);
     placeBar();
-    // Check bridge status first — if not connected, show a setup card instead
-    // of sending a system prompt that'll just confuse the AI.
     try{
       const s = await bg({type:"status"});
       if(!s || !s.connected){
         pushFeed("err", "✗", "Bridge not connected. Run start.bat to activate the bridge.");
         showBanner("Bridge offline — run start.bat", "err", 6000);
+        if(myGen !== A.startGen) return;
         A.started = false; A.starting = false;
         setLauncherStopped();
         return;
@@ -1001,10 +1047,12 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         const s = await P.ensureComposerReady("startup");
         if(!s.ready){
           pushFeed("err", "⏹", "Composer not ready (no model selected). Pick Expert/Instant/Vision and try again.");
+          if(myGen !== A.startGen) return;
           A.started = false; A.starting = false; setLauncherStopped(); return;
         }
       }catch{}
     }
+    if(myGen !== A.startGen) return; // user opened a new chat mid-bootstrap
     A.sessionId = sessionIdFromUrl();
     await loadSession();
     A.customPrompt = await loadCustomPrompt();
@@ -1012,9 +1060,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     A.startingKey = P.conversationKey ? P.conversationKey() : location.pathname;
     A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
     try{ await refreshTools(); }catch{}
-    // Auto-probe: discover the focused DataModel and current studio up front
-    // so we can auto-inject datamodel_type and studio_id on every subsequent
-    // call. This avoids the "X is required" error cycle.
+    // Auto-probe: discover the focused DataModel and current studio
     try{
       const r = await bg({type:"call_tool", name: "get_studio_state", arguments: { studio_id: A.currentStudioId || "" }, timeout: 10000});
       if(r && r.ok && r.text){
@@ -1039,6 +1085,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         }catch{}
       }
     }catch{}
+    if(myGen !== A.startGen) return;
     try{ P.setInputLock && P.setInputLock(true); }catch{}
     sendSystemPromptAndStarter();
     try{ P.setInputLock && P.setInputLock(false); }catch{}
@@ -1048,6 +1095,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   function stopSession(){
     if(!A.started) return;
     A.stopping = true; A.running = false; A.busy = false; A.injecting = false;
+    A.startGen++;
     if(P.stopGeneration) try{ P.stopGeneration(); }catch{}
     setLauncherStopped();
     pushFeed("info", "⏹", "Agent stopped by user");
@@ -1059,7 +1107,6 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     document.getElementById("rl-stop-btn").style.display = "none";
   }
   function setLauncherRunning(){
-    // Transition from "Starting…" (spinner) to "Stop agent" (filled square).
     launcher.classList.remove("is-starting");
     launcher.classList.add("is-active");
     launcher.innerHTML = `<span class="rl-stop-dot"></span><span class="rl-label">Stop agent</span>`;
@@ -1068,18 +1115,9 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   launcher.addEventListener("click", ()=>{ if(A.started) stopSession(); else startSession(); });
   document.getElementById("rl-stop-btn").addEventListener("click", ()=>stopSession());
 
-  // ── LIVE tool-block stripping (mid-stream, as soon as a marker appears) ───
-  // Scans the DOM for new <pre>/<code> elements containing ###MCP_TOOL### or
-  // ###LUA### markers. Hides the raw block and dispatches the tool immediately
-  // (so the chip appears the moment the AI starts writing the tool call, not
-  // only after the whole turn finishes).
+  // ── LIVE tool-block stripping + whole-item text scan ────────────────────
   function scanToolBlocks(node){
     if(!node || node.nodeType !== 1) return;
-    // NOTE: We no longer bail on A.busy. If the model emits multiple tool
-    // blocks in one turn, each one fires its own dispatchTool. dispatchTool
-    // sets A.busy, sends the bridge call, and resolves later. Multiple
-    // bridge calls can be in flight at once. The previous bail caused the
-    // second tool to be silently dropped.
     const candidates = [];
     if(node.tagName === "PRE" || node.tagName === "CODE") candidates.push(node);
     if(node.querySelectorAll) candidates.push(...node.querySelectorAll("pre, code"));
@@ -1087,30 +1125,74 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       if(!el || A.strippedBlocks.has(el)) continue;
       const txt = el.innerText || el.textContent || "";
       if(!txt || txt.indexOf("###MCP_TOOL###") === -1) continue;
-      if(ZSParse.hasOpenToolBlock(txt)) continue; // wait for it to finish
-      // Extract ALL tool blocks in this <pre> (models often emit multiple per reply)
+      if(ZSParse.hasOpenToolBlock(txt)) continue;
       const blks = ZSParse.extractAll(txt);
       const calls = blks.map(ZSParse.normalize).filter(Boolean);
       if(!calls.length) continue;
       A.strippedBlocks.add(el);
       const item = el.closest(S_CHAT_ITEM) || el.closest("[data-message-author-role]") || el.closest(".ds-message") || el.closest("article") || el.closest("main") || null;
-      // Hide the whole <pre> at once (so the user never sees ANY of the raw JSON)
       if(el.parentElement) el.parentElement.style.display = "none";
-      // Dispatch each call sequentially (preserves argument order, avoids races)
       for(let i = 0; i < calls.length; i++){
         setTimeout(()=>dispatchTool(calls[i].name, calls[i].arguments, el, item), i*30);
       }
     }
   }
+  // Whole-item text scan (ZeroScript decorate.sweep pattern). Critical for
+  // sites that split a tool block across multiple <p>/<div> elements.
+  function wholeItemScan(){
+    if(!P || !P.allItems) return;
+    try{
+      const items = P.allItems();
+      for(const it of items){
+        if(!it || (A.dispatchedItems && A.dispatchedItems.has(it))) continue;
+        const text = joinItemText(it);
+        if(!text || text.indexOf("###MCP_TOOL###") === -1) continue;
+        if(ZSParse.hasOpenToolBlock(text)) continue;
+        if(it.querySelector(".rl-chip")) continue;
+        const blks = ZSParse.extractAll(text);
+        const calls = blks.map(ZSParse.normalize).filter(Boolean);
+        if(!calls.length) continue;
+        A.dispatchedItems = A.dispatchedItems || new WeakSet();
+        A.dispatchedItems.add(it);
+        it.querySelectorAll("pre, code, p, div").forEach(el => {
+          if(A.strippedBlocks.has(el)) return;
+          const t = (el.innerText || el.textContent || "");
+          if(t.indexOf("###MCP_TOOL###") !== -1 || ZSParse.hasOpenToolBlock(t)){
+            A.strippedBlocks.add(el);
+            el.style.display = "none";
+          }
+        });
+        for(let i = 0; i < calls.length; i++){
+          setTimeout(()=>dispatchTool(calls[i].name, calls[i].arguments, null, it), i*30);
+        }
+      }
+    }catch{}
+  }
+  function joinItemText(item){
+    if(!item) return "";
+    const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => {
+        if(!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        let p = n.parentElement;
+        while(p && p !== item){
+          if(p.id && (p.id === "rl-root" || p.id === "rl-bar" || p.id === "rl-tools" ||
+                      p.id === "rl-feed" || p.id === "rl-workspace" || p.id === "rl-banner" ||
+                      p.id === "rl-input-cover")) return NodeFilter.FILTER_REJECT;
+          if(p.classList && p.classList.contains("rl-chip")) return NodeFilter.FILTER_REJECT;
+          if(p.style && p.style.display === "none") return NodeFilter.FILTER_REJECT;
+          p = p.parentElement;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const parts = [];
+    let n;
+    while((n = walker.nextNode())) parts.push(n.nodeValue);
+    return parts.join(" ");
+  }
+
   // ── CAMOUFLAGE: hide raw tool blocks + injected feedback turns ──────────
-  // When the AI writes `###MCP_TOOL### {json}` in its reply, we hide the raw
-  // block (so the user doesn't see JSON) and show a chip instead. When we
-  // inject a tool result back, we also hide the whole injected turn so the
-  // user sees a clean tool chip + AI reply, not the raw `[Tool result for X]`
-  // text floating in the chat.
   const S_CHAT_ITEM = "[data-message-author-role], .ds-message, [data-testid*='conversation-turn'], article, .message, main p";
-  // Markers: any turn that contains SYS_MARKER (the system prompt) or starts
-  // with `[Tool result for ` / `[Tool error for ` is an injected turn.
   const INJECTED_RE = /^\s*\[(Tool result for|Tool error for) /;
   function isInjectedText(txt){
     if(!txt) return false;
@@ -1123,15 +1205,31 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     const items = P.allItems();
     for(const it of items){
       if(it.classList.contains("rl-hidden")) continue;
-      const txt = (P.itemText ? P.itemText(it) : (it.innerText || ""));
+      const txt = joinItemText(it);
       if(!txt) continue;
       if(isInjectedText(txt)){
         it.classList.add("rl-hidden");
       }
     }
   }
-  // inputCover: place a transparent overlay over the input box during inject
-  // so the user can't accidentally type or click and abort the agent's send.
+  // preHideWholeItems: synchronous pre-hide of freshly injected result turns.
+  // Called right after submitAndGetBase returns, with a 2.5s window during
+  // which the NEWEST user turn is treated as ours and pre-masked on sight.
+  function preHideWholeItems(){
+    if(!P || !P.allItems) return;
+    if(A.injectHideUntil && Date.now() < A.injectHideUntil){
+      const items = P.allItems();
+      const users = items.filter(it => P.isUserItem && P.isUserItem(it));
+      const last = users[users.length - 1];
+      if(last && !last.classList.contains("rl-hidden") && users.length > (A.injectPreUser || 0)){
+        last.classList.add("rl-hidden");
+        A.injectHideUntil = 0;
+        diag("result.prehide", { users: users.length });
+      }
+    }
+  }
+
+  // inputCover: transparent overlay during every inject
   let _inputCoverEl = null;
   function inputCover(on){
     if(on){
@@ -1167,6 +1265,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       if(_inputCoverEl){ _inputCoverEl.remove(); _inputCoverEl = null; }
     }
   }
+
   function startObserver(){
     if(A.observeTarget) return;
     A.observeTarget = document.documentElement;
@@ -1175,13 +1274,8 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       camouflageSweep();
     });
     try{ obs.observe(document.documentElement, {childList:true, subtree:true, characterData:true}); }catch{}
-    // Belt-and-braces: refresh camouflage every 1.5s regardless of mutations
     setInterval(camouflageSweep, 1500);
-    // Safety net: re-scan the whole chat for tool blocks every 2s. The
-    // MutationObserver can miss a <pre> if the AI site mounts it via a
-    // microtask (React batch) that fires before our observer attaches, or
-    // if a <pre> is added then re-rendered. This catches any tool block
-    // the live stripper missed, so the agent never silently drops one.
+    setInterval(wholeItemScan, 1500);
     setInterval(()=>{
       try{
         const items = (P && P.allItems) ? P.allItems() : [];
@@ -1191,71 +1285,37 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         }
       }catch{}
     }, 2000);
-    // Whole-item text scan every 1.5s. ZeroScript's decorate.sweep pattern.
-    // Critical for sites that split a tool block across multiple <p>/<div>
-    // elements (DeepSeek renders `###LUA### ... ###END_LUA###` across many
-    // paragraphs). The live stripper only sees one element at a time; this
-    // joins all text and runs extractAll() on the joined string.
-    setInterval(()=>{
-      try{
-        if(!P || !P.allItems) return;
-        const items = P.allItems();
-        for(const it of items){
-          if(!it || A.dispatchedItems && A.dispatchedItems.has(it)) continue;
-          // Get full text of the item (excluding our own UI)
-          const text = joinItemText(it);
-          if(!text || text.indexOf("###MCP_TOOL###") === -1) continue;
-          if(ZSParse.hasOpenToolBlock(text)) continue;
-          const blks = ZSParse.extractAll(text);
-          const calls = blks.map(ZSParse.normalize).filter(Boolean);
-          if(!calls.length) continue;
-          // Check if we already have a chip for this item
-          if(it.querySelector(".rl-chip")) continue;
-          // Dispatch all calls
-          A.dispatchedItems = A.dispatchedItems || new WeakSet();
-          A.dispatchedItems.add(it);
-          A.strippedBlocks = A.strippedBlocks || new WeakSet();
-          A.strippedBlocks.add(it);
-          // Hide raw tool blocks in the item
-          it.querySelectorAll("pre, code, p, div").forEach(el => {
-            if(A.strippedBlocks.has(el)) return;
-            const t = (el.innerText || el.textContent || "");
-            if(t.indexOf("###MCP_TOOL###") !== -1 || ZSParse.hasOpenToolBlock(t)){
-              A.strippedBlocks.add(el);
-              el.style.display = "none";
-            }
-          });
-          for(let i = 0; i < calls.length; i++){
-            setTimeout(()=>dispatchTool(calls[i].name, calls[i].arguments, null, it), i*30);
-          }
-        }
-      }catch{}
-    }, 1500);
   }
-  // Join all text nodes in an item into a single string, excluding our UI
-  function joinItemText(item){
-    if(!item) return "";
-    // Use a tree walker to get all text, excluding hidden elements and our UI
-    const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT, {
-      acceptNode: (n) => {
-        if(!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-        let p = n.parentElement;
-        while(p && p !== item){
-          if(p.id && (p.id === "rl-root" || p.id === "rl-bar" || p.id === "rl-tools" ||
-                      p.id === "rl-feed" || p.id === "rl-workspace" || p.id === "rl-banner" ||
-                      p.id === "rl-input-cover")) return NodeFilter.FILTER_REJECT;
-          if(p.classList && p.classList.contains("rl-chip")) return NodeFilter.FILTER_REJECT;
-          if(p.style && p.style.display === "none") return NodeFilter.FILTER_REJECT;
-          p = p.parentElement;
-        }
-        return NodeFilter.FILTER_ACCEPT;
+
+  // ── syncSessionState: track which conversation the loop is bound to ─────
+  let lastSyncPath = null;
+  function syncSessionState(){
+    if(A.starting){
+      const key = P.conversationKey();
+      if(A.startingKey == null){
+        if(key && P.chatIsEmpty && !P.chatIsEmpty()) A.startingKey = key;
+      } else if(key !== A.startingKey && P.chatIsEmpty && P.chatIsEmpty()){
+        A.startGen++;
+        A.starting = false;
+        A.startingKey = null;
+        try{ P.setInputLock && P.setInputLock(false); }catch{}
+        setLauncherStopped();
+        try{ inputCover(false); }catch{}
       }
-    });
-    const parts = [];
-    let n;
-    while((n = walker.nextNode())) parts.push(n.nodeValue);
-    return parts.join(" ");
+    }
+    if(A.running){
+      const key = P.conversationKey();
+      if(A.loopKey == null){
+        if(key && P.chatIsEmpty && !P.chatIsEmpty()) A.loopKey = key;
+      } else if(key !== A.loopKey && P.chatIsEmpty && P.chatIsEmpty()){
+        diag("loop.abandonedNewChat", { from: A.loopKey, to: key });
+        A.stopping = true; A.loopKey = null;
+      }
+    }
   }
+  // Run syncSessionState periodically + on visibility change
+  setInterval(syncSessionState, 1500);
+  document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) syncSessionState(); });
 
   // ── status updates from background ───────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse)=>{
@@ -1284,46 +1344,30 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   bg({type:"status"}).then(s=>{ if(s){ if(!s.connected) setStatus("offline"); else setStatus("bridge"); } });
   refreshTools();
 
-  // Start the DOM observer (lives as long as the page does)
   startObserver();
   wireUi();
 
-  // Wire user-send interception: re-arm the agent loop when the user sends
-  // a new message after the loop ended (or during a session).
+  // ── installSendHooks: wire user-send interception ─────────────────────────
   if(P.installSendHooks){
     P.installSendHooks({
       isBlocked: () => A.injecting || A.running || A.starting,
-      // The session is "started" once the user clicked Start; subsequent user
-      // messages re-arm the loop without needing another click. Persist the
-      // started flag across loop iterations so the hook stays "started" even
-      // after the agent's final text reply ended the previous loop.
       isStarted: () => A.started || A.sessionEverStarted === true,
       onBlockedAttempt: () => {
         showBanner("Click Start to begin a RoLink session, or wait for the current one to finish.", "warn", 4000);
       },
       onUserMessage: (base) => {
-        // A fresh user message = fresh intent. If the loop is done or never
-        // started, re-arm it so the agent keeps working.
         pushFeed("info", "💬", "User sent a message — re-arming agent loop");
         A.userStopped = false;
         A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
+        captureSendToken();
         bumpSys("users");
-        // If the sys-prompt rider is due and the message is short/user-typed,
-        // inject a hidden reminder turn. Cheap, invisible, prevents "I cannot
-        // run commands" failures in long sessions.
         if(sysResendDue()){
           pushFeed("info", "🔁", "Re-anchoring system prompt (long session)");
-          // Reset counter so we don't keep doing this every message
           resetSysCount();
         }
-        // Mark the session as started (sticky across loop iterations)
         A.started = true; A.sessionEverStarted = true;
         // SAFETY NET: force-scan the entire chat RIGHT NOW for any tool
-        // blocks the live stripper may have missed. Critical for sites
-        // where the model's tool block was added then re-rendered, or
-        // mounted before the MutationObserver attached. The 1.5s
-        // interval scan would also catch it, but we want immediate
-        // dispatch so the user sees the chip appear right away.
+        // blocks the live stripper may have missed.
         try{
           const items = (P && P.allItems) ? P.allItems() : [];
           for(const it of items){
@@ -1337,7 +1381,6 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
             if(it.querySelector(".rl-chip")) continue;
             A.dispatchedItems = A.dispatchedItems || new WeakSet();
             A.dispatchedItems.add(it);
-            // Hide raw blocks
             it.querySelectorAll("pre, code, p, div").forEach(el => {
               if(A.strippedBlocks.has(el)) return;
               const t = (el.innerText || el.textContent || "");
@@ -1351,17 +1394,14 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
             }
           }
         }catch{}
-        // Small delay so the site's own UI has time to render the new turn
         setTimeout(() => {
           if(A.stopping || A.userStopped) return;
           if(!A.running && !A.injecting){
-            // Restart the loop with the current assistant count as base
-            A.feedStreak = 0; A.nudgeCount = 0; A.toolCount = 0;
+            A.feedStreak = 0; A.nudgesLeft = 4; A.toolCount = 0;
             A.strippedBlocks = new WeakSet();
             A.dispatchedItems = new WeakSet();
             A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;
             A.running = true;
-            // Re-show the stop button
             document.getElementById("rl-stop-btn").style.display = "inline-flex";
             launcher.classList.add("is-active");
             launcher.innerHTML = `<span class="rl-stop-dot"></span><span class="rl-label">Stop agent</span>`;
@@ -1371,12 +1411,15 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       },
       onNativeStop: () => {
         A.userStopped = true;
+        A.turnedStopped = true;
+        A.stoppedAt = Date.now();
         if(A.running){ A.stopping = true; A.running = false; }
         try{ P.stopGeneration && P.stopGeneration(); }catch{}
         pushFeed("info", "⏸", "Native Stop clicked — agent paused");
       },
       onNativeContinue: () => {
         A.userStopped = false;
+        A.turnedStopped = false;
         pushFeed("info", "▶", "Native Continue clicked — agent resumed");
       },
     });
@@ -1388,6 +1431,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     stop: stopSession,
     status: ()=>A,
     tools: ()=>A.tools,
+    diag: ()=>A.diag,
     P,
   };
 })();
