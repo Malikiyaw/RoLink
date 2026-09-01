@@ -1,99 +1,79 @@
 :: SPDX-License-Identifier: GPL-3.0-or-later
 @echo off
-:: RoLink start.bat 1.0.5 — keep chcp 65001 for Unicode arrow, auto-detect non-cmd and relaunch via cmd.exe, absolute paths
-:: If launched via bash/powershell (COMSPEC missing or SHELL), re-invoke via cmd.exe
-if "%COMSPEC%"=="" goto :relaunch
-echo %COMSPEC% | find /I "cmd.exe" >nul 2>&1
-if errorlevel 1 goto :relaunch
-goto :start_main
-:relaunch
-echo [RoLink] Detected non-cmd shell, relaunching via cmd.exe...
-if exist "%~f0" cmd /c ""%~f0" %*"
-exit /b %errorlevel%
-:start_main
-chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
-:: Use absolute pushd to script dir (robust even if cd /d fails)
-pushd "%~dp0" 2>nul
-if errorlevel 1 cd /d "%~dp0"
-set "LOGDIR=%~dp0logs"
-set "LOGFILE=%LOGDIR%\start.log"
-if not exist "%LOGDIR%" mkdir "%LOGDIR%" 2>nul
-call :log "=== RoLink start %date% %time% ==="
-ver >> "%LOGFILE%" 2>&1
-echo [RoLink] Starting... check logs\start.log for details
-echo.
+chcp 65001 >nul
+title RoLink Bridge
+cd /d "%~dp0"
+if not exist "%~dp0logs" mkdir "%~dp0logs" >nul 2>nul
+set "LOGFILE=%~dp0logs\start.log"
+call :log "===== %DATE% %TIME% start.bat launched ====="
+for /f "tokens=*" %%v in ('ver') do call :log "%%v"
 
-REM Guard: must be extracted, not zip preview — use absolute paths
+REM --- Guard: must be extracted, not zip preview ---
 if not exist "%~dp0bridge.py" (
-  echo [ERROR] bridge.py not found. You opened the zip without extracting.
-  echo Please right-click the zip -^> Extract All... then run start.bat from the extracted folder.
-  call :log "ERROR zip preview %~dp0bridge.py missing"
+  echo [ERROR] bridge.py not found. Extract the zip first (right-click -> Extract All...).
+  echo Then run start.bat from the extracted folder.
+  call :log "ERROR zip preview bridge.py missing"
   pause
   exit /b 1
 )
 if not exist "%~dp0rolink-extension\manifest.json" (
-  echo [WARN] rolink-extension missing - extension may not load.
+  echo [WARN] rolink-extension\manifest.json missing - extension will not load.
   call :log "WARN extension missing"
 )
 
-REM Find Python >=3.9 with cascade: py -3 -> python -> scan -> winget
+REM --- Find Python >=3.9 ---
 set "PY="
-set "PYVER="
 call :find_python
 if not defined PY (
-  echo [ERROR] Python 3.9+ not found. Installing via winget...
+  echo [RoLink] Python 3.9+ not found. Trying winget...
   call :log "winget install Python"
-  winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements >nul 2>&1
-  call :find_python
+  where winget >nul 2>&1
+  if not errorlevel 1 (
+    winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements >nul 2>&1
+    call :find_python
+  )
 )
 if not defined PY (
-  echo [ERROR] Python still not found. Install manually from https://python.org/downloads
-  echo Fallback: try PowerShell .\start.ps1
+  echo [ERROR] Python 3.9+ not found. Install from https://python.org/downloads
   call :log "ERROR python not found post winget"
   pause
   exit /b 1
 )
-"%PY%" --version >> "%LOGFILE%" 2>&1
 call :log "Using PY=%PY%"
 
-REM Validate pip + version
-"%PY%" -c "import sys; assert sys.version_info >= (3,9), 'need 3.9'" 2>nul
+REM --- Validate Python ---
+call :validate_py
 if errorlevel 1 (
-  echo [ERROR] Python ^<3.9. Please update Python.
-  pause
-  exit /b 1
-)
-"%PY%" -m pip --version >nul 2>&1
-if errorlevel 1 (
-  echo [ERROR] pip not found for %PY%
+  echo [ERROR] Python validation failed. Need 3.9+ with pip.
   pause
   exit /b 1
 )
 
-REM Deps: websockets
-"%PY%" -c "import websockets" 2>nul
+REM --- websockets dep ---
+%PY% -c "import websockets" 2>nul
 if errorlevel 1 (
   echo [RoLink] Installing websockets...
   call :log "pip install websockets"
-  "%PY%" -m pip install --user websockets >> "%LOGFILE%" 2>&1
-  "%PY%" -c "import websockets" 2>nul
+  %PY% -m pip install --user websockets >> "%LOGFILE%" 2>&1
+  %PY% -c "import websockets" 2>nul
   if errorlevel 1 (
-    echo [ERROR] Failed to install websockets. Check firewall/antivirus.
-    type "%LOGFILE%"
+    echo [ERROR] Failed to install websockets. Check logs\start.log
+    call :log "ERROR pip install websockets failed"
     pause
     exit /b 1
   )
 )
 
-REM Reclaim :17613
+REM --- Reclaim :17613 ---
+set "PORTBUSY=0"
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr /C:":17613" ^| findstr LISTENING 2^>nul') do (
   echo [RoLink] Port 17613 busy, killing PID %%a
   call :log "killing 17613 pid %%a"
   taskkill /F /T /PID %%a >nul 2>&1
-  timeout /t 1 >nul
+  timeout /t 1 /nobreak >nul 2>&1
+  set "PORTBUSY=1"
 )
-REM Verify free
 netstat -aon | findstr /C:":17613" | findstr LISTENING >nul 2>&1
 if not errorlevel 1 (
   echo [WARN] Port 17613 still busy. Close other RoLink bridges.
@@ -102,31 +82,38 @@ if not errorlevel 1 (
 
 echo.
 echo ============================================
-echo  RoLink Bridge running — KEEP THIS WINDOW OPEN
-echo  Bridge: ws://127.0.0.1:17613  MCP: StudioMCP via config.json
+echo  RoLink Bridge running -- KEEP THIS WINDOW OPEN
+echo  Bridge: ws://127.0.0.1:17613
 echo  Next: load rolink-extension in chrome://extensions
-echo  Then open chat.deepseek.com / chatgpt.com etc. and click Start session
-echo  If this window was opened via bash/PowerShell, it auto-relaunched via cmd.exe
+echo  Then open chat.deepseek.com / chatgpt.com etc.
 echo ============================================
 echo.
 call :log "launch bridge.py"
 "%PY%" "%~dp0bridge.py"
-set "EC=%errorlevel%"
+set "BRIDGE_EXIT=%errorlevel%"
 echo.
-echo [RoLink] Bridge exited with code %EC%
-call :log "exit %EC%"
-pause
-exit /b %EC%
+if not "%BRIDGE_EXIT%"=="0" (
+  echo [RoLink] Bridge exited with code %BRIDGE_EXIT% - check logs\start.log
+  call :log "ERROR bridge exit %BRIDGE_EXIT%"
+) else (
+  echo [RoLink] Bridge stopped normally
+  call :log "bridge exit 0"
+)
+pause >nul
+exit /b %BRIDGE_EXIT%
 
 :find_python
 REM Try py -3 first (avoids Store stub)
-py -3 --version >nul 2>&1
+where py >nul 2>&1
 if not errorlevel 1 (
-  for /f "tokens=*" %%i in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PY=%%i"
-  if defined PY exit /b 0
+  py -3 --version >nul 2>&1
+  if not errorlevel 1 (
+    for /f "tokens=*" %%i in ('py -3 -c "import sys; print(sys.executable)" 2^>nul') do set "PY=%%i"
+    if defined PY exit /b 0
+  )
 )
 REM Try python but skip WindowsApps stub (pip check)
-python --version >nul 2>&1
+where python >nul 2>&1
 if not errorlevel 1 (
   python -m pip --version >nul 2>&1
   if not errorlevel 1 (
@@ -150,7 +137,21 @@ for %%B in ("%LOCALAPPDATA%\Programs\Python" "%ProgramFiles%" "%ProgramFiles(x86
 )
 exit /b 0
 
-:log
->>"%LOGFILE%" echo(%~1 %~2 %~3 %~4 %~5 %~6 %~7 %~8 %~9
+:validate_py
+%PY% -c "import sys; assert sys.version_info >= (3,9), 'need 3.9'" 2>nul
+if errorlevel 1 (
+  echo [ERROR] Python below 3.9. Please update.
+  call :log "ERROR python <3.9"
+  exit /b 1
+)
+%PY% -m pip --version >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] pip not found for %PY%
+  call :log "ERROR pip missing"
+  exit /b 1
+)
 exit /b 0
 
+:log
+>>"%LOGFILE%" 2>nul echo(%~1 %~2 %~3 %~4 %~5 %~6 %~7 %~8 %~9
+exit /b 0

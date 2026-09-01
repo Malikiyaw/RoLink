@@ -4,11 +4,5 @@
 <label>Bridge URL <input id="bridge" value="ws://127.0.0.1:17613"></label>
 <label>MCP HTTP <input id="mcp" value="http://127.0.0.1:3001"></label>
 <button id="save">Save</button> <span id="status" class="small"></span>
-<div class="small">RoLink 1.0.2 — Settings are stored in chrome.storage.local. No account needed.</div>
-<script>
-const b=document.getElementById('bridge'), m=document.getElementById('mcp'), s=document.getElementById('status');
-chrome.storage.local.get(['bridgeUrl','mcpUrl'], v=>{ if(v.bridgeUrl) b.value=v.bridgeUrl; if(v.mcpUrl) m.value=v.mcpUrl; });
-document.getElementById('save').onclick=()=>{
-  chrome.storage.local.set({bridgeUrl:b.value, mcpUrl:m.value}, ()=>{ s.textContent='Saved'; setTimeout(()=>s.textContent='',1500); });
-};
-</script>
+<div class="small">RoLink 1.0.6 — Settings are stored in chrome.storage.local. No account needed.</div>
+<script src="options.js"></script>
