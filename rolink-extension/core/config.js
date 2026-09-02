@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "4.1.2";
+const ROLINK_VERSION = "4.2.0";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
@@ -20,6 +20,17 @@ You have RoLink MCP tools (111 total). To call one, output ONE JSON block:
 {"tool":"<name>","args":{...}}
 
 Aliases: ###LUA### <luau> ###END_LUA### → execute_luau
+
+RAW-FIELD ESCAPE HATCH — preferred for ANY tool argument containing long or multiline text.
+Do NOT hand-escape source code when you can use this form. Put the normal arguments in JSON, then add one raw block per field:
+###MCP_TOOL###
+{"tool":"set_script_content","args":{"path":"Workspace/Script"}}
+###RAW:content###
+local part = Instance.new("Part")
+part.Name = "Generated Part"
+part.Parent = workspace
+###END_RAW###
+The parser merges ###RAW:<field>### into args.<field>. This works for code/content/source/handlerCode/exports/new_text/old_text and future string fields too. Never place raw-block contents inside JSON quotes.
 
 Groups:
 - Core 1-7: get_instances, create_instance, set_properties, delete_instance, clone_instance, move_instance, find_instance
@@ -62,38 +73,16 @@ Groups:
 - DDA 107-108: adjust_difficulty, set_difficulty_profile
 - Sound 109-111: generate_sound, generate_sound_pack, play_sound
 
-For workspace explores use search_game_tree — ALWAYS emit ###MCP_TOOL### JSON:
-Example inspect workspace:
-###MCP_TOOL###
-{"tool":"find_instance","args":{"query":"Workspace","searchType":"name"}}
-Or broad:
-###MCP_TOOL###
-{"tool":"get_instances","args":{"path":"workspace"}}
-For scripts: {"tool":"get_script_content","args":{"path":"Workspace/Script"}}
+For workspace explores use search_game_tree — ALWAYS emit ###MCP_TOOL### JSON.
 Never describe the tool in prose — emit the JSON block.
-
-SUPER-POWERFUL CODE-STRING RULE — applies to EVERY tool with code/content/handlerCode/exports:
-To pass code inside ###MCP_TOOL### JSON you MUST escape every " as \" and use \n for newlines on ONE line:
-###MCP_TOOL###
-{"tool":"execute_luau","args":{"code":"local p = Instance.new(\"Part\"); p.Parent = game.Workspace; print(\"hi\")"}}
-Super-powered alternative — NO escaping needed, use ###LUA### (preferred for any Luau, super powerful):
-###LUA###
-local p = Instance.new("Part")
-p.Parent = game.Workspace
-print("hi")
-###END_LUA###
-Other code tools (set_script_content, create_module, run_in_sandbox, review_code, generate_test, etc.) use same rule: either escaped JSON or ###LUA###.
 `.trim();
 
 function buildSystemPrompt(provider) {
-  const base = `You are RoLink Agent ${ROLINK_VERSION} — an AI that controls Roblox Studio via MCP bridge at ws://127.0.0.1:17613.
-${TOOL_NOTES}
-${SYS_MARKER}
-`;
+  const base = `You are RoLink Agent ${ROLINK_VERSION} — an AI that controls Roblox Studio via MCP bridge at ws://127.0.0.1:17613.\n${TOOL_NOTES}\n${SYS_MARKER}\n`;
   const notes = {
     deepseek: "DeepSeek Expert/Instant ok, Vision only tab sees images. Handle <|DSML|> markup by rewriting to MCP.",
-    chatgpt: "ChatGPT truncates long code blocks in DOM — read CodeMirror editor content, not rendered view. Re-state instructions on every tool result (hidden Reminder chip).",
-    gemini: "Gemini may stop using tools in long sessions — re-prompt to use ###MCP_TOOL###.",
+    chatgpt: "ChatGPT truncates long code blocks in DOM — read CodeMirror editor content, not rendered view. Re-state instructions on every tool result.",
+    gemini: "Gemini may stop using tools in long sessions — re-prompt to use ###MCP_TOOL### or RAW blocks.",
     kimi: "Kimi may use native tools — force Roblox MCP.",
     glm: "", qwen:"", arena:"Direct mode only — block Battle/Side-by-Side.", meta:"Read Raw tab for large JSON values."
   };
