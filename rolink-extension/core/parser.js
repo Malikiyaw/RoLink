@@ -58,8 +58,8 @@
   // SUPER-POWERFUL repair: fix unescaped " and literal newlines inside ANY code-string field for ALL 111 tools, DEEP nested
   function tryRepairJson(chunk){
     try{ return JSON.parse(chunk.replace(/\t/g,"\\t")); }catch(e){}
-    // Q1 yes multi_edit, Q3 keep broad CODE_KEYS — deep repair for any nested code field
-    const fields=["code","content","new_text","old_text","text","handlerCode","exports","source","prompt","handler","newText","oldText"];
+    // Q1 stay if needed — powerful deep repair for old_string/new_string (your double-check) + Q3 keep broad
+    const fields=["code","content","new_text","old_text","new_string","old_string","text","handlerCode","exports","source","prompt","handler","newText","oldText","newString","oldString"];
     // Repair all occurrences iteratively (multi_edit has edits[].new_text)
     let repairedChunk=chunk;
     let anyRepaired=false;

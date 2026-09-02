@@ -1,4 +1,7 @@
 # Changelog
+## 4.1.2 - Stay if needed multi_edit old_string/new_string powerful (bump rule)
+Stay if needed and make it powerful: deep repair now covers old_string/new_string nested in edits[] (your double-check with BodyPosition + Players), broad CODE_KEYS kept, nudge shows both new_text and old_string examples. Q2/Q3 if needed.
+
 ## 4.1.1 - Fully functional all tools — policy unblock 42 + ExecuteLuau super powerful (bump rule)
 Unblock all 111 via policy allowlist expanded (42 Studio tools: get_instances/clone/move/find, script content/module, terrain/gui/animation, datastore, debug breakpoints were blocked as "tool not allowed" before Studio). Also super powerful deep repair already handles multi_edit new_text double-check — Fully functional. Fixes sabuiltin_Assistant ExecuteLuauTool:154 Failed to parse command code (was JSON unescaped + Luau loadstring fail, now repaired pre-Studio via parser + isToolAllowed permissive).
 

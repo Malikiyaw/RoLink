@@ -961,13 +961,17 @@ ${customBlock}
           // SUPER-POWERFUL: tool-specific nudge with visible example for the failing tool
           let toolNudge = "";
           if(["multi_edit"].includes(targetTool)){
-            // Q1 yes multi edit — super powerful deep repair for edits[].new_text
-            toolNudge = `For multi_edit, every new_text string MUST escape " as \\" and newline as \\n. Example (one line):
+            // Q1 stay if needed — powerful for edits[].new_text AND edits[].new_string/old_string (your double-check)
+            toolNudge = `For multi_edit, every new_text / new_string / old_string MUST escape " as \\" and newline as \\n. Example (one line):
 
 ###MCP_TOOL###
 {"tool":"multi_edit","args":{"file_path":"Workspace.Zombie.ZombieCore","edits":[{"action":"replace_lines","start_line":26,"end_line":33,"new_text":"local Players = game:GetService(\\"Players\\")\\nlocal function getNearestPlayer()\\n\\treturn nearest\\nend"}]}}
 
-Super powerful: you can also do multiple single-line execute_luau via ###LUA### instead of one huge multi_edit.`;
+Example with old_string/new_string (your double-check, stay if needed):
+###MCP_TOOL###
+{"tool":"multi_edit","args":{"file_path":"Workspace.Zombie.ZombieCore","edits":[{"old_string":"local holder = Instance.new(\\"BodyPosition\\")","new_string":"humanoid.WalkSpeed = 6\\nlocal Players = game:GetService(\\"Players\\")"}]}}
+
+Super powerful: you can also do multiple single-line execute_luau via ###LUA### instead of one huge multi_edit (Q2 if needed).`;
           } else if(["execute_luau","run_in_sandbox","review_code","refactor_code","generate_test","analyze_performance","predict_bug"].includes(targetTool)){
             toolNudge = `For ${targetTool} code strings you MUST either escaped JSON OR ###LUA### (super powerful, no escaping):
 
