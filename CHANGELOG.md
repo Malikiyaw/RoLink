@@ -1,4 +1,7 @@
 # Changelog
+## 4.0.2 - Execution 1000x original (no copy) — grouped 111 prompt + RoLink chip/bar
+Expand `core/config.js` TOOL_NOTES to grouped 111 (all categories) + toolCategory helper so `understand my codebase` → `search_game_tree` visible. Polish `overlay.css` chip to RoLink-original head/body collapsible with category color + shimmer (no ZeroScript copy), bar `…` trace. Fix `main.js` chip helpers to new structure. Keep greeting per start, free chat.
+
 ## 4.0.1 - Free-chat greeting per start + bar polish (patch)
 Fixes screenshot issues: delete `Don't ask ACT` auto-nudge, hide `[Tool result for ...]` feed, greeting only per click Start, then free chat with self-heal. Remove `Trace` from bar (`…` → trace) + `rl-inline` fix so bar no longer covers `Deep thinking / Smart Search`. Bump per bump rule.
 

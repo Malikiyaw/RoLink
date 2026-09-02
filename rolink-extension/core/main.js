@@ -422,19 +422,44 @@
   setInterval(placeBar, 1500);
   setTimeout(placeBar, 600);
 
-  // ── tool chip helpers ────────────────────────────────────────────────────
+  // ── tool chip helpers — 1000x original (head + collapsible body, category color, no copy) ──
+  function getToolCategory(name){
+    try{ if(typeof toolCategory==="function") return toolCategory(name); }catch{}
+    try{ if(typeof window.toolCategory==="function") return window.toolCategory(name); }catch{}
+    const n=(name||"").toLowerCase();
+    if(/search_game_tree|inspect_instance|get_script/.test(n)) return "read";
+    if(/execute_luau|create_instance|set_properties/.test(n)) return "edit";
+    if(/generate_/.test(n)) return "generate";
+    return "tool";
+  }
+  function shortArgSummary(name, args){
+    if(!args || !Object.keys(args).length) return "";
+    const k=Object.keys(args).slice(0,3).join(", ");
+    const v=JSON.stringify(args).slice(0,80);
+    return k ? `${k}: ${v}` : v;
+  }
   function makeChip(name, args){
     const chip = el("div", "rl-chip");
-    const argsStr = args && Object.keys(args).length ? " " + JSON.stringify(args).slice(0,160) : "";
-    chip.innerHTML = `<span class="rl-spinner"></span><span class="rl-ico">⚙</span><span><span class="rl-name">${escapeHtml(name)}</span><span style="opacity:.65">${escapeHtml(argsStr)}</span></span>`;
+    const cat=getToolCategory(name);
+    chip.dataset.cat=cat;
+    const detail=shortArgSummary(name, args);
+    chip.innerHTML = `<div class="rl-chip-head"><span class="rl-spinner"></span><span class="rl-ico">⚙</span><span class="rl-name">${escapeHtml(name)}</span><span class="rl-detail">${escapeHtml(detail)}</span><span class="rl-chevron">▼</span></div><div class="rl-chip-body"><pre></pre></div>`;
+    chip.querySelector(".rl-chip-head").onclick=(e)=>{ e.stopPropagation(); chip.classList.toggle("open"); };
     return chip;
   }
   function chipFinalize(chip, name, res){
     chip.classList.remove("rl-err"); chip.classList.add(res.ok ? "rl-ok" : "rl-err");
-    const ico = res.ok ? "✓" : "✗";
-    let body = res.ok ? (res.text || "done") : (res.error || "failed");
-    if(typeof body === "string" && body.length > 500) body = body.slice(0, 460) + "…";
-    chip.innerHTML = `<span class="rl-ico">${ico}</span><span><span class="rl-name">${escapeHtml(name)}</span> <span style="opacity:.85;white-space:pre-wrap">${escapeHtml(String(body))}</span></span>`;
+    const ico=res.ok?"✓":"✗";
+    let body=res.ok ? (res.text||"done") : (res.error||"failed");
+    if(typeof body==="string" && body.length>800) body=body.slice(0,760)+"…";
+    const head=chip.querySelector(".rl-chip-head");
+    if(head){
+      const icoEl=head.querySelector(".rl-ico"); if(icoEl) icoEl.textContent=ico;
+      const d=head.querySelector(".rl-detail"); if(d) d.textContent=shorten(String(body).replace(/\n/g," "), 120);
+    }
+    const pre=chip.querySelector(".rl-chip-body pre");
+    if(pre) pre.textContent=String(body);
+    chip.classList.add("open");
   }
 
   // ── THE SYSTEM PROMPT ─────────────────────────────────────────────────────

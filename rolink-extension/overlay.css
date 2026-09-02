@@ -96,41 +96,39 @@
 .rl-btn.primary:hover { background: linear-gradient(135deg,#1f6feb,#1158c7); }
 .rl-btn.warn { background: rgba(248,81,73,0.14); border-color: rgba(248,81,73,0.4); color: #fca5a5; }
 
-/* ── Tool chips (replace raw ###MCP_TOOL### blocks with visual results) ─── */
+/* ── Tool chips (replace raw ###MCP_TOOL### — RoLink original, 1000x cooler, no copy) ─── */
 .rl-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  margin: 6px 0;
-  padding: 6px 10px 6px 8px;
-  border-radius: 8px;
+  display: flex; flex-direction: column; gap: 0;
+  margin: 8px 0; border-radius: 10px; overflow: hidden;
   font: 11.5px/1.4 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
-  color: #e6edf3;
-  background: linear-gradient(135deg, rgba(47,129,247,0.18), rgba(31,111,235,0.10));
-  border: 1px solid rgba(47,129,247,0.45);
-  box-shadow: 0 2px 8px rgba(47,129,247,0.15);
-  pointer-events: auto;
-  user-select: text;
-  word-break: break-word;
-  white-space: pre-wrap;
-  max-width: 100%;
+  color: #e6edf3; background: rgba(22,27,34,0.96);
+  border: 1px solid rgba(47,129,247,0.40); box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  pointer-events: auto; user-select: text; word-break: break-word; max-width: 100%;
+  --cat: #2f81f7;
 }
-.rl-chip.rl-ok { background: linear-gradient(135deg, rgba(63,185,80,0.18), rgba(45,160,67,0.10)); border-color: rgba(63,185,80,0.45); box-shadow: 0 2px 8px rgba(63,185,80,0.15); }
-.rl-chip.rl-err { background: linear-gradient(135deg, rgba(248,81,73,0.18), rgba(218,54,51,0.10)); border-color: rgba(248,81,73,0.5); box-shadow: 0 2px 8px rgba(248,81,73,0.15); }
-.rl-chip .rl-ico {
-  width: 18px; height: 18px; border-radius: 5px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(47,129,247,0.25);
-  color: #fff; font-size: 10px; font-weight: 700;
-  flex-shrink: 0;
+.rl-chip.rl-ok { --cat: #3fb950; border-color: rgba(63,185,80,0.45); }
+.rl-chip.rl-err { --cat: #f85149; border-color: rgba(248,81,73,0.50); }
+.rl-chip-head {
+  display: flex; align-items: center; gap: 7px; padding: 7px 10px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--cat) 16%, transparent), transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--cat) 18%, transparent);
+  cursor: pointer; user-select: none;
 }
-.rl-chip.rl-ok .rl-ico { background: rgba(63,185,80,0.3); }
-.rl-chip.rl-err .rl-ico { background: rgba(248,81,73,0.3); }
-.rl-chip .rl-name { color: #79c0ff; font-weight: 700; }
-.rl-chip.rl-ok .rl-name { color: #7ee787; }
-.rl-chip.rl-err .rl-name { color: #ffa198; }
+.rl-chip-head .rl-ico { width: 18px; height: 18px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--cat) 22%, transparent); color: #fff; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+.rl-chip-head .rl-name { color: #fff; font-weight: 700; }
+.rl-chip-head .rl-detail { color: #8b949e; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.rl-chip-head .rl-chevron { margin-left: auto; font-size: 10px; opacity: 0.6; transition: transform .18s ease; }
+.rl-chip.open .rl-chevron { transform: rotate(180deg); }
+.rl-chip-body { max-height: 0; overflow: hidden; transition: max-height .22s ease; background: rgba(255,255,255,0.02); }
+.rl-chip.open .rl-chip-body { max-height: 420px; overflow: auto; }
+.rl-chip-body pre { margin: 0; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; }
+.rl-chip:not(.rl-ok):not(.rl-err) { background: linear-gradient(90deg, rgba(47,129,247,0.10), transparent 55%) , rgba(22,27,34,0.96); position: relative; overflow: hidden; }
+.rl-chip:not(.rl-ok):not(.rl-err)::after { content:""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.07), transparent); background-size: 220px 100%; animation: rl-shimmer 1.4s linear infinite; pointer-events: none; }
+@keyframes rl-shimmer { from { background-position: -220px 0; } to { background-position: 420px 0; } }
 .rl-chip .rl-spinner {
   width: 12px; height: 12px; border-radius: 50%;
   border: 2px solid rgba(255,255,255,0.18);
-  border-top-color: #79c0ff;
+  border-top-color: var(--cat);
   animation: rl-spin 0.8s linear infinite;
   flex-shrink: 0;
 }
