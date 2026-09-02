@@ -1,4 +1,7 @@
 # Changelog
+## 4.0.9 - Super powerful JSON fix — all tools, all code strings (bump rule)
+Make super powerful: proactive prompt for ALL code tools (code/content/handlerCode/exports) with escaped JSON + ###LUA### examples, parser tryRepairJson fixes unescaped " and literal newlines for every tool, tool-specific nudge (execute_luau vs set_script_content), tolerant registry. All 111 tools now parse even if AI forgets to escape — no more malformed.
+
 ## 4.0.8 - Bridge Stability & Tool Count (28→111), JSON hardening, proxy recovery (bump rule)
 Fix tool count discrepancy with 15s grace progressive reporting + studio attachment confirmation, fix client proxy out-of-date auto recovery, Python 3.14 compat, malformed JSON retry + corruption detection, studio connection 15s attach wait + 5s post-start zombie reclaim, handler validation + 16MB limit + close_timeout 10, orphan cleanup. Ready now shows 111 tools, no proxy out-of-date.
 

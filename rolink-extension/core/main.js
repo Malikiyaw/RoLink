@@ -957,20 +957,32 @@ ${customBlock}
           pushFeed("err", "✗", "Malformed tool call — sending fix-it nudge");
           A.injecting = true;
           try{ inputCover(true); }catch{}
-          await P.typeAndSend(`Your last tool call was malformed JSON (${reply.reason}).
+          const targetTool = (reply.raw && ZSParse.toolNameFromText(reply.raw)) || "execute_luau";
+          // SUPER-POWERFUL: tool-specific nudge with visible example for the failing tool
+          let toolNudge = "";
+          if(["execute_luau","run_in_sandbox","review_code","refactor_code","generate_test","analyze_performance","predict_bug"].includes(targetTool)){
+            toolNudge = `For ${targetTool} code strings you MUST either escaped JSON OR ###LUA### (super powerful, no escaping):
 
-To pass a code string to execute_luau, you MUST escape every double quote in the code with a backslash, and put the whole code on one logical line with \\n for newlines. For example:
-
+JSON escaped (one line):
 ###MCP_TOOL###
-{"tool":"execute_luau","args":{"code":"local p = Instance.new(\\"Part\\"); p.Parent = game.Workspace; print(\\"hi\\")"}}
+{"tool":"${targetTool}","args":{"code":"local p = Instance.new(\\"Part\\"); p.Parent = game.Workspace; print(\\"hi\\")"}}
 
-Alternatively use the ###LUA### ... ###END_LUA### form (no escaping needed):
-
+Super powerful ###LUA###:
 ###LUA###
 local p = Instance.new("Part")
 p.Parent = game.Workspace
 print("hi")
-###END_LUA###
+###END_LUA###`;
+          } else if(["set_script_content","create_module"].includes(targetTool)){
+            toolNudge = `For ${targetTool} use: {"tool":"${targetTool}","args":{"path":"Workspace/Script","content":"local x=1\\nprint(\\"hi\\")"}} — escape " as \\" and newline as \\n.`;
+          } else {
+            toolNudge = `Fix JSON: escape every " inside strings as \\" and use \\n for newlines. Example: {"tool":"${targetTool}","args":{"code":"local p = Instance.new(\\"Part\\")"}} or use ###LUA### for Luau.`;
+          }
+          await P.typeAndSend(`Your last tool call was malformed JSON (${reply.reason}) for tool ${targetTool}.
+
+${toolNudge}
+
+Super powerful alternative: use ###LUA### ... ###END_LUA### for ANY Luau (no escaping):
 
 Retry now with valid JSON (or use the ###LUA### form).`, []);
           try{ inputCover(false); }catch{}

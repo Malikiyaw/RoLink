@@ -55,6 +55,47 @@
     try { return JSON.parse(s); } catch { return null; }
   }
 
+  // SUPER-POWERFUL repair: fix unescaped " and literal newlines inside code/content strings for ALL tools
+  function tryRepairJson(chunk){
+    try{ return JSON.parse(chunk.replace(/\t/g,"\\t")); }catch(e){}
+    // Try to repair code/content/handlerCode/exports fields with raw newlines and unescaped quotes
+    const fields=["code","content","handlerCode","exports","prompt"];
+    for(const field of fields){
+      const keyPat=`"${field}"\\s*:\\s*"`;
+      const m=chunk.match(new RegExp(keyPat));
+      if(!m) continue;
+      const startIdx=chunk.indexOf(m[0]) + m[0].length;
+      // Find closing " respecting escapes, but allow literal newlines
+      let out='"';
+      let esc=false;
+      let foundClose=-1;
+      for(let i=startIdx;i<chunk.length;i++){
+        const c=chunk[i];
+        if(esc){ out+=c; esc=false; continue; }
+        if(c==="\\"){ esc=true; out+=c; continue; }
+        if(c==='"'){
+          // Check if this is the true closing by trying to see if remainder looks like ,} or }
+          const rest=chunk.slice(i+1, i+10).trim();
+          if(rest.startsWith(",") || rest.startsWith("}") || rest.startsWith(",")){
+            foundClose=i; break;
+          }
+          // Otherwise it's an inner unescaped " — escape it
+          out+='\\"'; continue;
+        }
+        if(c==="\n"){ out+='\\n'; continue; }
+        if(c==="\r"){ out+='\\r'; continue; }
+        out+=c;
+      }
+      if(foundClose===-1) continue;
+      const repaired=chunk.slice(0, startIdx) + out.slice(1) + chunk.slice(foundClose);
+      try{
+        const j=JSON.parse(repaired.replace(/\t/g,"\\t"));
+        if(j && (j.tool||j.command)) return j;
+      }catch{}
+    }
+    return null;
+  }
+
   // Try to recover a single tool call from a cut-off / malformed JSON envelope.
   // Returns the SAME shape as `normalize()` (so the main loop can dispatch it
   // directly) or null if no recovery is possible. Refuses amputated content
@@ -90,15 +131,16 @@
     if (!text) return null;
     text = text.replace(DSML_RE, "");
 
-    // 1) ###MCP_TOOL### (our new format)
+    // 1) ###MCP_TOOL### (our new format) — super powerful repair for all code tools
     let m = text.indexOf(START_M);
     if (m !== -1) {
       const b = text.indexOf("{", m);
       if (b !== -1) {
         const chunk = readJsonChunk(text, b);
         let json = null;
-        try { json = parseLoose(chunk); }
-        catch { json = salvageCutOff(chunk); }
+        try { json = parseLoose(chunk); } catch { json = null; }
+        if(!json) json = tryRepairJson(chunk);
+        if(!json) json = salvageCutOff(chunk);
         if (json && (json.tool || json.command)) {
           return { kind: "mcp", json, raw: chunk, lua: null };
         }

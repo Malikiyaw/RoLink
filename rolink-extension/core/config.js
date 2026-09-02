@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "4.0.8";
+const ROLINK_VERSION = "4.0.9";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
@@ -71,6 +71,18 @@ Or broad:
 {"tool":"get_instances","args":{"path":"workspace"}}
 For scripts: {"tool":"get_script_content","args":{"path":"Workspace/Script"}}
 Never describe the tool in prose — emit the JSON block.
+
+SUPER-POWERFUL CODE-STRING RULE — applies to EVERY tool with code/content/handlerCode/exports:
+To pass code inside ###MCP_TOOL### JSON you MUST escape every " as \" and use \n for newlines on ONE line:
+###MCP_TOOL###
+{"tool":"execute_luau","args":{"code":"local p = Instance.new(\"Part\"); p.Parent = game.Workspace; print(\"hi\")"}}
+Super-powered alternative — NO escaping needed, use ###LUA### (preferred for any Luau, super powerful):
+###LUA###
+local p = Instance.new("Part")
+p.Parent = game.Workspace
+print("hi")
+###END_LUA###
+Other code tools (set_script_content, create_module, run_in_sandbox, review_code, generate_test, etc.) use same rule: either escaped JSON or ###LUA###.
 `.trim();
 
 function buildSystemPrompt(provider) {
