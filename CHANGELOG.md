@@ -1,6 +1,9 @@
 # Changelog
+## 4.0.7 - UI/UX Enhancements — popup tabs, categorized 111 chips, health dashboard (bump rule)
+Phase 1 immediate wins: popup with Status/Tools/Logs tabs, collapsible 111 tool categories (Core/Scripting/…Sound), live ● indicators per chip, search filter, quick-action Toggle MCP/Restart, batched status-tools, health dashboard (MCP/Studio/Port/Uptime). Modern ZeroScript-inspired tool display, 1000x.
+
 ## 4.0.6 - Fix bar fallback always visible (bump rule)
-Fix bar if\(!m\) return; hid entire bar when composer not found � now fallback fixed at top-center 48px so buttons always visible.
+Fix bar if\(!m\) return; hid entire bar when composer not found � now fallback fixed at top-center 48px so buttons always visible.
 ## 4.0.5 - Fix bar invisible — JS syntax crash (bump rule)
 Fix `can't see the fucking buttons` — `core/main.js:494` had TypeScript `as any` causing `SyntaxError` so entire extension failed to inject. Removed TS syntax, bar now visible. Ensure `placeBar` fallback keeps bar fixed even if composer not found.
 

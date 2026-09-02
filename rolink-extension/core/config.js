@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "4.0.6";
+const ROLINK_VERSION = "4.0.7";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){

@@ -6,21 +6,34 @@
   <style>
     :root{
       --bg:#0e1116;--panel:#161b22;--border:#262d36;--text:#e6edf3;--muted:#8b949e;
-      --green:#3fb950;--yellow:#d29922;--red:#f85149;--accent:#2f81f7;
+      --green:#3fb950;--yellow:#d29922;--red:#f85149;--accent:#2f81f7;--yl:#e3b341;
     }
     *{box-sizing:border-box}
-    body{width:280px;margin:0;font:13px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text)}
+    body{width:340px;margin:0;font:13px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text)}
     .wrap{padding:14px}
-    h1{font-size:14px;margin:0 0 10px;display:flex;align-items:center;gap:8px}
+    h1{font-size:14px;margin:0 0 8px;display:flex;align-items:center;gap:8px}
     .ver{font-size:9.5px;font-weight:500;letter-spacing:.2px;color:rgba(255,255,255,.5);background:none;border:none;padding:0;margin-left:auto}
     .dot{width:9px;height:9px;border-radius:50%;background:#6b7280;transition:all .3s}
     .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
     .dot.warn{background:var(--yellow);box-shadow:0 0 8px var(--yellow)}
     .dot.err{background:var(--red);box-shadow:0 0 8px var(--red);animation:pulse 1.2s infinite}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+    .tabs{display:flex;gap:4px;margin:10px 0 8px;border-bottom:1px solid var(--border);padding-bottom:6px}
+    .tab{flex:1;text-align:center;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;color:var(--muted);background:transparent;border:1px solid transparent;transition:all .15s}
+    .tab.active{background:rgba(47,129,247,.15);color:#79c0ff;border-color:rgba(47,129,247,.3)}
+    .tab:hover{color:var(--text);background:rgba(255,255,255,.06)}
+    .panel{display:none}
+    .panel.active{display:block}
     .row{font-size:12px;opacity:.85;margin:6px 0}
     .row.dim{color:var(--muted);font-size:11px}
     .row code{background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px;font-size:11px}
+    .health-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0}
+    .health-card{background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:6px;padding:7px 8px;font-size:11px}
+    .health-card b{font-size:10px;color:var(--muted);display:block;margin-bottom:2px}
+    .health-card .val{font-weight:700;font-size:11px}
+    .health-card.ok{border-color:rgba(63,185,80,.3)}
+    .health-card.warn{border-color:rgba(210,153,34,.4)}
+    .health-card.err{border-color:rgba(248,81,73,.4)}
     .start-btn{
       width:100%;
       display:flex;align-items:center;justify-content:center;gap:8px;
@@ -43,15 +56,52 @@
     }
     .ghost:hover{background:rgba(255,255,255,.12)}
     .ghost.warn{background:rgba(248,81,73,.12);color:#fca5a5;border-color:rgba(248,81,73,.4)}
+    .ghost.accent{background:rgba(47,129,247,.14);color:#79c0ff;border-color:rgba(47,129,247,.4)}
+    .ghost-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+    .ghost-grid .ghost{margin-top:0;font-size:11px;padding:7px}
     .tools-box{
-      max-height:120px;overflow-y:auto;
+      max-height:220px;overflow-y:auto;
       background:rgba(0,0,0,.30);border:1px solid var(--border);border-radius:6px;
       padding:6px 8px;margin-top:6px;
       font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;line-height:1.55;
     }
-    .tools-box .t{display:inline-block;background:rgba(47,129,247,.12);border:1px solid rgba(47,129,247,.3);color:#79c0ff;border-radius:4px;padding:1px 5px;margin:1px 2px}
     .tools-box::-webkit-scrollbar{width:5px}
     .tools-box::-webkit-scrollbar-thumb{background:#3a3a44;border-radius:3px}
+    .cat-header{color:var(--yl);font-weight:700;margin:7px 0 4px;font-size:10px;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+    .cat-header:first-child{margin-top:2px}
+    .cat-header .arrow{font-size:8px;transition:transform .15s}
+    .cat-header.collapsed .arrow{transform:rotate(-90deg)}
+    .cat-header .count{margin-left:auto;font-weight:400;color:var(--muted);font-size:9px;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:10px}
+    .tools-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:3px;margin-bottom:4px}
+    .tools-grid.collapsed{display:none}
+    .tool-chip{
+      display:inline-block;
+      background:rgba(47,129,247,.12);
+      border:1px solid rgba(47,129,247,.3);
+      color:#79c0ff;
+      border-radius:4px;
+      padding:2px 5px;
+      margin:1px 0;
+      font-size:9px;
+      cursor:pointer;
+      transition:all .12s;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+      text-align:center;
+    }
+    .tool-chip:hover{background:rgba(47,129,247,.25);transform:translateY(-1px);border-color:rgba(47,129,247,.5)}
+    .tool-chip.connected{background:rgba(63,185,80,.18);border-color:rgba(63,185,80,.5);color:#3fb950;box-shadow:0 0 6px rgba(63,185,80,.2)}
+    .tool-chip.connected::before{content:"● ";color:var(--green);font-size:7px}
+    .tool-chip.warn{background:rgba(210,153,34,.14);border-color:rgba(210,153,34,.4);color:#e3b341}
+    .logs-box{max-height:160px;overflow-y:auto;background:rgba(0,0,0,.25);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;line-height:1.5}
+    .logs-box::-webkit-scrollbar{width:5px}
+    .logs-box::-webkit-scrollbar-thumb{background:#3a3a44;border-radius:3px}
+    .log-row{padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04);display:flex;gap:6px}
+    .log-row:last-child{border-bottom:none}
+    .log-ts{color:var(--muted);font-size:9px;white-space:nowrap}
+    .log-msg{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .search-box{width:100%;padding:6px 8px;margin:6px 0;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:11px;outline:none}
+    .search-box::placeholder{color:var(--muted)}
+    .search-box:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(47,129,247,.15)}
     .toast{position:fixed;bottom:50px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:11px;box-shadow:0 4px 12px rgba(0,0,0,.5);opacity:0;transition:opacity .2s;pointer-events:none;z-index:10}
     .toast.show{opacity:1}
     .toast.err{border-color:#f87171;color:#fca5a5}
@@ -60,14 +110,45 @@
 <body>
   <div class="wrap">
     <h1><span id="dot" class="dot"></span> RoLink <span id="ver" class="ver"></span></h1>
-    <div class="row" id="state">Bridge: …</div>
-    <div class="row dim" id="tools">…</div>
-    <div class="tools-box" id="toolsList" style="display:none">Loading…</div>
-    <button class="start-btn" id="startAgent"><span class="ic">R</span> Start RoLink agent</button>
-    <button class="ghost" id="reconnect">↻ Reconnect bridge</button>
-    <button class="ghost warn" id="restart">⟲ Restart Roblox server</button>
-    <div class="row dim" style="margin-top:10px">
-      Run <code>start.bat</code>, open <b>Roblox Studio</b> + a supported AI, then click Start.
+    <div class="tabs">
+      <div class="tab active" data-tab="status">Status</div>
+      <div class="tab" data-tab="tools">Tools</div>
+      <div class="tab" data-tab="logs">Logs</div>
+    </div>
+    <!-- STATUS PANEL -->
+    <div class="panel active" id="panel-status">
+      <div class="row" id="state">Bridge: …</div>
+      <div class="row dim" id="tools">…</div>
+      <div class="health-grid" id="healthGrid">
+        <div class="health-card" id="h-mcp"><b>MCP</b><span class="val" id="h-mcp-val">…</span></div>
+        <div class="health-card" id="h-studio"><b>Studio</b><span class="val" id="h-studio-val">…</span></div>
+        <div class="health-card" id="h-port"><b>Port 17613</b><span class="val" id="h-port-val">…</span></div>
+        <div class="health-card" id="h-uptime"><b>Uptime</b><span class="val" id="h-uptime-val">…</span></div>
+      </div>
+      <button class="start-btn" id="startAgent"><span class="ic">R</span> Start RoLink agent</button>
+      <div class="ghost-grid">
+        <button class="ghost" id="reconnect">↻ Reconnect</button>
+        <button class="ghost warn" id="restart">⟲ Restart MCP</button>
+      </div>
+      <div class="ghost-grid">
+        <button class="ghost accent" id="toggleMcp">Toggle MCP</button>
+        <button class="ghost" id="openOptions">⚙ Settings</button>
+      </div>
+      <div class="row dim" style="margin-top:10px">
+        Run <code>start.bat</code>, open <b>Roblox Studio</b> + a supported AI, then click Start.
+      </div>
+    </div>
+    <!-- TOOLS PANEL -->
+    <div class="panel" id="panel-tools">
+      <input class="search-box" id="toolSearch" placeholder="Search 111 tools… (e.g. terrain, luau)" />
+      <div class="tools-box" id="toolsList" style="max-height:260px">Loading…</div>
+      <div class="row dim" style="margin-top:6px" id="toolsHint">111 tools grouped by category — click a chip to copy name</div>
+    </div>
+    <!-- LOGS PANEL -->
+    <div class="panel" id="panel-logs">
+      <div class="logs-box" id="logsList">No logs yet</div>
+      <button class="ghost" id="copyLogs" style="margin-top:6px">Copy logs</button>
+      <button class="ghost" id="clearLogs" style="margin-top:6px">Clear</button>
     </div>
   </div>
   <div class="toast" id="toast"></div>

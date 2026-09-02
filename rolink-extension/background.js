@@ -209,6 +209,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse)=>{
         if(!connected) connect();
         sendResponse(statusObj());
         break;
+      case "status-tools": {
+        // Batched optimization: single roundtrip for status + tools (Phase 1 quick win)
+        if(!connected) connect();
+        const s=statusObj();
+        const r=await send({type:"list_tools"}, 8000);
+        const tools = (r && Array.isArray(r.tools)) ? r.tools : toolsCache;
+        sendResponse({ok:true, status:s, tools});
+        break;
+      }
       case "list_tools": {
         const r=await send({type:"list_tools"}, 10000);
         if(r && r.ok && Array.isArray(r.tools)) sendResponse({ok:true, tools:r.tools});
