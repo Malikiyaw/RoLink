@@ -53,6 +53,7 @@ function studioQueue(tool: string, cmd: string, args: any){
 }
 
 // Legacy alias map (run_code -> execute_luau etc) handled in lookup, not as separate toolDefs
+// Includes AI-expected aliases like search_game_tree, script_search so chips become visible
 export const aliasMap: Record<string,string> = {
   run_code: "execute_luau",
   get_snapshot: "take_snapshot",
@@ -77,6 +78,14 @@ export const aliasMap: Record<string,string> = {
   analytics_suggestions: "suggest_design",
   collab_join: "session_users",
   collab_list: "session_users",
+  // AI workspace explore aliases (fix invisible execution)
+  search_game_tree: "get_instances",
+  script_search: "get_script_content",
+  script_grep: "search_by_attribute",
+  inspect_instance: "get_instances",
+  get_instance_tree: "get_instances",
+  list_commands: "get_instances",
+  search_scripts: "search_by_attribute",
   collab_broadcast: "session_users",
   heal_code: "refactor_code",
   rollback_list: "rollback"

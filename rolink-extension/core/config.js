@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "4.0.2";
+const ROLINK_VERSION = "4.0.3";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
@@ -62,7 +62,15 @@ Groups:
 - DDA 107-108: adjust_difficulty, set_difficulty_profile
 - Sound 109-111: generate_sound, generate_sound_pack, play_sound
 
-For workspace explores use: search_game_tree(path="", max_depth=5), get_instances, script_search. Always emit ###MCP_TOOL### JSON, never prose description.
+For workspace explores use search_game_tree — ALWAYS emit ###MCP_TOOL### JSON:
+Example inspect workspace:
+###MCP_TOOL###
+{"tool":"find_instance","args":{"query":"Workspace","searchType":"name"}}
+Or broad:
+###MCP_TOOL###
+{"tool":"get_instances","args":{"path":"workspace"}}
+For scripts: {"tool":"get_script_content","args":{"path":"Workspace/Script"}}
+Never describe the tool in prose — emit the JSON block.
 `.trim();
 
 function buildSystemPrompt(provider) {

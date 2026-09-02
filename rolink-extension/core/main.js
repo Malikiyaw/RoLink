@@ -485,7 +485,16 @@
                 + lines.join("\n")
                 + "\n\nThe focused DataModel (" + (A.focusedDataModel || "auto-detected") + ") and studio_id are auto-injected for tools that need them. If a call fails, read the error and fix it on the next call — don't guess at unrelated tool names.";
     } else {
-      toolBlock = "Tools will be discovered at session start. Begin by trying common RoLink tools like `get_studio_state`, `list_roblox_studios`, `get_snapshot`, `execute_luau`.";
+      // Fallback keeps grouped 111 list so AI still sees search_game_tree etc even if bridge reports 0-1 tools
+      toolBlock = "Tools (111 grouped) — use EXACT names below. Studio needs bridge running (ws://127.0.0.1:17613).\n" + TOOL_NOTES + "\n\nIf bridge reports 0 tools, use fallback: get_studio_state, get_instances, find_instance, execute_luau.";
+    }
+    // If live list is tiny (<10) keep grouped 111 + live to avoid hiding search_game_tree
+    if(tools && tools.length > 0 && tools.length < 10){
+      const liveLines = tools.map(t => {
+        const nm = (t && (t as any).name) || (t as string);
+        return `- ${nm} (live)`;
+      }).join("\n");
+      toolBlock = "LIVE tools from bridge (" + tools.length + "):\n" + liveLines + "\n\nFULL 111 grouped fallback:\n" + TOOL_NOTES;
     }
     const custom = (A.customPrompt || "").trim();
     const customBlock = custom ? `\n\n# User-added instructions\n${custom}\n` : "";

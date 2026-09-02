@@ -1,4 +1,7 @@
 # Changelog
+## 4.0.3 - Fix invisible AI commands — all 111 visible, search_game_tree alias
+Fix `search_game_tree / script_search / list_commands` invisible: prompt now forces `###MCP_TOOL###` JSON example, `buildSystemPrompt` keeps grouped 111 when live <10, `aliasMap` adds `search_game_tree→get_instances` etc so chip becomes visible and `bridge` not touched per request.
+
 ## 4.0.2 - Execution 1000x original (no copy) — grouped 111 prompt + RoLink chip/bar
 Expand `core/config.js` TOOL_NOTES to grouped 111 (all categories) + toolCategory helper so `understand my codebase` → `search_game_tree` visible. Polish `overlay.css` chip to RoLink-original head/body collapsible with category color + shimmer (no ZeroScript copy), bar `…` trace. Fix `main.js` chip helpers to new structure. Keep greeting per start, free chat.
 
