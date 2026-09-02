@@ -12,7 +12,11 @@ export type WireMethod =
   | "poll_next"
   | "command_result"
   | "heartbeat"
-  | "error";
+  | "error"
+  | "call_tool"
+  | "tool_result"
+  | "list_tools"
+  | "studio_status";
 
 export interface WireFrame {
   v: number; // protocol version
@@ -55,8 +59,47 @@ export function makeId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+export type BridgeState =
+  | "BRIDGE_OFFLINE"
+  | "MCP_OFFLINE"
+  | "STUDIO_OFFLINE"
+  | "STUDIO_NO_PLACE"
+  | "STUDIO_READY";
+
+export interface CallToolFrame {
+  type: "call_tool";
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  timeout?: number;
+  sessionId?: string;
+  turnId?: string;
+}
+
+export interface ToolResultFrame {
+  type: "tool_result";
+  id: string;
+  ok: boolean;
+  kind?: string;
+  text?: string;
+  error?: string;
+  images?: Array<{data:string,mimeType:string}>;
+}
+
 export function isValidFrame(o: unknown): o is WireFrame {
   if (!o || typeof o !== "object") return false;
   const f = o as WireFrame;
   return typeof f.v === "number" && typeof f.id === "string" && typeof f.method === "string";
+}
+
+export function makeExecutionId(): string {
+  return `rl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,9)}`;
+}
+
+// Unified tool catalogue entry (provider abstraction for AI)
+export interface UnifiedToolEntry {
+  name: string;
+  description: string;
+  provider: "roblox" | "rolink";
+  execution: "studio" | "local";
 }

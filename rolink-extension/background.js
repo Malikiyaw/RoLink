@@ -145,9 +145,11 @@ function handleBridgeMessage(msg){
     broadcastStatus(); return;
   }
   if(msg.type==="tool_result"){
+    const kind = msg.kind || (msg.ok ? "success" : "execution_error");
+    if(msg.ok === false && !msg.error && msg.text) msg.error = msg.text;
     resolvePending(msg.id, msg.ok
-      ? {ok:true, text:msg.text, images:msg.images||[]}
-      : {ok:false, kind:msg.kind, error:msg.error});
+      ? {ok:true, text:msg.text, images:msg.images||[], kind}
+      : {ok:false, kind, error:msg.error});
     return;
   }
   if(msg.type==="mcp_status"){
@@ -181,8 +183,17 @@ function failAllPending(reason){
   pending.clear();
 }
 
+function deriveBridgeState(){
+  if(!connected) return "BRIDGE_OFFLINE";
+  if(!mcpAlive) return "MCP_OFFLINE";
+  if(studioConnected === false) return "STUDIO_OFFLINE";
+  // studioConnected true = place loaded; null = unknown (probe busy) -> treat as MCP_OFFLINE/wait
+  if(studioConnected === true) return "STUDIO_READY";
+  return "STUDIO_NO_PLACE";
+}
+
 function statusObj(){
-  return {type:"rolink-status", connected, mcpAlive, studio:studioConnected, studioApp, tools:toolsCache.length, servers:serversCache};
+  return {type:"rolink-status", connected, mcpAlive, studio:studioConnected, studioApp, tools:toolsCache.length, servers:serversCache, bridgeState: deriveBridgeState()};
 }
 function broadcastStatus(){
   chrome.runtime.sendMessage(statusObj()).catch(()=>{});
@@ -206,8 +217,38 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse)=>{
         break;
       }
       case "call_tool": {
+        // Canonical call_tool protocol: preserve id + session correlation
         const timeout=(msg.timeout||120000)+10000;
-        const r=await send({type:"call_tool", name:msg.name, arguments:msg.arguments, timeout:msg.timeout}, timeout);
+        const payload = {type:"call_tool", name:msg.name, arguments:msg.arguments, timeout:msg.timeout};
+        if(msg.id) payload.id = msg.id;
+        if(msg.sessionId) payload.sessionId = msg.sessionId;
+        if(msg.turnId) payload.turnId = msg.turnId;
+        // Use caller-provided id if present to keep correlation end-to-end
+        let r;
+        if(msg.id){
+          // Send with caller id directly (don't double-allocate)
+          const callerId = msg.id;
+          // Temporarily use sendWithId
+          r = await (async()=>{
+            if(!connected || !ws || ws.readyState!==WebSocket.OPEN) await waitForConnection(8000);
+            if(!connected || !ws || ws.readyState!==WebSocket.OPEN) return {ok:false, kind:"disconnected", error:"bridge not connected"};
+            return new Promise(resolve=>{
+              const timer=setTimeout(()=>{
+                if(pending.has(callerId)){ pending.delete(callerId); resolve({ok:false, kind:"timeout", error:"bridge did not respond in time"}); }
+              }, timeout);
+              pending.set(callerId, {resolve, timer});
+              try{ ws.send(JSON.stringify(payload)); }catch(e){ clearTimeout(timer); pending.delete(callerId); resolve({ok:false, kind:"disconnected", error:String(e)}); }
+            });
+          })();
+        } else {
+          r = await send(payload, timeout);
+        }
+        // Ensure kind is always set for callers
+        if(r && r.ok===false && !r.kind){
+          if(/bridge not connected|disconnected/i.test(r.error||"")) r.kind="bridge_offline";
+          else if(/timeout/i.test(r.error||"")) r.kind="timeout";
+          else r.kind="execution_error";
+        }
         sendResponse(r);
         break;
       }

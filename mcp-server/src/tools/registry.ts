@@ -28,7 +28,19 @@ export type ToolDef = {
   description: string;
   inputSchema: z.ZodTypeAny;
   handler: (args: any) => Promise<{ content: { type: "text"; text: string }[]; isError?: boolean }>;
+  provider?: "roblox" | "rolink";
+  execution?: "studio" | "local";
 };
+
+// Unified catalogue helper for AI: rolink tools are local execution, roblox tools are studio execution
+export function unifiedCatalog(){
+  return tools.map(t => ({
+    name: t.name,
+    description: t.description,
+    provider: (t as any).provider || "rolink",
+    execution: (t as any).execution || "local"
+  }));
+}
 
 function queueAndWait(tool: string, command: string, args: Record<string, unknown>, timeoutMs = 15000) {
   if (!isToolAllowed(tool)) throw new Error(`tool not allowed: ${tool}`);

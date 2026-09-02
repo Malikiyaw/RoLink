@@ -391,3 +391,32 @@
 @keyframes rl-spin {
   to { transform: rotate(360deg); }
 }
+
+/* ── Execution trace panel (Phase 7) ─────────────────────────────────────── */
+.rl-trace {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  width: 360px;
+  max-height: 260px;
+  background: rgba(14,17,22,0.97);
+  border: 1px solid rgba(47,129,247,0.30);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  backdrop-filter: blur(10px);
+  color: #e6edf3;
+  font-size: 10.5px;
+  pointer-events: auto;
+  z-index: 2147483602;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+.rl-trace.rl-show { display: flex; }
+.rl-trace-head { display:flex; align-items:center; gap:8px; padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.08); font-weight:600; font-size:11px; }
+.rl-trace-list { overflow-y:auto; padding:6px 8px; display:flex; flex-direction:column; gap:2px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.rl-trace-item { display:grid; grid-template-columns: 60px 1fr; gap:6px; padding:3px 6px; border-left:2px solid transparent; background: rgba(255,255,255,0.02); border-radius:4px; }
+.rl-trace-item.ok { border-left-color:#3fb950; }
+.rl-trace-item.err { border-left-color:#f85149; background: rgba(248,81,73,0.06); }
+.rl-trace-item.warn { border-left-color:#d29922; }
+.rl-trace-item .rl-trace-ts { color:#6e7681; font-size:9.5px; }

@@ -52,12 +52,13 @@
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const log = (...a) => console.log("[rolink]", ...a);
 
-  // ── diagnostics: 300-slot ring buffer for postmortem debugging ──────────
+  // ── diagnostics + trace + FSM ──────────────────────────────────────────
+  const __trace = (window.__rolinkTrace) || (window.ExecutionTrace ? new window.ExecutionTrace(300) : null);
   function diag(event, data){
     try{
       const entry = { t: Date.now(), event, data };
-      A.diag.push(entry);
-      while(A.diag.length > 300) A.diag.shift();
+      if(A && A.diag){ A.diag.push(entry); while(A.diag.length > 300) A.diag.shift(); }
+      if(__trace) __trace.push({ ts: Date.now(), level:"info", msg: `${event} ${data?JSON.stringify(data).slice(0,120):""}` });
       if(window.console && console.debug){
         console.debug("[rolink.diag]", event, data || "");
       }
@@ -81,6 +82,14 @@
     });
   }
   function isContextInvalidated(m){ return /Extension context invalidated|message port closed|Receiving end does not exist/i.test(m||""); }
+
+  // ── FSM + ExecutionManager (reliability overhaul) ───────────────────────
+  let fsm = null;
+  let execMgr = null;
+  try{
+    if(window.AgentFSM) fsm = new window.AgentFSM({diag, trace: __trace});
+    if(window.ToolExecutionManager) execMgr = new window.ToolExecutionManager({bg, diag, trace: __trace, state: fsm});
+  }catch(e){ console.warn("[rolink] fsm/exec init failed", e); }
 
   // ── state (ported from ZeroScript's A) ───────────────────────────────────
   const A = {
@@ -107,6 +116,9 @@
     parked: false,
     tools: [],
     status: "offline",
+    fsm,
+    execMgr,
+    sessionId: null,
     lastAssistantIdAtBoot: null,
     currentStudioId: null,
     userStopped: false,
@@ -223,6 +235,7 @@
     <span class="rl-counter" id="rl-counter">0 tools</span>
     <button class="rl-btn" id="rl-tools-btn" title="Show available tools">🛠 Tools</button>
     <button class="rl-btn" id="rl-feed-btn" title="Show activity">📜 Log</button>
+    <button class="rl-btn" id="rl-trace-btn" title="Show execution trace">🔍 Trace</button>
     <button class="rl-btn" id="rl-workspace-btn" title="Workspace memory">🧠</button>
     <button class="rl-btn warn" id="rl-stop-btn" style="display:none" title="Stop the agent">■ Stop</button>
   `;
@@ -243,6 +256,32 @@
     <div class="rl-feed-list" id="rl-feed-list"></div>
   `;
   root.appendChild(feed);
+
+  // Execution trace panel (Phase 7)
+  const tracePanel = el("div", "rl-trace");
+  tracePanel.id = "rl-trace";
+  tracePanel.innerHTML = `
+    <div class="rl-trace-head"><span>Execution trace</span><button class="rl-feed-clear" id="rl-trace-clear" title="Clear trace">⌫</button></div>
+    <div class="rl-trace-list" id="rl-trace-list"></div>
+  `;
+  root.appendChild(tracePanel);
+  if(__trace){
+    __trace.on(e=>{
+      try{
+        const list = document.getElementById("rl-trace-list");
+        if(!list) return;
+        const row = document.createElement("div");
+        row.className = "rl-trace-item " + (e.level||"info");
+        const ts = new Date(e.ts).toTimeString().slice(0,8);
+        row.innerHTML = `<span class="rl-trace-ts">${ts}</span><span>${escapeHtml(e.msg).slice(0,220)}</span>`;
+        list.appendChild(row);
+        while(list.children.length > 200) list.removeChild(list.firstChild);
+        list.scrollTop = list.scrollHeight;
+      }catch{}
+    });
+    const tc = ()=>{ const l=document.getElementById("rl-trace-list"); if(l) l.innerHTML=""; if(__trace) __trace.clear(); };
+    setTimeout(()=>{ const b=document.getElementById("rl-trace-clear"); if(b) b.onclick=e=>{e.stopPropagation(); tc();}; }, 500);
+  }
 
   // Workspace / memory panel
   const wsPanel = el("div", "rl-workspace");
@@ -326,8 +365,10 @@
     return A.tools;
   }
   function wireUi(){
-    document.getElementById("rl-tools-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.toggle("rl-show"); };
-    document.getElementById("rl-feed-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.remove("rl-show"); feed.classList.toggle("rl-show"); };
+    document.getElementById("rl-tools-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); toolsPanel.classList.toggle("rl-show"); };
+    document.getElementById("rl-feed-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); toolsPanel.classList.remove("rl-show"); feed.classList.toggle("rl-show"); };
+    const trBtn = document.getElementById("rl-trace-btn");
+    if(trBtn) trBtn.onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show"); tracePanel.classList.toggle("rl-show"); };
     document.getElementById("rl-feed-clear").onclick = e => { e.stopPropagation(); document.getElementById("rl-feed-list").innerHTML=""; };
     document.getElementById("rl-workspace-btn").onclick = e => {
       e.stopPropagation();
@@ -458,8 +499,64 @@ ${customBlock}
     A.sentToken = P.lastAssistantId ? P.lastAssistantId() : null;
   }
 
-  // ── dispatch a tool call ──────────────────────────────────────────────────
-  function dispatchTool(name, args, sourceBlock, sourceItem, images){
+  // ── transactional feed helpers ─────────────────────────────────────────
+  async function waitForGenerationStart(timeoutMs){
+    const t0 = Date.now();
+    while(Date.now() - t0 < timeoutMs){
+      try{ if(P.isGenerating && P.isGenerating()) return true; }catch{}
+      await sleep(120);
+    }
+    return false;
+  }
+
+  async function feedToolResultTransactional(text, images){
+    const preUser = (P.userCount && P.userCount()) || 0;
+    A.injectPreUser = preUser;
+    A.injectHideUntil = Date.now() + 3000;
+    A.injecting = true;
+    try{ inputCover(true); }catch{}
+    if(fsm) try{ fsm.transition("FEEDING_RESULT", "feed"); }catch{}
+    if(__trace) __trace.push({ ts: Date.now(), level:"info", msg:`FEEDING_RESULT ${String(text).slice(0,80)}` });
+    await P.typeAndSend(text, images || []);
+    // Wait for AI to actually start generating
+    const started = await waitForGenerationStart(3500);
+    if(!started){
+      diag("feed.no_generation", { text: String(text).slice(0,80) });
+      if(__trace) __trace.push({ ts: Date.now(), level:"warn", msg:"AI did not resume after feed — retrying once" });
+      await sleep(800);
+      try{ await P.typeAndSend(text, images || []); }catch{}
+      const started2 = await waitForGenerationStart(3000);
+      if(!started2){
+        pushFeed("warn", "⚠", "AI did not resume after tool result — type a short message to nudge it.");
+        showBanner("AI did not resume — send a short message", "warn", 5000);
+        if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "no-gen"); }catch{}
+      } else {
+        if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "retried"); }catch{}
+      }
+    } else {
+      if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "ok"); }catch{}
+      if(__trace) __trace.push({ ts: Date.now(), level:"ok", msg:"AI generation resumed" });
+    }
+    // verify AI actually received result via turn growth
+    await sleep(300);
+    A.injecting = false;
+    try{ inputCover(false); }catch{}
+    if(fsm) try{ fsm.transition("WAITING_FOR_AI", "feedDone"); }catch{}
+  }
+
+  // ── dispatch a tool call (canonical, awaited, id-correlated) ────────────
+  async function dispatchTool(name, args, sourceBlock, sourceItem, images){
+    // Strict validation before execution: valid tool name, complete args
+    if(!name || typeof name !== "string"){
+      pushFeed("err","✗",`Refused dispatch: invalid tool name ${String(name)}`);
+      return { ok:false, kind:"validation_error", error:"invalid tool name" };
+    }
+    // Block partially written calls: if hasOpenToolBlock true we shouldn't be here (waitForReply guards), but double-check
+    if(args && typeof args === "object" && args._partial){
+      pushFeed("err","✗",`Refused dispatch: partial args for ${name}`);
+      return { ok:false, kind:"validation_error", error:"partial args — waiting for complete block" };
+    }
+
     // Auto-inject `datamodel_type` and `studio_id` for tools that need them.
     if(args && typeof args === "object"){
       if(!args.datamodel_type && A.focusedDataModel){
@@ -491,84 +588,99 @@ ${customBlock}
       (sourceBlock || document.body).appendChild(chip);
     }
     A.busy = true; A.toolRunning = name; A.toolStart = Date.now();
+    if(fsm) try{ fsm.transition("TOOL_DETECTED", name); }catch{}
     pushFeed("tool", "⚙", `${name} ${JSON.stringify(args).slice(0,180)}`);
+    if(__trace) __trace.push({ ts: Date.now(), level:"info", msg:`TOOL_DETECTED ${name}` });
     setCounter(++A.toolCount);
     (A.history = A.history || []).push({role:"tool_call", name, args, ts:Date.now()});
     saveSession();
-    return new Promise(resolve=>{
-      bg({type:"call_tool", name, arguments: args, timeout: 120000}).then(res=>{
+
+    // Determine timeout: layered timeouts
+    let timeout = 120000;
+    if(name === "execute_luau") timeout = 20000;
+    if(fsm) try{ fsm.transition("EXECUTING_TOOL", name); }catch{}
+
+    let res;
+    const sessionId = A.sessionId || (P.conversationKey ? P.conversationKey() : location.pathname);
+    const turnId = A.sentToken || null;
+    if(execMgr){
+      res = await execMgr.execute({name, arguments: args}, { sessionId, turnId, timeout, getSessionId: ()=> A.sessionId || (P.conversationKey?P.conversationKey():location.pathname) });
+      // Handle stale: don't feed into new chat
+      if(res && res.stale){
+        chipFinalize(chip, name, {ok:false, error:"Result arrived for previous chat — not injecting."});
+        pushFeed("warn","↻",`${name}: stale result discarded (new chat opened)`);
         A.busy = false; A.toolRunning = "";
-        if(!res) res = {ok:false, error:"no response from bridge"};
-        if(res.kind === "stale-extension" || isContextInvalidated(res.error)){
-          chipFinalize(chip, name, {ok:false, error:"Extension updated — please reload this page and click Start again."});
-          pushFeed("err", "✗", "Extension context invalidated. Reload the page.");
-          A.running = false; setLauncherStopped();
-          resolve({chip, name, res});
-          return;
+        if(fsm) try{ fsm.transition("WAITING_FOR_AI", "stale"); }catch{}
+        return {chip, name, res, text: res.text||"", stale:true};
+      }
+    } else {
+      // Fallback direct bg path (should not happen)
+      res = await bg({type:"call_tool", name, arguments: args, timeout, sessionId, turnId});
+      if(!res) res = {ok:false, error:"no response from bridge", kind:"bridge_offline"};
+    }
+
+    A.busy = false; A.toolRunning = "";
+    if(!res) res = {ok:false, error:"no response from bridge", kind:"bridge_offline"};
+    if(res.kind === "stale-extension" || isContextInvalidated(res.error)){
+      chipFinalize(chip, name, {ok:false, error:"Extension updated — please reload this page and click Start again."});
+      pushFeed("err", "✗", "Extension context invalidated. Reload the page.");
+      A.running = false; setLauncherStopped();
+      if(fsm) try{ fsm.transition("ERROR", "contextInvalidated"); }catch{}
+      return {chip, name, res, text: ""};
+    }
+    chipFinalize(chip, name, res);
+    const text = res.ok ? (res.text || "OK") : ("ERROR: " + (res.error || "unknown"));
+    const ok = res.ok !== false;
+    pushFeed(ok ? "ok" : "err", ok ? "✓" : "✗", `${name}: ${shorten(String(text).replace(/\n/g," "), 200)}`);
+    if(__trace) __trace.push({ ts: Date.now(), level: ok?"ok":"error", msg:`${ok?"✓":"✗"} ${name}: ${String(text).slice(0,100)}` });
+    (A.history = A.history || []).push({role:"tool_result", name, ok, text, ts:Date.now()});
+    saveSession();
+    if(name === "get_studio_state" && ok){
+      const m = String(text).match(/Focused DataModel in the viewport:\s*(\w+)/i)
+             || String(text).match(/Available DataModels:\s*(\w+)/i);
+      if(m && m[1]) A.focusedDataModel = m[1];
+    }
+    if(name === "list_roblox_studios" && ok){
+      try{
+        const j = JSON.parse(text);
+        const studios = j && (j.studios || j);
+        if(Array.isArray(studios) && studios.length && studios[0] && studios[0].id){
+          A.currentStudioId = studios[0].id;
+          pushFeed("info", "🎯", `Studio: ${studios[0].name || studios[0].id} (auto-injected)`);
         }
-        chipFinalize(chip, name, res);
-        const text = res.ok ? (res.text || "OK") : ("ERROR: " + (res.error || "unknown"));
-        const ok = res.ok !== false;
-        pushFeed(ok ? "ok" : "err", ok ? "✓" : "✗", `${name}: ${shorten(String(text).replace(/\n/g," "), 200)}`);
-        (A.history = A.history || []).push({role:"tool_result", name, ok, text, ts:Date.now()});
-        saveSession();
-        // Capture the focused DataModel and studio_id from results.
-        if(name === "get_studio_state" && ok){
-          const m = String(text).match(/Focused DataModel in the viewport:\s*(\w+)/i)
-                 || String(text).match(/Available DataModels:\s*(\w+)/i);
-          if(m && m[1]) A.focusedDataModel = m[1];
+      }catch{}
+    }
+    const imgs = (res && res.images && res.images.length) ? res.images : null;
+    A.lastFeedText = text; A.lastFeedAt = Date.now(); A.lastFeedId = name + ":" + Date.now();
+    const textForModel = text.length > 12000 ? text.slice(0, 11500) + "\n\n[…result truncated for context; full result is in the chip above…]" : text;
+    let hint = "";
+    if(!ok){
+      if(/unknown tool/i.test(text) && Array.isArray(A.tools) && A.tools.length){
+        hint += `\n\nThe valid tool names right now are: ${A.tools.map(t => (typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}.`;
+      }
+      const required = String(text).match(/['"]?(\w+)['"]? is required/i);
+      if(required){
+        const toolSchema = Array.isArray(A.tools) ? A.tools.find(t => t && t.name === name) : null;
+        const schema = toolSchema && (toolSchema.inputSchema || toolSchema.input_schema);
+        if(schema && schema.properties){
+          const props = Object.entries(schema.properties).map(([k,v]) => {
+            const isReq = (schema.required || []).includes(k);
+            return `${k}${isReq ? " (required)" : ""}: ${v.type || "any"} — ${(v.description || "").slice(0,80)}`;
+          }).join("\n  ");
+          hint += `\n\nThe "${name}" tool requires these arguments:\n  ${props}\n\nYou were missing: "${required[1]}".`;
+        } else {
+          hint += `\n\nThe "${name}" tool is missing a required argument: "${required[1]}". Check the tool's schema.`;
         }
-        if(name === "list_roblox_studios" && ok){
-          try{
-            const j = JSON.parse(text);
-            const studios = j && (j.studios || j);
-            if(Array.isArray(studios) && studios.length && studios[0] && studios[0].id){
-              A.currentStudioId = studios[0].id;
-              pushFeed("info", "🎯", `Studio: ${studios[0].name || studios[0].id} (auto-injected)`);
-            }
-          }catch{}
-        }
-        const imgs = (res && res.images && res.images.length) ? res.images : null;
-        A.lastFeedText = text; A.lastFeedAt = Date.now(); A.lastFeedId = name + ":" + Date.now();
-        const textForModel = text.length > 12000 ? text.slice(0, 11500) + "\n\n[…result truncated for context; full result is in the chip above…]" : text;
-        let hint = "";
-        if(!ok){
-          if(/unknown tool/i.test(text) && Array.isArray(A.tools) && A.tools.length){
-            hint += `\n\nThe valid tool names right now are: ${A.tools.map(t => (typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}.`;
-          }
-          const required = String(text).match(/['"]?(\w+)['"]? is required/i);
-          if(required){
-            const toolSchema = Array.isArray(A.tools) ? A.tools.find(t => t && t.name === name) : null;
-            const schema = toolSchema && (toolSchema.inputSchema || toolSchema.input_schema);
-            if(schema && schema.properties){
-              const props = Object.entries(schema.properties).map(([k,v]) => {
-                const isReq = (schema.required || []).includes(k);
-                return `${k}${isReq ? " (required)" : ""}: ${v.type || "any"} — ${(v.description || "").slice(0,80)}`;
-              }).join("\n  ");
-              hint += `\n\nThe "${name}" tool requires these arguments:\n  ${props}\n\nYou were missing: "${required[1]}".`;
-            } else {
-              hint += `\n\nThe "${name}" tool is missing a required argument: "${required[1]}". Check the tool's schema.`;
-            }
-          }
-        }
-        const feedbackMsg = ok
-          ? `[Tool result for ${name}]\n${textForModel}\n\nYou MUST continue. Either call another tool via ###MCP_TOOL### {json} OR give a final answer ending with DONE. Do NOT respond with "I cannot run commands" — your tools are working.`
-          : `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Fix the call (correct args, valid JSON, valid Luau) and retry with another ###MCP_TOOL### block using the EXACT name from the system prompt.${hint}`;
-        bumpSys("results");
-        const withRider = maybeRider(feedbackMsg);
-        A.injecting = true;
-        // Pre-hide the injected turn (set window; preHideWholeItems in observer will mask it).
-        const preUser = (P.userCount && P.userCount()) || 0;
-        A.injectPreUser = preUser;
-        A.injectHideUntil = Date.now() + 2500;
-        try{ inputCover(true); }catch{}
-        P.typeAndSend(withRider, imgs || []).then(()=>{
-          A.injecting = false;
-          try{ inputCover(false); }catch{}
-        });
-        resolve({chip, name, res, text});
-      });
-    });
+      }
+    }
+    const feedbackMsg = ok
+      ? `[Tool result for ${name}]\n${textForModel}\n\nYou MUST continue. Either call another tool via ###MCP_TOOL### {json} OR give a final answer ending with DONE. Do NOT respond with "I cannot run commands" — your tools are working.`
+      : `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Fix the call (correct args, valid JSON, valid Luau) and retry with another ###MCP_TOOL### block using the EXACT name from the system prompt.${hint}`;
+    bumpSys("results");
+    const withRider = maybeRider(feedbackMsg);
+    // Transactional feeding: must verify AI resumes
+    await feedToolResultTransactional(withRider, imgs || []);
+    return {chip, name, res, text};
   }
 
   // ── detect "AI is asking the user a question" ──────────────────────────────
@@ -726,9 +838,23 @@ ${customBlock}
         if(reply.kind === "tool"){
           A.feedStreak = 0;
           A.nudgesLeft = 4;
-          for(let i = 0; i < reply.calls.length; i++){
-            const c = reply.calls[i];
-            setTimeout(()=>dispatchTool(c.name, c.arguments, null, reply.item), i*30);
+          if(fsm) try{ fsm.transition("TOOL_DETECTED", `${reply.calls.length} calls`); }catch{}
+          // SEQUENTIAL await — never concurrent chaos. Each tool must complete before next.
+          for(const c of reply.calls){
+            if(A.stopping) break;
+            // Visibility gate per-tool
+            if(document.hidden){
+              await waitForVisible();
+              if(A.stopping) break;
+            }
+            // Check staleness: new chat opened while waiting?
+            const curKey = P.conversationKey ? P.conversationKey() : location.pathname;
+            if(A.loopKey && curKey !== A.loopKey){
+              diag("tool.stale_session", { loopKey: A.loopKey, curKey });
+              pushFeed("warn","↻","New chat opened — abandoning pending tools");
+              break;
+            }
+            await dispatchTool(c.name, c.arguments, null, reply.item);
           }
         } else if(reply.kind === "text"){
           if(looksLikeAQuestion(reply.text) && A.nudgesLeft > 0){
@@ -1059,7 +1185,23 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     await loadSysCount();
     A.startingKey = P.conversationKey ? P.conversationKey() : location.pathname;
     A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
-    try{ await refreshTools(); }catch{}
+    // Mandatory tool discovery before first build request (Phase 8)
+    let discovered = [];
+    try{ discovered = await refreshTools(); }catch{}
+    if(!discovered || !discovered.length){
+      // Retry once with live probe
+      try{ discovered = await refreshTools(); }catch{}
+    }
+    if(!discovered || !discovered.length){
+      pushFeed("err","✗","RoLink connected, but Roblox Studio tools are unavailable. Open Studio → Enable MCP, then click Start again.");
+      showBanner("No Studio tools — enable MCP in Studio", "err", 6000);
+      if(fsm) try{ fsm.transition("ERROR", "no-tools"); }catch{}
+      if(myGen !== A.startGen) return;
+      A.started = false; A.starting = false; setLauncherStopped();
+      return;
+    }
+    if(fsm) try{ fsm.transition("WAITING_FOR_AI", "toolsReady"); }catch{}
+    if(__trace) __trace.push({ ts: Date.now(), level:"ok", msg:`Tools discovered: ${discovered.length} — building system prompt` });
     // Auto-probe: discover the focused DataModel and current studio
     try{
       const r = await bg({type:"call_tool", name: "get_studio_state", arguments: { studio_id: A.currentStudioId || "" }, timeout: 10000});
@@ -1087,7 +1229,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     }catch{}
     if(myGen !== A.startGen) return;
     try{ P.setInputLock && P.setInputLock(true); }catch{}
-    sendSystemPromptAndStarter();
+    await sendSystemPromptAndStarter();
     try{ P.setInputLock && P.setInputLock(false); }catch{}
     updateWorkspaceView();
   }
@@ -1096,6 +1238,8 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     if(!A.started) return;
     A.stopping = true; A.running = false; A.busy = false; A.injecting = false;
     A.startGen++;
+    if(execMgr) try{ execMgr.cancelAll("user stop"); }catch{}
+    if(fsm) try{ fsm.transition("STOPPED", "user"); }catch{}
     if(P.stopGeneration) try{ P.stopGeneration(); }catch{}
     setLauncherStopped();
     pushFeed("info", "⏹", "Agent stopped by user");
@@ -1116,6 +1260,10 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   document.getElementById("rl-stop-btn").addEventListener("click", ()=>stopSession());
 
   // ── LIVE tool-block stripping + whole-item text scan ────────────────────
+  // Reliability: live stripping only HIDES blocks and marks dispatched; actual execution
+  // is owned by the agentLoop sequential await path. These sweeps are camouflage, not executors.
+  // To avoid concurrent chaos, they NO LONGER dispatch directly — they hide and let agentLoop pick up.
+  // However legacy onUserMessage re-arm still needs immediate dispatch when loop is idle — handled there.
   function scanToolBlocks(node){
     if(!node || node.nodeType !== 1) return;
     const candidates = [];
@@ -1130,21 +1278,19 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       const calls = blks.map(ZSParse.normalize).filter(Boolean);
       if(!calls.length) continue;
       A.strippedBlocks.add(el);
-      const item = el.closest(S_CHAT_ITEM) || el.closest("[data-message-author-role]") || el.closest(".ds-message") || el.closest("article") || el.closest("main") || null;
       if(el.parentElement) el.parentElement.style.display = "none";
-      for(let i = 0; i < calls.length; i++){
-        setTimeout(()=>dispatchTool(calls[i].name, calls[i].arguments, el, item), i*30);
-      }
+      // No direct dispatch here — agentLoop's waitForReply will detect and await execution
     }
   }
   // Whole-item text scan (ZeroScript decorate.sweep pattern). Critical for
   // sites that split a tool block across multiple <p>/<div> elements.
+  // Now: only camouflage (hide), execution is awaited in agentLoop.
   function wholeItemScan(){
     if(!P || !P.allItems) return;
     try{
       const items = P.allItems();
       for(const it of items){
-        if(!it || (A.dispatchedItems && A.dispatchedItems.has(it))) continue;
+        if(!it) continue;
         const text = joinItemText(it);
         if(!text || text.indexOf("###MCP_TOOL###") === -1) continue;
         if(ZSParse.hasOpenToolBlock(text)) continue;
@@ -1152,6 +1298,8 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         const blks = ZSParse.extractAll(text);
         const calls = blks.map(ZSParse.normalize).filter(Boolean);
         if(!calls.length) continue;
+        // Hide camouflage only; mark dispatched to avoid re-hiding spam
+        if(A.dispatchedItems && A.dispatchedItems.has(it)) continue;
         A.dispatchedItems = A.dispatchedItems || new WeakSet();
         A.dispatchedItems.add(it);
         it.querySelectorAll("pre, code, p, div").forEach(el => {
@@ -1162,9 +1310,6 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
             el.style.display = "none";
           }
         });
-        for(let i = 0; i < calls.length; i++){
-          setTimeout(()=>dispatchTool(calls[i].name, calls[i].arguments, null, it), i*30);
-        }
       }
     }catch{}
   }
@@ -1366,12 +1511,12 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
           resetSysCount();
         }
         A.started = true; A.sessionEverStarted = true;
-        // SAFETY NET: force-scan the entire chat RIGHT NOW for any tool
-        // blocks the live stripper may have missed.
+        // SAFETY NET: camouflage sweep only — agentLoop will pick up tools sequentially.
+        // Previously this dispatched via setTimeout concurrent chaos; now just hide.
         try{
           const items = (P && P.allItems) ? P.allItems() : [];
           for(const it of items){
-            if(!it || (A.dispatchedItems && A.dispatchedItems.has(it))) continue;
+            if(!it) continue;
             const text = joinItemText(it);
             if(!text || text.indexOf("###MCP_TOOL###") === -1) continue;
             if(ZSParse.hasOpenToolBlock(text)) continue;
@@ -1379,8 +1524,6 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
             const calls = blks.map(ZSParse.normalize).filter(Boolean);
             if(!calls.length) continue;
             if(it.querySelector(".rl-chip")) continue;
-            A.dispatchedItems = A.dispatchedItems || new WeakSet();
-            A.dispatchedItems.add(it);
             it.querySelectorAll("pre, code, p, div").forEach(el => {
               if(A.strippedBlocks.has(el)) return;
               const t = (el.innerText || el.textContent || "");
@@ -1389,9 +1532,6 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
                 el.style.display = "none";
               }
             });
-            for(let i = 0; i < calls.length; i++){
-              setTimeout(()=>dispatchTool(calls[i].name, calls[i].arguments, null, it), i*30);
-            }
           }
         }catch{}
         setTimeout(() => {

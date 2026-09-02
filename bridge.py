@@ -1262,15 +1262,66 @@ def probe_studio():
     return {"app": True, "place": place}
 
 
+def _classify_bridge_error(err_text: str) -> str:
+    low = (err_text or "").lower()
+    if "unknown tool" in low:
+        return "validation_error"
+    if "bridge not connected" in low or "bridge offline" in low:
+        return "bridge_offline"
+    if any(m in low for m in ("no roblox studio", "no active studio", "not connected to", "no studio instance")):
+        return "studio_offline"
+    if "mcp offline" in low or "mcp not alive" in low:
+        return "mcp_offline"
+    if "timeout" in low or "timed out" in low:
+        return "timeout"
+    return "execution_error"
+
+def _ai_readable_error(kind: str, raw: str, tool: str) -> str:
+    if kind == "studio_offline":
+        return (f"ERROR calling {tool}: Roblox Studio did not return a result.\n"
+                f"Roblox Studio is open but its MCP server is unavailable or no place is loaded.\n"
+                f"Fix: In Studio → Assistant Settings → MCP Servers → toggle OFF then ON 'Enable Studio as MCP server', wait 10s, retry.\nRaw: {raw}")
+    if kind == "mcp_offline":
+        return f"ERROR calling {tool}: Bridge online but MCP server offline. Restart start.bat and ensure Studio MCP enabled. Raw: {raw}"
+    if kind == "timeout":
+        return (f"ERROR calling {tool}: Roblox Studio did not return a result within timeout.\n"
+                f"Possible causes: Studio not ready / MCP disconnected / Luau blocked or waiting.\n"
+                f"Retry with smaller command or inspect Studio state. Raw: {raw}")
+    if kind == "validation_error":
+        return f"ERROR calling {tool}: {raw}\nCheck tool name and required arguments from the system prompt list."
+    return raw
+
 def safe_call(name, arguments, timeout):
-    """Never raises. Always returns a dict the extension can feed back to DeepSeek."""
+    """Never raises. Always returns a dict the extension can feed back. Deterministic handle_call_tool."""
+    if not name or not isinstance(name, str):
+        return {"ok": False, "error": "tool name is required", "kind": "validation_error"}
+    if not mgr.any_alive():
+        return {"ok": False, "error": _ai_readable_error("mcp_offline", "no MCP server alive", name), "kind": "mcp_offline"}
+    # Studio usability check before calling studio tools
+    NEEDS_STUDIO = {"execute_luau","get_studio_state","get_snapshot","create_instance","set_property","get_property","delete_instance","multi_edit","script_read","script_grep","inspect_instance","search_game_tree","start_stop_play"}
+    if name in NEEDS_STUDIO:
+        st = probe_studio()
+        if st.get("app") is False:
+            return {"ok": False, "error": _ai_readable_error("studio_offline", "no Roblox Studio instance connected", name), "kind": "studio_offline"}
+        if st.get("place") is False:
+            # get_studio_state itself can still run to tell user; others need place
+            if name not in ("get_studio_state","list_roblox_studios"):
+                return {"ok": False, "error": _ai_readable_error("studio_offline", "Studio open but no place loaded — open a place", name), "kind": "studio_offline"}
     try:
         result = mgr.call(name, arguments, timeout)
         return {"ok": True, "text": result["text"], "images": result["images"]}
     except TimeoutError as e:
-        return {"ok": False, "error": str(e), "kind": "timeout"}
+        raw = str(e)
+        kind = "timeout"
+        return {"ok": False, "error": _ai_readable_error(kind, raw, name), "kind": kind}
     except Exception as e:
-        return {"ok": False, "error": str(e), "kind": type(e).__name__}
+        raw = str(e)
+        kind = _classify_bridge_error(raw)
+        return {"ok": False, "error": _ai_readable_error(kind, raw, name), "kind": kind}
+
+def handle_call_tool(name, arguments, timeout):
+    """Canonical bridge execution: validate → ensure alive → execute → normalize."""
+    return safe_call(name, arguments, timeout)
 
 
 async def run_tool_task(ws, name, args, timeout, rid):
@@ -1392,17 +1443,16 @@ async def handler(ws):
                 name = msg.get("name", "")
                 args = msg.get("arguments") or {}
                 timeout = float(msg.get("timeout", 120000)) / 1000.0
-                log(f"-> tool  {name}({', '.join(args.keys())})", "cy", terminal=False)
-                # Run the tool as a BACKGROUND task instead of awaiting it here.
-                # Awaiting inline parks this read loop for the WHOLE tool call, so
-                # a long tool (e.g. wait_job_finished > 25s) means the client's
-                # app-level pings are never read/answered - its half-open-socket
-                # watchdog then force-closes the connection and the in-flight call
-                # is dropped as "bridge unreachable" (reported live). As a task,
-                # the loop stays free to answer pings/status while the tool runs.
-                # The extension only ever has ONE call_tool in flight (its agent
-                # loop awaits each result before sending the next), so this never
-                # overlaps tool executions.
+                # Layered timeouts: extension→bridge 130s, bridge→MCP 120s, execute_luau 20s
+                if name == "execute_luau" and timeout > 25:
+                    timeout = 20.0
+                # Preserve session correlation id
+                rid = msg.get("id")
+                if rid is None:
+                    rid = f"rl_{int(time.time()*1000)}"
+                log(f"-> tool  {name}({', '.join(args.keys())}) id={rid} session={msg.get('sessionId','-')}", "cy", terminal=False)
+                # Deterministic execution via handle_call_tool (validates, checks studio, etc.)
+                # Run as BACKGROUND task so pings stay responsive (sequential guarantee is client-side)
                 asyncio.create_task(run_tool_task(ws, name, args, timeout, rid))
 
             elif mtype in ("add_server", "remove_server"):

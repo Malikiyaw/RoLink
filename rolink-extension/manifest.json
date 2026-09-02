@@ -11,13 +11,13 @@
   "content_scripts": [
     {
       "matches": ["*://chat.deepseek.com/*", "*://www.deepseek.com/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/deepseek.js", "core/main.js"],
+      "js": ["core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/deepseek.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://chatgpt.com/*", "*://chat.openai.com/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/generic.js", "providers/chatgpt.js", "core/main.js"],
+      "js": ["core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/chatgpt.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
@@ -29,25 +29,25 @@
     },
     {
       "matches": ["*://gemini.google.com/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/generic.js", "providers/gemini.js", "core/main.js"],
+      "js": ["core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/gemini.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://kimi.ai/*", "*://www.kimi.ai/*", "*://www.kimi.com/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/generic.js", "providers/kimi.js", "core/main.js"],
+      "js": ["core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/kimi.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://chat.z.ai/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/generic.js", "providers/glm.js", "core/main.js"],
+      "js": ["core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/glm.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://chat.qwen.ai/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/generic.js", "providers/qwen.js", "core/main.js"],
+      "js": ["core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/qwen.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
@@ -59,13 +59,13 @@
     },
     {
       "matches": ["*://arena.ai/*", "*://lmarena.ai/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/generic.js", "providers/arena.js", "core/main.js"],
+      "js": ["core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/arena.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://www.meta.ai/*", "*://meta.ai/*"],
-      "js": ["core/config.js", "core/parser.js", "providers/generic.js", "providers/meta.js", "core/main.js"],
+      "js": ["core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/meta.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     }
