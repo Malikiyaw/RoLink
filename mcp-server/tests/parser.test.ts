@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tools } from "../src/tools/registry.js";
 import parser from "../../rolink-extension/core/parser.js";
 
@@ -56,9 +57,7 @@ describe("RoLink tool parser", () => {
   });
 
   it("keeps the checked-in fixture corpus present", () => {
-    const fixtureDir = new URL("../../rolink-extension/core/__fixtures__/tool-calls/", import.meta.url);
-    const fsPath = fixtureDir.pathname.replace(/^\//, "").replace(/^([A-Za-z]):/, "$1:");
-    // The bootstrap corpus is intentionally small; the generator below produces one fixture per registry tool.
-    expect(readFileSync(`${fsPath}README.txt`, "utf8")).toContain("generate-tool-fixtures");
+    const fixturePath = fileURLToPath(new URL("../../rolink-extension/core/__fixtures__/tool-calls/README.txt", import.meta.url));
+    expect(readFileSync(fixturePath, "utf8")).toContain("generate-tool-fixtures");
   });
 });
