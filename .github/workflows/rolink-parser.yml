@@ -1,0 +1,36 @@
+name: RoLink parser and tool audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  parser-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run generate:code-fields
+      - run: npm run generate:fixtures
+      - run: npm run audit:tools
+      - name: Verify generated artifacts are current
+        working-directory: .
+        run: |
+          git diff --exit-code -- generated/code-fields.json docs/tool-audit.md
+          count=$(find rolink-extension/core/__fixtures__/tool-calls -name '*.txt' ! -name README.txt | wc -l)
+          test "$count" -ge 111
+          echo "fixture_count=$count"
