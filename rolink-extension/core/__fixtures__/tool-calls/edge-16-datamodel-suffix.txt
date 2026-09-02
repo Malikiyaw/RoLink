@@ -1,0 +1,4 @@
+###LUA:Client###
+local p = Instance.new("Part")
+p.Parent = game.Workspace
+###END_LUA###

@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "4.3.0"
+BRIDGE_VERSION = "5.0.0"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", "17613"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -1478,14 +1478,49 @@ async def handler(ws):
                 name = msg.get("name", "")
                 args = msg.get("arguments") or {}
                 timeout = float(msg.get("timeout", 120000)) / 1000.0
-                # Layered timeouts: extension→bridge 130s, bridge→MCP 120s, execute_luau 20s
-                if name == "execute_luau" and timeout > 25:
-                    timeout = 20.0
                 # Preserve session correlation id
                 rid = msg.get("id")
                 if rid is None:
                     rid = f"rl_{int(time.time()*1000)}"
+                # Phase 1: reject missing/empty name IMMEDIATELY (synchronously)
+                # with a structured tool_result. Doing this BEFORE the
+                # background task means the extension gets a reply in <1ms and
+                # the model sees the real reason instead of a hung connection
+                # (the v4.3.0 bug "Refused dispatch: invalid tool name undefined"
+                # was caused by the extension sending name="" and the bridge
+                # silently forwarding to a stdio spawn that crashed without
+                # replying, hanging the agent loop for 130s).
+                if not name or not isinstance(name, str):
+                    log(f"-> tool  <invalid name> id={rid} (rejected)", "rd", terminal=False)
+                    try:
+                        await ws.send(json.dumps({
+                            "type": "tool_result", "id": rid,
+                            "ok": False, "kind": "validation_error",
+                            "error": f"bridge: invalid tool name {name!r} — extension bug or stale extension; reload the page",
+                            "text": ""
+                        }))
+                    except websockets.ConnectionClosed:
+                        pass
+                    continue
+                if not isinstance(args, dict):
+                    try:
+                        await ws.send(json.dumps({
+                            "type": "tool_result", "id": rid,
+                            "ok": False, "kind": "validation_error",
+                            "error": f"bridge: arguments must be an object, got {type(args).__name__}",
+                            "text": ""
+                        }))
+                    except websockets.ConnectionClosed:
+                        pass
+                    continue
+                # Layered timeouts: extension→bridge 130s, bridge→MCP 120s, execute_luau 20s
+                if name == "execute_luau" and timeout > 25:
+                    timeout = 20.0
                 log(f"-> tool  {name}({', '.join(args.keys())}) id={rid} session={msg.get('sessionId','-')}", "cy", terminal=False)
+                if os.environ.get("ROLINK_DEBUG_DISPATCH") == "1":
+                    import hashlib
+                    _h = hashlib.sha1(f"{name}|{json.dumps(args, sort_keys=True)}".encode()).hexdigest()[:8]
+                    log(f"   DEBUG dispatch id={rid} name={name} hash={_h} args_keys={list(args.keys())}", "dim", terminal=False)
                 # Deterministic execution via handle_call_tool (validates, checks studio, etc.)
                 # Run as BACKGROUND task so pings stay responsive (sequential guarantee is client-side)
                 asyncio.create_task(run_tool_task(ws, name, args, timeout, rid))

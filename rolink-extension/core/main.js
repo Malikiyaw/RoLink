@@ -595,15 +595,26 @@ ${customBlock}
     // Strict validation before execution: valid tool name, complete args
     if(!name || typeof name !== "string"){
       pushFeed("err","✗",`Refused dispatch: invalid tool name ${String(name)}`);
-      return { ok:false, kind:"validation_error", error:"invalid tool name" };
+      // S8: feed the rejection reason back to the model so it self-corrects
+      // instead of looping on the same broken call.
+      const errRes = { ok:false, kind:"validation_error", error:"invalid tool name", text:"" };
+      const feedback = `[Tool error for ${String(name) || "unknown"}]\n${errRes.error}\n\nThe valid tool names right now are: ${(A.tools||[]).map(t=>(typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).slice(0,30).join(", ")}.\n\nIf you don't see the tool you want here, it is not available in this Studio; pick a different one.`;
+      bumpSys("results");
+      const withRider = maybeRider(feedback);
+      try{ await feedToolResultTransactional(withRider, []); }catch{}
+      return errRes;
     }
     // Block partially written calls: if hasOpenToolBlock true we shouldn't be here (waitForReply guards), but double-check
     if(args && typeof args === "object" && args._partial){
       pushFeed("err","✗",`Refused dispatch: partial args for ${name}`);
-      return { ok:false, kind:"validation_error", error:"partial args — waiting for complete block" };
+      const errRes = { ok:false, kind:"validation_error", error:"partial args — waiting for complete block", text:"" };
+      try{ await feedToolResultTransactional(`[Tool error for ${name}]\n${errRes.error}`, []); }catch{}
+      return errRes;
     }
 
-    // Auto-inject `datamodel_type` and `studio_id` for tools that need them.
+    // S12: lazy datamodel_type injection. We read A.focusedDataModel here
+    // (not at the top of the call) so a user re-focusing Studio mid-loop
+    // is honoured by the next call.
     if(args && typeof args === "object"){
       if(!args.datamodel_type && A.focusedDataModel){
         const NEEDS_DM = /^(execute_luau|multi_edit|script_read|script_grep|inspect_instance|start_stop_play|search_game_tree|delete_instance|set_property|get_property|generate_asset|search_assets|import_asset|insert_asset|search_asset|get_console_output|get_snapshot)$/i;
@@ -625,7 +636,12 @@ ${customBlock}
       }
     }
     const chip = makeChip(name, args);
-    const spot = P.findToolBlockSpot ? P.findToolBlockSpot(sourceItem, chip) : null;
+    // S11: multi-call chip placement. If this is the Nth call in a single
+    // assistant reply, anchor chips after the previous one instead of into
+    // the shared assistant bubble.
+    const spot = (P && P.findToolBlockSpot)
+      ? P.findToolBlockSpot(sourceItem, chip)
+      : null;
     if(spot && spot.parent){
       spot.parent.insertBefore(chip, spot.ref || null);
     } else if(sourceBlock && sourceBlock.parentElement && sourceBlock.parentElement.parentElement){
@@ -638,7 +654,10 @@ ${customBlock}
     pushFeed("tool", "⚙", `${name} ${JSON.stringify(args).slice(0,180)}`);
     if(__trace) __trace.push({ ts: Date.now(), level:"info", msg:`TOOL_DETECTED ${name}` });
     setCounter(++A.toolCount);
-    (A.history = A.history || []).push({role:"tool_call", name, args, ts:Date.now()});
+    // S9: history with provenance
+    const callStart = Date.now();
+    const callEntry = {role:"tool_call", name, args, ts:callStart, sourceItem: sourceItem ? "yes" : "no"};
+    (A.history = A.history || []).push(callEntry);
     saveSession();
 
     // Determine timeout: layered timeouts
@@ -649,20 +668,30 @@ ${customBlock}
     let res;
     const sessionId = A.sessionId || (P.conversationKey ? P.conversationKey() : location.pathname);
     const turnId = A.sentToken || null;
-    if(execMgr){
-      res = await execMgr.execute({name, arguments: args}, { sessionId, turnId, timeout, getSessionId: ()=> A.sessionId || (P.conversationKey?P.conversationKey():location.pathname) });
-      // Handle stale: don't feed into new chat
-      if(res && res.stale){
-        chipFinalize(chip, name, {ok:false, error:"Result arrived for previous chat — not injecting."});
-        pushFeed("warn","↻",`${name}: stale result discarded (new chat opened)`);
-        A.busy = false; A.toolRunning = "";
-        if(fsm) try{ fsm.transition("WAITING_FOR_AI", "stale"); }catch{}
-        return {chip, name, res, text: res.text||"", stale:true};
+    // S10: try/catch around the whole execute path. A bridge timeout that
+    // used to kill the loop (e.g. a Studio crash during a 30-line multi_edit)
+    // is now a structured error the model can self-correct from.
+    try {
+      if(execMgr){
+        res = await execMgr.execute({name, arguments: args}, { sessionId, turnId, timeout, getSessionId: ()=> A.sessionId || (P.conversationKey?P.conversationKey():location.pathname) });
+        // Handle stale: don't feed into new chat
+        if(res && res.stale){
+          chipFinalize(chip, name, {ok:false, error:"Result arrived for previous chat — not injecting."});
+          pushFeed("warn","↻",`${name}: stale result discarded (new chat opened)`);
+          A.busy = false; A.toolRunning = "";
+          if(fsm) try{ fsm.transition("WAITING_FOR_AI", "stale"); }catch{}
+          return {chip, name, res, text: res.text||"", stale:true};
+        }
+      } else {
+        // Fallback direct bg path (should not happen)
+        res = await bg({type:"call_tool", name, arguments: args, timeout, sessionId, turnId});
+        if(!res) res = {ok:false, error:"no response from bridge", kind:"bridge_offline"};
       }
-    } else {
-      // Fallback direct bg path (should not happen)
-      res = await bg({type:"call_tool", name, arguments: args, timeout, sessionId, turnId});
-      if(!res) res = {ok:false, error:"no response from bridge", kind:"bridge_offline"};
+    } catch(e){
+      // S10: never let a thrown exception kill the loop.
+      const msg = String(e && e.message || e);
+      res = { ok:false, kind:"exception", error: msg, text:"" };
+      pushFeed("err", "✗", `${name}: EXCEPTION ${msg.slice(0,200)}`);
     }
 
     A.busy = false; A.toolRunning = "";
@@ -679,8 +708,11 @@ ${customBlock}
     const ok = res.ok !== false;
     pushFeed(ok ? "ok" : "err", ok ? "✓" : "✗", `${name}: ${shorten(String(text).replace(/\n/g," "), 200)}`);
     if(__trace) __trace.push({ ts: Date.now(), level: ok?"ok":"error", msg:`${ok?"✓":"✗"} ${name}: ${String(text).slice(0,100)}` });
-    (A.history = A.history || []).push({role:"tool_result", name, ok, text, ts:Date.now()});
+    // S9: result provenance
+    (A.history = A.history || []).push({role:"tool_result", name, ok, text, ts:Date.now(), durationMs: Date.now()-callStart, kind: res.kind||(ok?"success":"error")});
     saveSession();
+    // Drift detection: a successful call resets the per-provider counter.
+    try{ if(typeof window !== "undefined" && window.__rolinkDrift && window.__rolinkDrift.noteSuccessfulTool) window.__rolinkDrift.noteSuccessfulTool(P.id || "generic"); }catch{}
     if(name === "get_studio_state" && ok){
       const m = String(text).match(/Focused DataModel in the viewport:\s*(\w+)/i)
              || String(text).match(/Available DataModels:\s*(\w+)/i);
@@ -904,7 +936,10 @@ ${customBlock}
               pushFeed("warn","↻","New chat opened — abandoning pending tools");
               break;
             }
-            await dispatchTool(c.name, c.arguments, null, reply.item);
+            // c is the normalised call from the parser; canonical fields are
+            // .tool / .args. The parser also exposes .name / .arguments
+            // aliases (see parser.js normalize()) so either form works here.
+            await dispatchTool(c.tool, c.args, null, reply.item);
           }
         } else if(reply.kind === "text"){
           // Q1: delete "Don't ask ACT" nudge — free chat after greeting. Only self-heal cantRun (once)
@@ -1161,8 +1196,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       }
 
       if(ZSParse.hasToolSignature(r)){
-        const blks = ZSParse.extractAll(r);
-        const calls = blks.map(ZSParse.normalize).filter(Boolean);
+        const calls = ZSParse.extractAll(r).filter(Boolean);
         if(calls.length){
           return {kind:"tool", calls, item: d.item, lastId: curTok};
         }
@@ -1171,9 +1205,9 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
           return {kind:"parse_error", reason:"malformed", raw: r, item: d.item};
         }
         if(ZSParse.hasOpenToolBlock(r)){
-          const salvaged = ZSParse.salvageCutOffCall ? ZSParse.salvageCutOffCall(r) : null;
+          const salvaged = ZSParse.salvageCutOff ? ZSParse.salvageCutOff(r) : null;
           if(salvaged){
-            pushFeed("info", "↻", "Salvaged cut-off tool call: " + (salvaged.name || "?"));
+            pushFeed("info", "↻", "Salvaged cut-off tool call: " + (salvaged.tool || salvaged.name || "?"));
             return {kind:"tool", calls: [salvaged], item: d.item, lastId: curTok};
           }
           return {kind:"parse_error", reason:"unclosed", raw: r, item: d.item};
@@ -1339,8 +1373,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       const txt = el.innerText || el.textContent || "";
       if(!txt || txt.indexOf("###MCP_TOOL###") === -1) continue;
       if(ZSParse.hasOpenToolBlock(txt)) continue;
-      const blks = ZSParse.extractAll(txt);
-      const calls = blks.map(ZSParse.normalize).filter(Boolean);
+      const calls = ZSParse.extractAll(txt).filter(Boolean);
       if(!calls.length) continue;
       A.strippedBlocks.add(el);
       if(el.parentElement) el.parentElement.style.display = "none";
@@ -1360,8 +1393,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         if(!text || text.indexOf("###MCP_TOOL###") === -1) continue;
         if(ZSParse.hasOpenToolBlock(text)) continue;
         if(it.querySelector(".rl-chip")) continue;
-        const blks = ZSParse.extractAll(text);
-        const calls = blks.map(ZSParse.normalize).filter(Boolean);
+        const calls = ZSParse.extractAll(text).filter(Boolean);
         if(!calls.length) continue;
         // Hide camouflage only; mark dispatched to avoid re-hiding spam
         if(A.dispatchedItems && A.dispatchedItems.has(it)) continue;
@@ -1600,8 +1632,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
             const text = joinItemText(it);
             if(!text || text.indexOf("###MCP_TOOL###") === -1) continue;
             if(ZSParse.hasOpenToolBlock(text)) continue;
-            const blks = ZSParse.extractAll(text);
-            const calls = blks.map(ZSParse.normalize).filter(Boolean);
+            const calls = ZSParse.extractAll(text).filter(Boolean);
             if(!calls.length) continue;
             if(it.querySelector(".rl-chip")) continue;
             it.querySelectorAll("pre, code, p, div").forEach(el => {

@@ -1,0 +1,2 @@
+###MCP_TOOL###
+{"tool":"multi_edit","args":{"edits":[{"path":"Script1","new_text":"local x = 1","old_text":"local x = 0"}]}}

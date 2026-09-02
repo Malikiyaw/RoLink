@@ -23,12 +23,19 @@
   "use strict";
 
   const START_M = "###MCP_TOOL###";
+  const END_M = "###END_MCP_TOOL###";
   const RAW_RE = /###RAW:([A-Za-z0-9_.\[\]{}-]+)###([\s\S]*?)###END_RAW###/g;
   const TOOL_RAW_START_RE = /###TOOL:([A-Za-z0-9_.-]+)###/;
   const TOOL_RAW_END = "###END_TOOL###";
-  const LUA_START_RE = /###LUA###|```lua/i;
-  const LUA_END = "###END_LUA###";
-  const DSML_RE = /<\|DSML\|>/g;
+  // Whitespace-tolerant LUA marker (ZeroScript parity): accept "### lua ###",
+  // "###lua---", and the datamodel suffix "###LUA:Edit###" / "###LUA-Client###"
+  // / "###LUA_Server###". The optional suffix selects the Roblox datamodel
+  // execute_luau runs against; bare ###LUA### defaults to "Edit".
+  const LUA_START_RE = /###\s*lua(?:\s*[:\-_ ]\s*(edit|client|server))?\s*(?:###|---)/i;
+  const LUA_END_RE = /###\s*end[_\- ]?lua\s*###/i;
+  const LUA_DEFAULT_DM = "Edit";
+  const DSML_RE = /<[\s\/]*[|｜][\s|｜]*DSML[\s|｜]*[|｜]/i;
+  const CODE_CHROME_RE = /^(?:json|copy)\s+/i;
 
   // Fallback list (used only when code-fields.js didn't load). Kept short on
   // purpose — it is NOT the source of truth. The real list is in
@@ -49,6 +56,36 @@
 
   function stripDSML(text) {
     return String(text || "").replace(DSML_RE, "");
+  }
+
+  // Strip a code-block UI label (the "Copy" button caption, or a leftover
+  // fence language token like "json") that some sites bleed into the block's
+  // text right after the opening marker. Seen live on Kimi: its code-block
+  // chrome renders as `###lua### Copy <code>`, so the bare-marker slice below
+  // would capture `Copy task.wait(...)` as the Lua code - not valid Lua, so
+  // StudioMCP rejects it with "Failed to parse command code". Requires
+  // trailing whitespace so it never eats a legitimate identifier like
+  // `Copy(x)` that a script might genuinely start with.
+  function stripCodeChrome(code) {
+    return String(code || "").replace(CODE_CHROME_RE, "");
+  }
+
+  // Find the first LUA start marker at or after `from`. Returns { pos, len, dm }
+  // where len is the marker's own length to skip past it and dm the requested
+  // datamodel ("Edit" when unspecified).
+  function findLuaStart(text, from) {
+    const sliceFrom = from || 0;
+    const m = LUA_START_RE.exec(text.slice(sliceFrom));
+    return m ? { pos: sliceFrom + m.index, len: m[0].length, dm: dmName(m[1]) } : { pos: -1, len: 0, dm: LUA_DEFAULT_DM };
+  }
+  function findLuaEnd(text, from) {
+    const sliceFrom = from || 0;
+    const m = LUA_END_RE.exec(text.slice(sliceFrom));
+    return m ? sliceFrom + m.index : -1;
+  }
+  function dmName(m) {
+    if (!m) return LUA_DEFAULT_DM;
+    return m[0].toUpperCase() + m.slice(1).toLowerCase();
   }
 
   function scanBalancedObject(text, start) {
@@ -217,9 +254,15 @@
     if (!tool || typeof tool !== "string") return null;
     let args = json.args ?? json.arguments ?? json.params ?? json.parameters ?? {};
     if (args == null || typeof args !== "object" || Array.isArray(args)) args = {};
+    // Aliases (.name / .arguments) keep legacy ZeroScript-style call sites
+    // working. The canonical fields are .tool / .args; the aliases are
+    // shallow copies, so callers that mutate .arguments will not see the
+    // mutation in .args (and vice versa). In practice callers only read.
     return {
       tool,
+      name: tool,
       args,
+      arguments: args,
       type: meta?.type || raw.type || "tool",
       raw: meta?.raw ?? raw.raw ?? JSON.stringify(json),
       repaired: !!meta?.repaired,
@@ -285,17 +328,107 @@
   }
 
   function parseLua(text) {
-    const start = text.search(LUA_START_RE);
-    if (start < 0) return null;
-    const marker = text.slice(start).match(LUA_START_RE);
-    if (!marker) return null;
-    const bodyStart = start + marker[0].length;
-    const endMarker = text.indexOf(LUA_END, bodyStart);
-    const fenceEnd = text.indexOf("```", bodyStart);
-    const end = endMarker >= 0 ? endMarker : fenceEnd;
-    if (end < 0) return null;
-    const body = text.slice(bodyStart, end).replace(/^\s+|\s+$/g, "");
-    return body ? normalize({ tool: "execute_luau", args: { code: body } }, { type: "lua", raw: body }) : null;
+    const ls = findLuaStart(text);
+    if (ls.pos === -1) return null;
+    const le = findLuaEnd(text, ls.pos + ls.len);
+    if (le === -1) return null;
+    const body = stripCodeChrome(text.slice(ls.pos + ls.len, le).replace(/^\s+|\s+$/g, ""));
+    if (!body) return null;
+    return normalize({ tool: "execute_luau", args: { code: body, datamodel_type: ls.dm } }, { type: "lua", raw: body });
+  }
+
+  // Strip a leading ###LUA### (with optional datamodel suffix) and trailing
+  // ###END_LUA### from execute_luau's code. Used when a model wraps execute_luau
+  // in a JSON envelope and KEEPS the markers inside the code string
+  // (seen live on GLM: `{"command":"execute_luau","params":{"code":"###LUA###\n<lua>\n###END_LUA###"}}`).
+  // Idempotent: running it on a clean code string is a no-op.
+  function cleanLuaCall(call) {
+    if (!call || call.tool !== "execute_luau") return call;
+    const code = call.args && call.args.code;
+    if (typeof code !== "string") return call;
+    const s = findLuaStart(code);
+    if (s.pos !== -1) {
+      const e = findLuaEnd(code, s.pos + s.len);
+      call.args.code = code.slice(s.pos + s.len, e === -1 ? code.length : e).trim();
+      if (!call.args.datamodel_type) call.args.datamodel_type = s.dm;
+    } else {
+      // No ###LUA### markers - this is the JSON-envelope path. Still apply
+      // stripCodeChrome so a Kimi/GLM-rendered "Copy " prefix at the start
+      // of the body is removed. Idempotent: a clean body stays clean.
+      call.args.code = stripCodeChrome(code.trim());
+    }
+    return call;
+  }
+
+  // String-aware matching-brace finder: index of the "}" that closes the "{"
+  // at `start`, SKIPPING braces inside JSON string literals (escaped quotes
+  // handled). A naive depth counter miscounts braces embedded in code passed
+  // as a string value (multi_edit's edits, a Lua snippet), grabs the wrong
+  // end, and makes JSON.parse fail - which silently drops the command.
+  // Returns -1 if unbalanced.
+  function matchBrace(text, start) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < text.length; i++) {
+      const c = text[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') inStr = true;
+      else if (c === "{") depth++;
+      else if (c === "}") { if (--depth === 0) return i; }
+    }
+    return -1;
+  }
+
+  // Last-resort salvage of a CUT-OFF JSON command: the model hit its output
+  // limit with the whole payload complete but the trailing closers missing
+  // (seen live on Qwen: a big multi_edit missing exactly ONE final "}").
+  // Strictly conservative - we only auto-close when it is provably just the
+  // closing sequence that was lost, never when actual content was amputated:
+  //  - the scan must NOT end inside a string literal
+  //  - the last non-whitespace char must terminate a complete JSON value
+  //    (`"`, `}`, `]`, digit, or the tail of true/false/null)
+  //  - at most MAX_SALVAGE_CLOSERS closers may be appended
+  // Callers must only invoke this once generation has ENDED.
+  const MAX_SALVAGE_CLOSERS = 2;
+  function salvageCutOff(text) {
+    for (const key of ['"command"', '"tool"']) {
+      const k = text.indexOf(key);
+      if (k === -1) continue;
+      const start = text.lastIndexOf("{", k);
+      if (start === -1) continue;
+      if (matchBrace(text, start) !== -1) continue;
+      const stack = [];
+      let inStr = false, esc = false;
+      for (let i = start; i < text.length; i++) {
+        const c = text[i];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (c === "\\") esc = true;
+          else if (c === '"') inStr = false;
+        } else if (c === '"') inStr = true;
+        else if (c === "{") stack.push("}");
+        else if (c === "[") stack.push("]");
+        else if (c === "}" || c === "]") {
+          if (stack.pop() !== c) return null;
+        }
+      }
+      if (inStr) return null;
+      if (!stack.length || stack.length > MAX_SALVAGE_CLOSERS) return null;
+      const body = text.slice(start).trimEnd();
+      if (!/["}\]0-9]$|(?:true|false|null)$/.test(body)) return null;
+      try {
+        const closed = body + stack.reverse().join("");
+        const v = JSON.parse(closed);
+        const name = v.command != null ? v.command : (v.tool != null ? v.tool : v.name);
+        let args = v.params != null ? v.params : (v.arguments != null ? v.arguments : v.args);
+        if (typeof name !== "string" || !name) return null;
+        if (!args || typeof args !== "object") args = {};
+        return normalize({ tool: name, arguments: args }, { type: "salvaged", raw: body, repaired: true, repairReason: "salvaged-cut-off" });
+      } catch (e) { return null; }
+    }
+    return null;
   }
 
   function parseRawTool(text, allowed) {
@@ -356,14 +489,14 @@
     if (!source) return null;
     const allowed = getStringFields();
     const rawTool = parseRawTool(source, allowed);
-    if (rawTool) return rawTool;
+    if (rawTool) return cleanLuaCall(rawTool);
     const mcp = parseMcp(source, allowed);
-    if (mcp) return applyRawFields(mcp, extractRawBlocks(source, allowed));
+    if (mcp) return cleanLuaCall(applyRawFields(mcp, extractRawBlocks(source, allowed)));
     const lua = parseLua(source);
-    if (lua) return lua;
+    if (lua) return cleanLuaCall(lua);
     const json = parseJsonFence(source);
-    if (json) return json;
-    return parseBare(source);
+    if (json) return cleanLuaCall(json);
+    return cleanLuaCall(parseBare(source));
   }
 
   function extractAll(text) {
@@ -385,7 +518,7 @@
       const slice = remaining.slice(idx);
       const parsed = allowed ? parser(slice, allowed) : parser(slice);
       if (!parsed) { remaining = remaining.slice(idx + 8); continue; }
-      out.push(parsed);
+      out.push(cleanLuaCall(parsed));
       remaining = slice.slice(Math.max(parsed.raw?.length || 0, 8));
     }
     return out;
@@ -439,10 +572,14 @@
   }
 
   const api = {
-    START_M, extract: extractInstrumented, extractAll,
+    START_M, END_M, LUA_START_RE, LUA_END_RE, DSML_RE, RAW_RE,
+    findLuaStart, findLuaEnd, matchBrace, scanBalancedObject, extractRawBlocks,
+    cleanLuaCall, stripCodeChrome, salvageCutOff,
+    parseMcp, parseLua, parseJsonFence, parseBare, parseRawTool,
+    extract: extractInstrumented, extractAll,
     parse: extractInstrumented, normalize, hasToolSignature, hasOpenToolBlock, toolNameFromText,
-    repairJSONStringValues, scanBalancedObject, getStringFields, getNudgeStats, resetNudgeStats,
-    FALLBACK_STRING_FIELDS, parseBare, parseMcp, parseLua, parseRawTool
+    repairJSONStringValues, getStringFields, getNudgeStats, resetNudgeStats,
+    FALLBACK_STRING_FIELDS
   };
   root.ZSParse = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

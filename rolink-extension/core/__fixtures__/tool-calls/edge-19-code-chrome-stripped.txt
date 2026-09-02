@@ -1,0 +1,2 @@
+###MCP_TOOL###
+{"tool":"execute_luau","args":{"code":"Copy local p = Instance.new(\"Part\")\np.Parent = game.Workspace"}}

@@ -134,6 +134,72 @@ function loadFixture(p) {
     assert(Array.isArray(r?.args?.edits) && r.args.edits[0]?.new_text === "local x = 1", "edits recovered");
   });
 
+  // ── Phase 2 fixtures (ZeroScript parity) ───────────────────────────
+  await run("edge-16 ###LUA:Client### datamodel suffix", async () => {
+    const r = ZSParse.extract(loadFixture("edge-16-datamodel-suffix.txt"));
+    eq(r?.tool, "execute_luau", "tool");
+    eq(r?.args?.datamodel_type, "Client", "datamodel_type from marker");
+    assert(r?.args?.code?.includes("Instance.new"), "code present");
+  });
+
+  await run("edge-17 bare ###LUA### defaults to Edit datamodel", async () => {
+    const r = ZSParse.extract(loadFixture("edge-17-bare-lua-defaults-to-edit.txt"));
+    eq(r?.args?.datamodel_type, "Edit", "default datamodel_type");
+  });
+
+  await run("edge-18 cleanLuaCall strips markers from execute_luau code", async () => {
+    const r = ZSParse.extract(loadFixture("edge-18-clean-lua-call-strips-markers.txt"));
+    eq(r?.tool, "execute_luau", "tool");
+    // After cleanLuaCall: no leading ###LUA###, no trailing ###END_LUA###.
+    assert(!/###LUA###/.test(r?.args?.code || ""), "no leading marker");
+    assert(!/###END_LUA###/.test(r?.args?.code || ""), "no trailing marker");
+    assert(r?.args?.code?.includes("Instance.new"), "body preserved");
+    eq(r?.args?.datamodel_type, "Edit", "datamodel adopted from inner marker");
+  });
+
+  await run("edge-19 'Copy ' chrome stripped from code", async () => {
+    const r = ZSParse.extract(loadFixture("edge-19-code-chrome-stripped.txt"));
+    eq(r?.tool, "execute_luau", "tool");
+    // After stripCodeChrome: body starts with `local`, not `Copy`.
+    assert((r?.args?.code || "").startsWith("local"), "Copy prefix removed");
+  });
+
+  await run("edge-20 salvageCutOff: missing closing }", async () => {
+    // Construct a cut-off JSON directly (one missing `}`) and call the
+    // salvager. The default `extract` path would either repair or fail
+    // depending on heuristics; this test pins the salvager's contract.
+    const cutOff = '{"tool":"multi_edit","args":{"edits":[{"path":"Script1","new_text":"local x = 1","old_text":"local x = 0"}]}}';
+    const trimmed = cutOff.slice(0, cutOff.length - 1); // remove final }
+    const r = ZSParse.salvageCutOff(trimmed);
+    eq(r?.tool, "multi_edit", "salvage tool");
+    assert(Array.isArray(r?.args?.edits) && r.args.edits[0]?.new_text === "local x = 1", "edits recovered");
+    assert(r?.repaired, "repaired flag set");
+    eq(r?.repairReason, "salvaged-cut-off", "repair reason");
+  });
+
+  await run("edge-21 LUA:Server suffix + 'Copy ' chrome combine", async () => {
+    const r = ZSParse.extract(loadFixture("edge-21-lua-suffix-plus-code-chrome.txt"));
+    eq(r?.args?.datamodel_type, "Server", "Server datamodel");
+    assert((r?.args?.code || "").startsWith("local"), "Copy chrome stripped from LUA body");
+  });
+
+  await run("salvageCutOff exported and callable", async () => {
+    assert(typeof ZSParse.salvageCutOff === "function", "exported");
+    const text = '{"tool":"create_instance","args":{"className":"Part"';
+    const r = ZSParse.salvageCutOff(text);
+    eq(r?.tool, "create_instance", "salvage tool");
+    eq(r?.args?.className, "Part", "salvage args");
+  });
+
+  await run("cleanLuaCall is idempotent", async () => {
+    const r = ZSParse.extract('###LUA###\nprint(1)\n###END_LUA###');
+    eq(r?.args?.datamodel_type, "Edit", "default");
+    // Re-run cleanLuaCall on the result; it must not change anything.
+    const r2 = ZSParse.cleanLuaCall(r);
+    eq(r2?.args?.code, r?.args?.code, "idempotent code");
+    eq(r2?.args?.datamodel_type, "Edit", "idempotent datamodel");
+  });
+
   // ── 2: 111 generated tool fixtures — round-trip per tool ──────────────
   const fixtureDir = path.join(__dirname, "..", "rolink-extension", "core", "__fixtures__", "tool-calls");
   const fixtures = fs.readdirSync(fixtureDir).filter(f => f.endsWith(".txt") && !f.startsWith("edge-") && f !== "README.txt");
