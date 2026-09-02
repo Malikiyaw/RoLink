@@ -1,4 +1,24 @@
 # Changelog
+## 3.1.0 - Reliability-first execution overhaul (phases 1-10)
+The 3.0.0 rewrite was correct but the execution path was still racy: the agent loop dispatched tools via `setTimeout` fire-and-forget, so the AI could continue before the tool lifecycle completed. 3.1.0 is the **reliability overhaul** that makes the `AI → Studio → result → AI` loop deterministic.
+
+**Architecture:**
+- **Canonical transport** is `bridge.py` (`ws://127.0.0.1:17613`) — sole browser execution path. `bridge/server.py` moved to `bridge/legacy/` (deprecated, reference only). `mcp-server` is an advanced RoLink runtime/tool provider, not a second browser transport.
+- **Sequential awaiting:** `agentLoop` now `for(const c of reply.calls) await dispatchTool(...)` (`TOOL_DETECTED→EXECUTING_TOOL→WAITING_FOR_RESULT→FEEDING_RESULT→WAITING_FOR_AI`). No `call 1 ──┐/call2 ──┼── concurrent chaos`.
+- **One `ToolExecutionManager`** (`core/execution.js` new, 203 lines): `execute(call)→{id,tool,arguments,startedAt,timeout,status,result,error}` with `queued/running/success/error/timeout/cancelled`, validates, creates `rl_…` request id, timeouts, cancellation, normalized AI-readable errors.
+- **Canonical protocol:** `call_tool {id,name,arguments,timeout,sessionId,turnId}` → `tool_result {id,ok,kind,error,text,images}`. Strict request correlation (no “next response” matching). `shared/protocol.ts` adds `CallToolFrame/ToolResultFrame/BridgeState/makeExecutionId`.
+- **Bridge deterministic:** `handle_call_tool()` single function (`safe_call`): validate → find target MCP server → ensure alive → execute → wait JSON-RPC → normalize. Returns `studio_offline/mcp_offline/bridge_offline/timeout` instead of fake success. Layered timeouts `extension 130s / bridge 120s / execute_luau 20s`.
+- **Formal `AgentFSM`** (`core/agent-state.js` new): `IDLE,STARTING,WAITING_FOR_AI,AI_GENERATING,TOOL_DETECTED,EXECUTING_TOOL,FEEDING_RESULT,WAITING_FOR_RESUME,FINISHED,ERROR,STOPPED` with logged transitions.
+- **Transactional feeding:** `feedToolResultTransactional` → `P.typeAndSend` → `waitForGenerationStart(3.5s)` → retry once → `“AI did not resume”` banner. Prevents dropped results.
+- **Stale-chat guard:** `sessionId/conversationKey/turnId` per execution; result for old session is discarded, not injected into new chat.
+- **Visibility gate owned by ExecutionManager:** `document.hidden → waitForVisible` before send.
+- **Tool discovery mandatory:** `startSession` refuses to send starter if `list_tools` returns 0 — shows “RoLink connected, but tools unavailable.”
+- **Unified catalogue:** AI sees `RoLink tools` (provider abstraction in `mcp-server/src/tools/registry.ts:unifiedCatalog` + `shared/protocol.ts:UnifiedToolEntry`), not `Roblox+MCP+legacy` competing lists.
+- **Trace panel** (`core/execution-trace.js` + `overlay.css` `.rl-trace` + `#rl-trace-btn`): `15:22:01 AI response → Parsed → Request ID → →Bridge → →Studio MCP → ←Studio → ✓ → Feeding → Resumed`.
+- **Retired:** `bridge/server.py + auth.py + requirements.txt → bridge/legacy/` with `DEPRECATED.md`.
+- **E2E tests** (`tests/execution.test.js` A-J): execute_luau roundtrip, invalid tool, malformed JSON, studio/bridge offline, timeout+retry, stale chat, reload recovery.
+- **Version sync:** `VERSION 3.1.0`, `bridge.py BRIDGE_VERSION 3.1.0`, `manifest.json 3.1.0`, `mcp-server/package.json 3.1.0`, `core/config.js ROLINK_VERSION 3.1.0`.
+
 ## 3.0.0 - The architectural rewrite: ZeroScript-aligned core
 After weeks of patch-driven fixes (v2.0.0 → v2.3.3), the agent loop was
 fundamentally less robust than ZeroScript's. v3.0.0 rewrites
