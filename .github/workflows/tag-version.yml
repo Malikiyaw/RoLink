@@ -1,0 +1,30 @@
+name: Tag VERSION
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    if: startsWith(github.event.head_commit.message, 'chore: bump RoLink to ')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read version
+        id: version
+        run: echo "version=$(cat VERSION | tr -d '\n\r')" >> "$GITHUB_OUTPUT"
+      - name: Create tag when absent
+        run: |
+          if git rev-parse "refs/tags/v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "tag already exists"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.version.outputs.version }}" -m "RoLink v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
