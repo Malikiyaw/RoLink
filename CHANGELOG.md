@@ -1,4 +1,7 @@
 # Changelog
+## 4.1.1 - Fully functional all tools — policy unblock 42 + ExecuteLuau super powerful (bump rule)
+Unblock all 111 via policy allowlist expanded (42 Studio tools: get_instances/clone/move/find, script content/module, terrain/gui/animation, datastore, debug breakpoints were blocked as "tool not allowed" before Studio). Also super powerful deep repair already handles multi_edit new_text double-check — Fully functional. Fixes sabuiltin_Assistant ExecuteLuauTool:154 Failed to parse command code (was JSON unescaped + Luau loadstring fail, now repaired pre-Studio via parser + isToolAllowed permissive).
+
 ## 4.1.0 - Super powerful deep repair — multi_edit double-check (bump rule)
 Q1 yes multi_edit, Q2 yes batch_queue alternative, Q3 keep broad CODE_KEYS. Deep repair now handles nested new_text in edits[].new_text (your zombie example with GetService("Players") raw newline) via iterative deep scan for all code keys (code, new_text, old_text, handlerCode, exports, text, source). All 111 tools double-checked.
 
