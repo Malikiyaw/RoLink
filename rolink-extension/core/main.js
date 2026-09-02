@@ -960,7 +960,15 @@ ${customBlock}
           const targetTool = (reply.raw && ZSParse.toolNameFromText(reply.raw)) || "execute_luau";
           // SUPER-POWERFUL: tool-specific nudge with visible example for the failing tool
           let toolNudge = "";
-          if(["execute_luau","run_in_sandbox","review_code","refactor_code","generate_test","analyze_performance","predict_bug"].includes(targetTool)){
+          if(["multi_edit"].includes(targetTool)){
+            // Q1 yes multi edit — super powerful deep repair for edits[].new_text
+            toolNudge = `For multi_edit, every new_text string MUST escape " as \\" and newline as \\n. Example (one line):
+
+###MCP_TOOL###
+{"tool":"multi_edit","args":{"file_path":"Workspace.Zombie.ZombieCore","edits":[{"action":"replace_lines","start_line":26,"end_line":33,"new_text":"local Players = game:GetService(\\"Players\\")\\nlocal function getNearestPlayer()\\n\\treturn nearest\\nend"}]}}
+
+Super powerful: you can also do multiple single-line execute_luau via ###LUA### instead of one huge multi_edit.`;
+          } else if(["execute_luau","run_in_sandbox","review_code","refactor_code","generate_test","analyze_performance","predict_bug"].includes(targetTool)){
             toolNudge = `For ${targetTool} code strings you MUST either escaped JSON OR ###LUA### (super powerful, no escaping):
 
 JSON escaped (one line):

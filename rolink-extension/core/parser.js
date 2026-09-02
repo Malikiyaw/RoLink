@@ -55,42 +55,62 @@
     try { return JSON.parse(s); } catch { return null; }
   }
 
-  // SUPER-POWERFUL repair: fix unescaped " and literal newlines inside code/content strings for ALL tools
+  // SUPER-POWERFUL repair: fix unescaped " and literal newlines inside ANY code-string field for ALL 111 tools, DEEP nested
   function tryRepairJson(chunk){
     try{ return JSON.parse(chunk.replace(/\t/g,"\\t")); }catch(e){}
-    // Try to repair code/content/handlerCode/exports fields with raw newlines and unescaped quotes
-    const fields=["code","content","handlerCode","exports","prompt"];
+    // Q1 yes multi_edit, Q3 keep broad CODE_KEYS — deep repair for any nested code field
+    const fields=["code","content","new_text","old_text","text","handlerCode","exports","source","prompt","handler","newText","oldText"];
+    // Repair all occurrences iteratively (multi_edit has edits[].new_text)
+    let repairedChunk=chunk;
+    let anyRepaired=false;
     for(const field of fields){
       const keyPat=`"${field}"\\s*:\\s*"`;
-      const m=chunk.match(new RegExp(keyPat));
-      if(!m) continue;
-      const startIdx=chunk.indexOf(m[0]) + m[0].length;
-      // Find closing " respecting escapes, but allow literal newlines
-      let out='"';
-      let esc=false;
-      let foundClose=-1;
-      for(let i=startIdx;i<chunk.length;i++){
-        const c=chunk[i];
-        if(esc){ out+=c; esc=false; continue; }
-        if(c==="\\"){ esc=true; out+=c; continue; }
-        if(c==='"'){
-          // Check if this is the true closing by trying to see if remainder looks like ,} or }
-          const rest=chunk.slice(i+1, i+10).trim();
-          if(rest.startsWith(",") || rest.startsWith("}") || rest.startsWith(",")){
-            foundClose=i; break;
+      const re=new RegExp(keyPat,"g");
+      let m;
+      // Collect all matches first to handle multiple edits
+      const matches=[...repairedChunk.matchAll(re)];
+      for(let mi=matches.length-1; mi>=0; mi--){
+        const match=matches[mi];
+        const startIdx=match.index + match[0].length;
+        let out='"';
+        let esc=false;
+        let foundClose=-1;
+        for(let i=startIdx;i<repairedChunk.length;i++){
+          const c=repairedChunk[i];
+          if(esc){ out+=c; esc=false; continue; }
+          if(c==="\\"){ esc=true; out+=c; continue; }
+          if(c==='"'){
+            const rest=repairedChunk.slice(i+1, i+12).trim();
+            if(rest.startsWith(",") || rest.startsWith("}") || rest.startsWith("]") || rest.startsWith(",")){
+              foundClose=i; break;
+            }
+            out+='\\"'; continue;
           }
-          // Otherwise it's an inner unescaped " — escape it
-          out+='\\"'; continue;
+          if(c==="\n"){ out+='\\n'; continue; }
+          if(c==="\r"){ out+='\\r'; continue; }
+          out+=c;
         }
-        if(c==="\n"){ out+='\\n'; continue; }
-        if(c==="\r"){ out+='\\r'; continue; }
-        out+=c;
+        if(foundClose===-1) continue;
+        const before=repairedChunk.slice(0, startIdx);
+        const after=repairedChunk.slice(foundClose);
+        const inner=out.slice(1);
+        // Reconstruct with fixed inner (without outer quotes, inner already escaped)
+        const fixedInner=inner.replace(/\t/g,"\\t");
+        repairedChunk=before + fixedInner + after;
+        anyRepaired=true;
       }
-      if(foundClose===-1) continue;
-      const repaired=chunk.slice(0, startIdx) + out.slice(1) + chunk.slice(foundClose);
+    }
+    if(anyRepaired){
       try{
-        const j=JSON.parse(repaired.replace(/\t/g,"\\t"));
+        const j=JSON.parse(repairedChunk.replace(/\t/g,"\\t").replace(/\r\n/g,"\\n"));
         if(j && (j.tool||j.command)) return j;
+      }catch{}
+      // Try salvage after deep repair
+      try{
+        let o=(repairedChunk.match(/\{/g)||[]).length, c=(repairedChunk.match(/\}/g)||[]).length;
+        if(o>c) repairedChunk+="}".repeat(o-c);
+        const j2=JSON.parse(repairedChunk);
+        if(j2 && (j2.tool||j2.command)) return j2;
       }catch{}
     }
     return null;

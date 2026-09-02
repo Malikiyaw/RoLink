@@ -1,4 +1,7 @@
 # Changelog
+## 4.1.0 - Super powerful deep repair — multi_edit double-check (bump rule)
+Q1 yes multi_edit, Q2 yes batch_queue alternative, Q3 keep broad CODE_KEYS. Deep repair now handles nested new_text in edits[].new_text (your zombie example with GetService("Players") raw newline) via iterative deep scan for all code keys (code, new_text, old_text, handlerCode, exports, text, source). All 111 tools double-checked.
+
 ## 4.0.9 - Super powerful JSON fix — all tools, all code strings (bump rule)
 Make super powerful: proactive prompt for ALL code tools (code/content/handlerCode/exports) with escaped JSON + ###LUA### examples, parser tryRepairJson fixes unescaped " and literal newlines for every tool, tool-specific nudge (execute_luau vs set_script_content), tolerant registry. All 111 tools now parse even if AI forgets to escape — no more malformed.
 
