@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "source": "mcp-server/src/tools/registry.ts",
+  "generatedAt": "bootstrap",
+  "toolFields": {},
+  "stringFields": [
+    "code",
+    "content",
+    "new_text",
+    "old_text",
+    "new_string",
+    "old_string",
+    "text",
+    "handlerCode",
+    "exports",
+    "source",
+    "prompt",
+    "handler",
+    "newText",
+    "oldText",
+    "newString",
+    "oldString"
+  ],
+  "codeLikeFields": [
+    "code",
+    "content",
+    "new_text",
+    "old_text",
+    "new_string",
+    "old_string",
+    "handlerCode",
+    "exports",
+    "source",
+    "handler",
+    "newText",
+    "oldText",
+    "newString",
+    "oldString"
+  ]
+}
