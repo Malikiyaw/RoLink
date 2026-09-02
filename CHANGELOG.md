@@ -1,4 +1,7 @@
 # Changelog
+## 4.0.1 - Free-chat greeting per start + bar polish (patch)
+Fixes screenshot issues: delete `Don't ask ACT` auto-nudge, hide `[Tool result for ...]` feed, greeting only per click Start, then free chat with self-heal. Remove `Trace` from bar (`…` → trace) + `rl-inline` fix so bar no longer covers `Deep thinking / Smart Search`. Bump per bump rule.
+
 ## 4.0.0 - Complete 111-tool suite (production, one-push)
 All 111 tools implemented with Pro Max quality. No API keys required — S21/S48 use offline procedural fallbacks.
 
