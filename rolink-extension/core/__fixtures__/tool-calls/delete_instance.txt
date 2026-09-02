@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "delete_instance",
+  "args": {}
+}

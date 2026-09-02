@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "step_through",
+  "args": {}
+}

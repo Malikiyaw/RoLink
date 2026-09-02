@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "remove_event_handler",
+  "args": {}
+}

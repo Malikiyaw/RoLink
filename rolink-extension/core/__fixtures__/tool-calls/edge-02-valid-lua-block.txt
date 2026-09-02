@@ -1,0 +1,5 @@
+###LUA###
+local part = Instance.new("Part")
+part.Name = "Generated"
+part.Parent = workspace
+###END_LUA###

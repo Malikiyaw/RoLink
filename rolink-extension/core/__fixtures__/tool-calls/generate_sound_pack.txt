@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "generate_sound_pack",
+  "args": {}
+}

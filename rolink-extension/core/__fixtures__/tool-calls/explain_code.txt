@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "explain_code",
+  "args": {}
+}

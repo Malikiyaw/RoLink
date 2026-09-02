@@ -1,26 +1,96 @@
 {
   "manifest_version": 3,
   "name": "RoLink — AI to Roblox Studio",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio agent. Browser extension + local bridge.",
   "permissions": ["storage", "alarms", "scripting"],
   "host_permissions": ["http://127.0.0.1:17613/*", "http://127.0.0.1:3001/*", "ws://127.0.0.1:17613/*"],
-  "background": {"service_worker": "background.js"},
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
-    {"matches":["*://chat.deepseek.com/*","*://www.deepseek.com/*"],"js":["core/config.js","core/parser.js","core/execution-trace.js","core/agent-state.js","core/execution.js","providers/deepseek.js","core/main.js"],"css":["overlay.css"],"run_at":"document_idle"},
-    {"matches":["*://chatgpt.com/*","*://chat.openai.com/*"],"js":["core/config.js","core/parser.js","core/execution-trace.js","core/agent-state.js","core/execution.js","providers/generic.js","providers/chatgpt.js","core/main.js"],"css":["overlay.css"],"run_at":"document_idle"},
-    {"matches":["*://chatgpt.com/*"],"js":["providers/chatgpt-cm.js"],"run_at":"document_start","world":"MAIN"},
-    {"matches":["*://gemini.google.com/*"],"js":["core/config.js","core/parser.js","core/execution-trace.js","core/agent-state.js","core/execution.js","providers/generic.js","providers/gemini.js","core/main.js"],"css":["overlay.css"],"run_at":"document_idle"},
-    {"matches":["*://kimi.ai/*","*://www.kimi.ai/*","*://www.kimi.com/*"],"js":["core/config.js","core/parser.js","core/execution-trace.js","core/agent-state.js","core/execution.js","providers/generic.js","providers/kimi.js","core/main.js"],"css":["overlay.css"],"run_at":"document_idle"},
-    {"matches":["*://chat.z.ai/*"],"js":["core/config.js","core/parser.js","core/execution-trace.js","core/agent-state.js","core/execution.js","providers/generic.js","providers/glm.js","core/main.js"],"css":["overlay.css"],"run_at":"document_idle"},
-    {"matches":["*://chat.qwen.ai/*"],"js":["core/config.js","core/parser.js","core/execution-trace.js","core/agent-state.js","core/execution.js","providers/generic.js","providers/qwen.js","core/main.js"],"css":["overlay.css"],"run_at":"document_idle"},
-    {"matches":["*://chat.qwen.ai/*"],"js":["providers/qwen-net.js"],"run_at":"document_start","world":"MAIN"},
-    {"matches":["*://arena.ai/*","*://lmarena.ai/*"],"js":["core/config.js","core/parser.js","core/execution-trace.js","core/agent-state.js","core/execution.js","providers/generic.js","providers/arena.js","core/main.js"],"css":["overlay.css"],"run_at":"document_idle"},
-    {"matches":["*://www.meta.ai/*","*://meta.ai/*"],"js":["core/config.js","core/parser.js","core/execution-trace.js","core/agent-state.js","core/execution.js","providers/generic.js","providers/meta.js","core/main.js"],"css":["overlay.css"],"run_at":"document_idle"}
+    {
+      "matches": ["*://chat.deepseek.com/*", "*://www.deepseek.com/*"],
+      "js": ["core/code-fields.js", "core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/deepseek.js", "core/main.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://chatgpt.com/*", "*://chat.openai.com/*"],
+      "js": ["core/code-fields.js", "core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/chatgpt.js", "core/main.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://chatgpt.com/*"],
+      "js": ["providers/chatgpt-cm.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["*://gemini.google.com/*"],
+      "js": ["core/code-fields.js", "core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/gemini.js", "core/main.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://kimi.ai/*", "*://www.kimi.ai/*", "*://www.kimi.com/*"],
+      "js": ["core/code-fields.js", "core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/kimi.js", "core/main.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://chat.z.ai/*"],
+      "js": ["core/code-fields.js", "core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/glm.js", "core/main.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://chat.qwen.ai/*"],
+      "js": ["core/code-fields.js", "core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/qwen.js", "core/main.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://chat.qwen.ai/*"],
+      "js": ["providers/qwen-net.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["*://arena.ai/*", "*://lmarena.ai/*"],
+      "js": ["core/code-fields.js", "core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/arena.js", "core/main.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://www.meta.ai/*", "*://meta.ai/*"],
+      "js": ["core/code-fields.js", "core/config.js", "core/parser.js", "core/execution-trace.js", "core/agent-state.js", "core/execution.js", "providers/generic.js", "providers/meta.js", "core/main.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    }
   ],
-  "web_accessible_resources":[{"resources":["core/main-world.js"],"matches":["<all_urls>"]}],
-  "action":{"default_title":"RoLink","default_popup":"popup.html"},
-  "options_ui":{"page":"options.html","open_in_tab":false},
-  "icons":{"128":"icon.png"},
-  "commands":{"open-popup":{"suggested_key":{"default":"Ctrl+Shift+R"},"description":"Open RoLink popup"}}
+  "web_accessible_resources": [
+    {
+      "resources": ["core/main-world.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "action": {
+    "default_title": "RoLink",
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "icons": {
+    "128": "icon.png"
+  },
+  "commands": {
+    "open-popup": {
+      "suggested_key": { "default": "Ctrl+Shift+R" },
+      "description": "Open RoLink popup"
+    }
+  }
 }

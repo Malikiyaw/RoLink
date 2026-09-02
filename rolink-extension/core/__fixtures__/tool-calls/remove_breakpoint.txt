@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "remove_breakpoint",
+  "args": {}
+}

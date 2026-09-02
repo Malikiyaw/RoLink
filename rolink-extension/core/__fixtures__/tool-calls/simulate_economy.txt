@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "simulate_economy",
+  "args": {}
+}

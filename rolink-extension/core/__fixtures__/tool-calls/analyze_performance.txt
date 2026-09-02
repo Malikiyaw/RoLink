@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "analyze_performance",
+  "args": {}
+}

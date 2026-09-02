@@ -1,0 +1,4 @@
+###MCP_TOOL###
+{"tool":"set_script_content","args":{"path":"Workspace/Script","content":"local p = Instance.new("Part")
+p.Name = "p1"
+p.Parent = workspace"}}

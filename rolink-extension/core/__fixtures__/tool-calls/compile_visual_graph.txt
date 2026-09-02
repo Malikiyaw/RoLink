@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "compile_visual_graph",
+  "args": {}
+}

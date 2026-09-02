@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "bind_ui_click",
+  "args": {}
+}

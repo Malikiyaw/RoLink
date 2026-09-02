@@ -1,0 +1,1 @@
+{"function":"set_properties","arguments":{"path":"Workspace.MyPart","properties":{"Size":"Vector3.new(4,1,2)"}}}

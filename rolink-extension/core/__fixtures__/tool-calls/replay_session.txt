@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "replay_session",
+  "args": {}
+}

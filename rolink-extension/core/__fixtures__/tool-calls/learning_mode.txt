@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "learning_mode",
+  "args": {}
+}

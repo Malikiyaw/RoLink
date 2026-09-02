@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "take_snapshot",
+  "args": {}
+}

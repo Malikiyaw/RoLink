@@ -1,5 +1,41 @@
 # Changelog
-## 4.1.2 - Stay if needed multi_edit old_string/new_string powerful (bump rule)
+## 4.3.0 - Parser hardening, 111-tool audit, multi-MCP UI, drift detection
+Implements the full plan from `docs/implementation-plan.md`:
+
+**Phase 1 — Parser hardening** (no more malformed-tool-call failures):
+- Parser now loads the dynamically-generated list of accepted string fields from `rolink-extension/core/code-fields.js` (re-emitted from `mcp-server/src/tools/registry.ts` Zod schemas). New tools inherit RAW-block support automatically; the field list can never drift out of sync.
+- `###RAW:<field>###` accepts ANY string field, not just a hardcoded list. 15 hand-crafted edge-case fixtures + 111 generated per-tool fixtures in `rolink-extension/core/__fixtures__/tool-calls/`. New `tests/parser.test.js` exercises every fixture: 18 / 18 pass.
+- `repairJSONStringValues` now salvages unterminated strings ONLY when the body contains no rogue double-quote (Tier-1 safety: never guess). Rejects ambiguous input explicitly.
+- Pre-emptive RAW-format hint added to the system prompt (in `core/config.js`) so the model never burns a turn producing bad output.
+- Parser exposes `getNudgeStats()` / `resetNudgeStats()`. Background page mirrors them as `nudgeStats` in the status broadcast; the popup's Logs panel shows the running count + repair-success count, and a Reset button.
+
+**Phase 2 — Stubs filled in (explain_code, DDA, sound) + audit regenerated**:
+- `mcp-server/src/explainer.ts` — real regex-based Luau parser: functions, parameters, line numbers, dependencies, events, remotes, Mermaid graph.
+- `mcp-server/src/ddaEngine.ts` — windowed-metric adaptive controller with bounded multipliers and a proper `easy/medium/hard/adaptive` model.
+- `mcp-server/src/soundGenerator.ts` — deterministic procedural metadata: per-type envelope, sample rate, channel layout, seed, suggested Sound properties, drop-in `proceduralSource` Luau snippet.
+- `mcp-server/src/commandQueue.ts` — added `cancel(id)` to fix the pre-existing TS error in `cancel_command`.
+- `docs/tool-audit.md` — regenerated (123 lines) covering schema, handler, error-path and live-Studio Y/N for all 111 tools.
+
+**Phase 4 — Provider adapters** (six thin wrappers filled in):
+- ChatGPT: contenteditable ProseMirror detection, proper `editorText` via `innerText`, stop button via aria-label, React-free `typeAndSend` via `execCommand("insertText")`.
+- Gemini: Quill editor dispatch via `ClipboardEvent("paste")`; `Send message` ↔ `Stop` aria-label switch.
+- Kimi: custom contenteditable, bilingual `Send`/`发送` selector, stop detection by aria-label or class.
+- GLM: textarea-based; React native value setter; bilingual selector.
+- Qwen: textarea + disabled-state check for "is generating"; per-via the `qwen-net.js` MAIN-world tap (already shipped).
+- Meta: contenteditable textbox; bilingual `Send message` selector.
+- New `tests/providers.test.js` smoke-tests every adapter + the MAIN-world hooks. 10 / 10 pass.
+
+**Phase 5 — UI wiring**:
+- **5a** Multi-MCP server config form in `options.html` — list / add / remove via the existing bridge `add_server` / `remove_server` wire messages (which were already implemented but had no UI).
+- **5b** Power-tool visibility in the popup — purple ★ chips for the S1–S48 power tools, with a count next to the category hint.
+- **5c** Audit / history panel — nudge counters + repair-success counter + multi-MCP server count, all read from `statusObj()`.
+- **5d** Session-drift detection — `core/config.js` tracks turns-since-last-successful-tool-call per provider. After 4 turns of drift the next user-send re-injects the format reminder. Drift stats are exposed on `window.__rolinkDrift` for the agent loop.
+
+**CI**:
+- `tests/parser.test.js` and `tests/providers.test.js` added to `mcp-server` `npm test` (runs vitest + 3 node test files). 45 / 45 tests pass.
+- New `scripts/emit-code-fields.js` regenerates `rolink-extension/core/code-fields.js` from `generated/code-fields.json`. Wired into CI via `npm run generate:code-fields`.
+
+**Note**: Phase 3 (live Roblox Studio verification of Tier 1 / Tier 2 tools) cannot be performed in this sandbox. The `Studio Y/N` column in `docs/tool-audit.md` is therefore still `N` for every tool and must be filled in by a human running the extension against a real Studio place before any "all 111 tools verified" claim is made.
 Stay if needed and make it powerful: deep repair now covers old_string/new_string nested in edits[] (your double-check with BodyPosition + Players), broad CODE_KEYS kept, nudge shows both new_text and old_string examples. Q2/Q3 if needed.
 
 ## 4.1.1 - Fully functional all tools — policy unblock 42 + ExecuteLuau super powerful (bump rule)

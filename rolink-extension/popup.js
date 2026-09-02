@@ -106,12 +106,16 @@ function renderTools(tools){
   }
   // group
   const groups={};
+  let powerCount=0;
   for(const t of tools){
     const name=t.name||t;
     const cat=REVERSE_MAP[name]||"Other";
     if(!groups[cat]) groups[cat]=[];
     groups[cat].push({name, raw:t});
+    if(/^(self_heal|rollback|generate_test|review_code|generate_asset|train_model|optimize_performance|generate_sound|adjust_difficulty|explain_code|simulate_economy|suggest_design|compile_visual_graph|generate_level|generate_quest|export_project|get_analytics|git_rollback|playtest|run_playtest|get_performance_stats|analyze_performance)/.test(name)) powerCount++;
   }
+  const hintEl=document.getElementById("toolsHint");
+  if(hintEl) hintEl.innerHTML = `${tools.length} tools grouped by category — <span style="color:#a371f7">${powerCount} power tools</span> active`;
   const connectedSet=new Set(tools.map(t=>t.name||t));
   let html="";
   for(const cat of CATEGORY_ORDER){
@@ -123,7 +127,8 @@ function renderTools(tools){
     html += `<div class="tools-grid" data-grid="${cat}">`;
     for(const x of arr){
       const isConnected=connectedSet.has(x.name);
-      html += `<span class="tool-chip ${isConnected?'connected':''}" title="${escapeHtml(x.name)} — ${escapeHtml(x.raw.description||'')}" data-tool="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>`;
+      const isPower = /^(self_heal|rollback|generate_test|review_code|generate_asset|train_model|optimize_performance|generate_sound|adjust_difficulty|explain_code|simulate_economy|suggest_design|compile_visual_graph|generate_level|generate_quest|export_project|get_analytics|git_rollback|playtest|run_playtest|get_performance_stats|analyze_performance)/.test(x.name);
+      html += `<span class="tool-chip ${isConnected?'connected':''} ${isPower?'power':''}" title="${escapeHtml(x.name)} — ${escapeHtml(x.raw.description||'')}" data-tool="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>`;
     }
     html += `</div>`;
   }
@@ -164,6 +169,23 @@ function renderLogs(){
     const logs = s?.logs || [];
     if(!logs.length) logsListEl.innerHTML='<span style="color:var(--muted)">No logs yet — run a tool</span>';
     else logsListEl.innerHTML=logs.slice(-20).reverse().map(l=> `<div class="log-row"><span class="log-ts">${new Date(l.t||Date.now()).toLocaleTimeString().slice(0,8)}</span><span class="log-msg">${escapeHtml(l.msg||l.event||JSON.stringify(l).slice(0,80))}</span></div>`).join("");
+    // Nudges
+    const ns = s?.nudgeStats || lastStatus?.nudgeStats;
+    const nv = document.getElementById("nudge-val");
+    if(nv && ns){
+      const total = (ns.malformed||0)+(ns.midStringTruncation||0)+(ns.unknownTool||0);
+      const rep = ns.repairSuccess||0;
+      nv.textContent = `● ${total} nudges · ${rep} repairs`;
+      nv.style.color = total>0 ? (total>5?"#fca5a5":"#e3b341") : "var(--green)";
+    }
+    // MCP servers
+    const mv = document.getElementById("mcp-servers-val");
+    if(mv){
+      const list = s?.mcp_servers || lastStatus?.mcp_servers || [];
+      const active = list.filter(x => x && x.alive !== false).length;
+      mv.textContent = list.length ? `● ${active}/${list.length} active` : "○ none";
+      mv.style.color = list.length ? "var(--text)" : "var(--muted)";
+    }
   });
   // fallback: use lastStatus logs if available
   if(lastStatus && Array.isArray(lastStatus.logs)){
@@ -249,6 +271,12 @@ document.getElementById("copyLogs")?.addEventListener("click", ()=>{
 document.getElementById("clearLogs")?.addEventListener("click", ()=>{
   logsListEl.innerHTML="No logs yet";
   toast("Cleared");
+});
+document.getElementById("resetNudges")?.addEventListener("click", ()=>{
+  chrome.runtime.sendMessage({type:"nudge_reset"}, ()=> { setTimeout(refresh, 200); });
+});
+document.getElementById("openMcpConfig")?.addEventListener("click", ()=>{
+  chrome.runtime.openOptionsPage?.();
 });
 
 chrome.runtime.onMessage.addListener(msg=>{

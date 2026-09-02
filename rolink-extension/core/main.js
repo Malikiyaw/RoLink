@@ -1577,6 +1577,19 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
           pushFeed("info", "🔁", "Re-anchoring system prompt (long session)");
           resetSysCount();
         }
+        // Phase 5d: session-drift detection. After DRIFT_TURNS turns without
+        // a successful tool call, re-inject the format reminder so the model
+        // doesn't burn a turn producing bad output. (the count is per-provider
+        // so Gemini's drift doesn't reset DeepSeek's, etc.)
+        try{
+          if(typeof window !== "undefined" && window.__rolinkDrift && window.__rolinkDrift.shouldReinject && window.__rolinkDrift.shouldReinject(P.id || "generic")){
+            pushFeed("info", "🧭", `Drift detected on ${P.id||"provider"} — re-anchoring tool format`);
+            if(window.__rolinkDrift.noteReinject) window.__rolinkDrift.noteReinject(P.id || "generic");
+            // Bumping sys count forces sysResendDue() on the next tool result.
+            bumpSys("drift");
+          }
+          if(window.__rolinkDrift && window.__rolinkDrift.noteTurn) window.__rolinkDrift.noteTurn(P.id || "generic");
+        }catch{}
         A.started = true; A.sessionEverStarted = true;
         // SAFETY NET: camouflage sweep only — agentLoop will pick up tools sequentially.
         // Previously this dispatched via setTimeout concurrent chaos; now just hide.

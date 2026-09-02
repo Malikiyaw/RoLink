@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "get_ui_tree",
+  "args": {}
+}

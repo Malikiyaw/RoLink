@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "get_property_value",
+  "args": {}
+}

@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "clone_instance",
+  "args": {}
+}

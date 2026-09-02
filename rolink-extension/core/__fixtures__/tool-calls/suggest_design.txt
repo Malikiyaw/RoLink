@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "suggest_design",
+  "args": {}
+}

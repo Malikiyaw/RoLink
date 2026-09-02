@@ -1,16 +1,19 @@
 {
   "name": "rolink-mcp-server",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "description": "RoLink MCP server - bridge between AI and Roblox Studio",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "vitest run",
-    "generate:code-fields": "tsx ../scripts/generate-code-fields.ts",
-    "generate:fixtures": "tsx ../scripts/generate-tool-fixtures.ts",
-    "audit:tools": "tsx ../scripts/generate-tool-audit.ts"
+    "test": "vitest run && node ../tests/parser.test.js && node ../tests/execution.test.js && node ../tests/providers.test.js",
+    "test:parser": "node ../tests/parser.test.js",
+    "test:execution": "node ../tests/execution.test.js",
+    "test:providers": "node ../tests/providers.test.js",
+    "generate:code-fields": "tsx ../scripts/generate-code-fields-impl.ts",
+    "generate:fixtures": "tsx ../scripts/generate-tool-fixtures-impl.ts",
+    "audit:tools": "tsx ../scripts/generate-tool-audit-impl.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.10.0",

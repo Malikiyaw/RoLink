@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "create_model_from_table",
+  "args": {}
+}

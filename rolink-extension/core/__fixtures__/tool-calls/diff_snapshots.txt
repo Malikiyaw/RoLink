@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "diff_snapshots",
+  "args": {}
+}

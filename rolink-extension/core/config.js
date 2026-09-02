@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "4.2.0";
+const ROLINK_VERSION = "4.3.0";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
@@ -13,6 +13,28 @@ function toolCategory(name){
   if(/run_tests|simulate_ticks|run_in_sandbox|playtest/.test(n)) return "test";
   return "tool";
 }
+
+// Pre-emptive format hint (§2 step 4). The set of code-bearing fields is
+// generated from mcp-server/src/tools/registry.ts Zod schemas and exposed
+// via window.ROLINK_CODE_FIELDS (set by core/code-fields.js). When that file
+// is loaded we get an exhaustive, always-current list of fields that should
+// use the RAW escape hatch; without it we fall back to a conservative
+// hard-coded list so the prompt is still useful.
+const _CF = (typeof window !== "undefined" && window.ROLINK_CODE_FIELDS) || null;
+const _CODE_FIELDS = (_CF && _CF.codeLikeFields && _CF.codeLikeFields.length) ? _CF.codeLikeFields : [
+  "code","content","new_text","old_text","new_string","old_string",
+  "text","handlerCode","exports","source","handler","prompt",
+  "newText","oldText","newString","oldString"
+];
+const RAW_FIELD_PROMPT = `
+PREFERRED FORMAT — to avoid malformed-JSON failures, ALWAYS use the RAW escape hatch for any string field that contains source code, long text, or embedded quotes:
+###MCP_TOOL###
+{"tool":"<name>","args":{<other-fields>}}
+###RAW:<field>###
+<literal content — quotes and newlines are passed verbatim>
+###END_RAW###
+The list of fields that accept RAW blocks is generated from the registered tool schemas (${_CODE_FIELDS.length} fields). Use the RAW form for: ${_CODE_FIELDS.join(", ")}. You can also bundle multiple RAW fields with one block per field, or use the tool-scoped form ###TOOL:<name>### ... ###END_TOOL### for an entire tool call.
+`.trim();
 const TOOL_NOTES = `
 You have RoLink MCP tools (111 total). To call one, output ONE JSON block:
 
@@ -21,16 +43,7 @@ You have RoLink MCP tools (111 total). To call one, output ONE JSON block:
 
 Aliases: ###LUA### <luau> ###END_LUA### → execute_luau
 
-RAW-FIELD ESCAPE HATCH — preferred for ANY tool argument containing long or multiline text.
-Do NOT hand-escape source code when you can use this form. Put the normal arguments in JSON, then add one raw block per field:
-###MCP_TOOL###
-{"tool":"set_script_content","args":{"path":"Workspace/Script"}}
-###RAW:content###
-local part = Instance.new("Part")
-part.Name = "Generated Part"
-part.Parent = workspace
-###END_RAW###
-The parser merges ###RAW:<field>### into args.<field>. This works for code/content/source/handlerCode/exports/new_text/old_text and future string fields too. Never place raw-block contents inside JSON quotes.
+${RAW_FIELD_PROMPT}
 
 Groups:
 - Core 1-7: get_instances, create_instance, set_properties, delete_instance, clone_instance, move_instance, find_instance
@@ -81,11 +94,48 @@ function buildSystemPrompt(provider) {
   const base = `You are RoLink Agent ${ROLINK_VERSION} — an AI that controls Roblox Studio via MCP bridge at ws://127.0.0.1:17613.\n${TOOL_NOTES}\n${SYS_MARKER}\n`;
   const notes = {
     deepseek: "DeepSeek Expert/Instant ok, Vision only tab sees images. Handle <|DSML|> markup by rewriting to MCP.",
-    chatgpt: "ChatGPT truncates long code blocks in DOM — read CodeMirror editor content, not rendered view. Re-state instructions on every tool result.",
+    chatgpt: "ChatGPT truncates long code blocks in DOM — read CodeMirror editor content, not rendered view. Re-state the RAW-block format below on every tool result so it doesn't drift.",
     gemini: "Gemini may stop using tools in long sessions — re-prompt to use ###MCP_TOOL### or RAW blocks.",
-    kimi: "Kimi may use native tools — force Roblox MCP.",
-    glm: "", qwen:"", arena:"Direct mode only — block Battle/Side-by-Side.", meta:"Read Raw tab for large JSON values."
+    kimi: "Kimi may use native tools — force Roblox MCP. Re-state RAW-block format periodically.",
+    glm: "", qwen:"", arena:"Direct mode only — block Battle/Side-by-Side. Re-state RAW format on first reply.", meta:"Read Raw tab for large JSON values."
   };
   return base + (notes[provider] ? "\nProvider note: " + notes[provider] : "");
 }
 const PROVIDER_URLS = ["chat.deepseek.com","chatgpt.com","gemini.google.com","kimi.ai","chat.z.ai","chat.qwen.ai","arena.ai","meta.ai"];
+
+// Session-drift detection (§4 step 1). Tracks turns-since-last-successful-
+// tool-call per provider. When the gap exceeds DRIFT_TURNS the next
+// "re-state instructions" is sent before the user's request, so the model
+// doesn't burn a turn producing bad output. The pop-up panel reads
+// `getDriftStats()` to display the running counters.
+const DRIFT_TURNS = 4;
+const drift = { turnsSinceSuccess: {}, lastNudgeTurn: {} };
+function noteSuccessfulTool(provider){
+  if(!provider) return;
+  drift.turnsSinceSuccess[provider] = 0;
+}
+function noteTurn(provider){
+  if(!provider) return;
+  drift.turnsSinceSuccess[provider] = (drift.turnsSinceSuccess[provider] || 0) + 1;
+}
+function shouldReinject(provider){
+  if(!provider) return false;
+  return (drift.turnsSinceSuccess[provider] || 0) >= DRIFT_TURNS;
+}
+function noteReinject(provider){
+  if(!provider) return;
+  drift.lastNudgeTurn[provider] = drift.turnsSinceSuccess[provider] || 0;
+}
+function getDriftStats(){
+  return {
+    driftThreshold: DRIFT_TURNS,
+    turnsSinceSuccess: { ...drift.turnsSinceSuccess },
+    lastNudgeTurn: { ...drift.lastNudgeTurn }
+  };
+}
+
+// Expose the drift API on window so the agent loop (main.js) can call it
+// without re-importing the module. Same name is referenced in main.js.
+if(typeof window !== "undefined"){
+  window.__rolinkDrift = { noteTurn, noteSuccessfulTool, shouldReinject, noteReinject, getDriftStats, DRIFT_TURNS };
+}

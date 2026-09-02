@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "git_commit",
+  "args": {}
+}

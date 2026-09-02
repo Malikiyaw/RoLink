@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "set_script_content",
+  "args": {}
+}

@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "refactor_code",
+  "args": {}
+}

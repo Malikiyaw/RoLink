@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "play_sound",
+  "args": {}
+}

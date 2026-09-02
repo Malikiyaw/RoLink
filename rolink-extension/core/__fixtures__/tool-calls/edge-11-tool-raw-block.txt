@@ -1,0 +1,6 @@
+###TOOL:set_script_content###
+{"path":"Workspace/Script"}
+###RAW:content###
+local x = "literal with \"quotes\" and \n newlines OK"
+###END_RAW###
+###END_TOOL###

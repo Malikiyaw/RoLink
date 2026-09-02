@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "switch_project",
+  "args": {}
+}

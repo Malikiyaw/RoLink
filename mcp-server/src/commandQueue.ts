@@ -103,6 +103,16 @@ class CommandQueue {
     this.queue = this.queue.filter(c => !(c.status === "done" && c.createdAt < cutoff));
     for (const [k, v] of this.byId) if (v.status === "done" && v.createdAt < cutoff) this.byId.delete(k);
   }
+
+  cancel(id: string): boolean {
+    const cmd = this.byId.get(id);
+    if (!cmd) return false;
+    if (cmd.status !== "queued") return false;
+    cmd.status = "done" as any;
+    cmd.error = "cancelled by cancel_command";
+    this.queue = this.queue.filter(c => c.id !== id);
+    return true;
+  }
 }
 
 export const commandQueue = new CommandQueue();

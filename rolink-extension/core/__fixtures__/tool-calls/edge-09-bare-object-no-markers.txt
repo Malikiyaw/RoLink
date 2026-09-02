@@ -1,0 +1,3 @@
+I'll create a part for you.
+{"tool":"create_instance","args":{"className":"Part","parent":"workspace"}}
+That should do it.

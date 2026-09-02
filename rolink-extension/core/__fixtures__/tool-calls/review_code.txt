@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "review_code",
+  "args": {}
+}

@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "ensure_path",
+  "args": {}
+}

@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "search_by_attribute",
+  "args": {}
+}

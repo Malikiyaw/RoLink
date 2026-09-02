@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "export_session_log",
+  "args": {}
+}

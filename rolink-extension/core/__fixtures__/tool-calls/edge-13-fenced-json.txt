@@ -1,0 +1,3 @@
+```json
+{"tool":"send_notification","args":{"message":"hi","type":"info"}}
+```

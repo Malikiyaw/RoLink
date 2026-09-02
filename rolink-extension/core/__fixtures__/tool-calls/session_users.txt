@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "session_users",
+  "args": {}
+}

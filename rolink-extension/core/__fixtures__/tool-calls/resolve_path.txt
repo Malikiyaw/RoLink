@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "resolve_path",
+  "args": {}
+}

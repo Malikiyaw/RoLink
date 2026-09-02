@@ -1,0 +1,5 @@
+###MCP_TOOL###
+{
+  "tool": "add_particle_emitter",
+  "args": {}
+}
