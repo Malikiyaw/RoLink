@@ -1,8 +1,6 @@
 # RoLink Versioning (SemVer)
 
-- **1.0.0** — initial release
-- **2.0.0** — big feature / breaking change (new MCP tools, bridge protocol change, major UI)
-- **1.1.0** — bug fix or minor feature (new provider, asset gen tweak, launcher fix)
-- **1.1.1** — little change (typo, docs, small patch)
+- **4.2.0** — parser hardening, raw-field execution format, generated 111-tool fixtures/audit, provider-specific adapters, multi-MCP settings UI, release automation
+- **1.x–3.x** — historical releases
 
-All of `rolink-extension/manifest.json` version, `bridge.py` BRIDGE_VERSION, `launch_studio_mcp.py`, `mcp-server/package.json`, and `core/config.js` ROLINK_VERSION must stay in sync. Tag releases as `v1.0.0` etc.; `.github/workflows/release.yml` creates `RoLink-v1.0.0.zip`.
+The extension manifest, MCP package, parser/system-prompt version, bridge runtime version and release metadata should move together. Releases use `vMAJOR.MINOR.PATCH`; the tag workflow reads `VERSION` and creates the matching Git tag.
