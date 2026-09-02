@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// providers/kimi.js - thin wrapper for kimi.ai.
 (function(){
   if(typeof window.makeGenericProvider !== "function") return;
   window.ZSProvider = window.makeGenericProvider({
-    id: "kimi",
-    displayName: "Kimi",
+    id:"kimi", displayName:"Kimi",
+    selectors:{
+      chatItem:"[data-message-id], [data-testid*='message' i], .chat-message, [class*='message' i]",
+      editor:"textarea, [contenteditable='true'], [role='textbox']",
+      sendBtn:"button[aria-label*='Send' i], button[data-testid*='send' i], button[type='submit']"
+    },
+    isTooLongMsg:(t)=>/too long|context|token limit|maximum/i.test(t||""),
+    findContinueBtn:()=>null
   });
 })();
