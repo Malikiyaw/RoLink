@@ -1,14 +1,10 @@
-const b=document.getElementById("bridge"), m=document.getElementById("mcp"), s=document.getElementById("status"), ver=document.getElementById("ver");
-chrome.storage.local.get(["bridgeUrl","mcpUrl"], v=>{ if(v.bridgeUrl) b.value=v.bridgeUrl; if(v.mcpUrl) m.value=v.mcpUrl; });
-chrome.runtime.sendMessage({type:"version"}, r=>{ if(r&&r.version) ver.textContent="v"+r.version; });
-function save(){
-  chrome.storage.local.set({bridgeUrl:b.value.trim(), mcpUrl:m.value.trim()}, ()=>{
-    s.textContent="Saved"; s.className="status ok";
-    setTimeout(()=>{ s.textContent=""; s.className="status"; },1800);
-  });
-}
-document.getElementById("save").onclick=save;
-b.onkeydown=m.onkeydown=(e)=>{ if(e.key==="Enter") save(); };
-document.getElementById("reset").onclick=()=>{
-  b.value="ws://127.0.0.1:17613"; m.value="http://127.0.0.1:3001"; save();
-};
+const b=document.getElementById("bridge"),m=document.getElementById("mcp"),s=document.getElementById("status"),ver=document.getElementById("ver"),serversEl=document.getElementById("servers"),serverStatus=document.getElementById("serverStatus");
+chrome.storage.local.get(["bridgeUrl","mcpUrl"],v=>{if(v.bridgeUrl)b.value=v.bridgeUrl;if(v.mcpUrl)m.value=v.mcpUrl});
+chrome.runtime.sendMessage({type:"version"},r=>{if(r&&r.version)ver.textContent="v"+r.version});
+function save(){chrome.storage.local.set({bridgeUrl:b.value.trim(),mcpUrl:m.value.trim()},()=>{s.textContent="Saved";s.className="status ok";setTimeout(()=>{s.textContent="";s.className="status"},1500)})}
+document.getElementById("save").onclick=save;b.onkeydown=m.onkeydown=e=>{if(e.key==="Enter")save()};document.getElementById("reset").onclick=()=>{b.value="ws://127.0.0.1:17613";m.value="http://127.0.0.1:3001";save()};
+function send(msg){return new Promise(resolve=>chrome.runtime.sendMessage(msg,r=>resolve(r||{ok:false,error:chrome.runtime.lastError?.message||"no response"})))}
+function esc(v){return String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]))}
+async function addServerRow(data={}){const row=document.createElement("div");row.className="server";row.innerHTML='<div class="server-grid"><input data-k="id" placeholder="server id"><input data-k="command" placeholder="command"><input data-k="args" placeholder="args"></div><div class="server-actions"><button class="saveServer">Save</button><button class="danger removeServer">Cancel</button></div>';row.querySelector('[data-k="id"]').value=data.id||"";row.querySelector('[data-k="command"]').value=data.command||"";row.querySelector('[data-k="args"]').value=(data.args||[]).join(" ");serversEl.prepend(row);row.querySelector(".saveServer").onclick=async()=>{const id=row.querySelector('[data-k="id"]').value.trim(),command=row.querySelector('[data-k="command"]').value.trim(),args=row.querySelector('[data-k="args"]').value.trim().split(/\s+/).filter(Boolean);if(!id||!command){serverStatus.textContent="id and command required";serverStatus.className="status err";return}const out=await send({type:"add_server",server_id:id,command,args});serverStatus.textContent=out.ok?"Saved":"Error: "+(out.error||"failed");serverStatus.className="status "+(out.ok?"ok":"err");setTimeout(loadServers,700)};row.querySelector(".removeServer").onclick=()=>row.remove()}
+async function loadServers(){const r=await send({type:"list_servers"});const list=Array.isArray(r.servers)?r.servers.filter(x=>x.id!=="roblox"):[];serversEl.innerHTML="";if(!list.length){serversEl.innerHTML='<p class="desc">No additional servers configured.</p>'}else{for(const x of list) await addServerRow(x)}}
+document.getElementById("addServer").onclick=()=>addServerRow();loadServers();
