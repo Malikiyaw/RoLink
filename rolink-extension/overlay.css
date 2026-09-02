@@ -71,6 +71,8 @@
   z-index: 2147483600;
 }
 .rl-inline { position: static !important; width: 100%; margin: 0 0 6px; background: transparent; border: none; border-bottom: 1px solid rgba(255,255,255,0.08); border-radius: 0; box-shadow: none; padding: 4px 14px 8px; backdrop-filter: none; }
+#rl-bar.rl-inline { position: relative !important; top: auto !important; left: auto !important; transform: none !important; width: 100% !important; margin: 0 0 6px 0 !important; background: rgba(14,17,22,0.96) !important; border: 1px solid rgba(47,129,247,0.30) !important; border-radius: 12px !important; box-shadow: 0 8px 30px rgba(0,0,0,0.42) !important; }
+#rl-bar.rl-inline .rl-state small { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rl-dot { width: 8px; height: 8px; border-radius: 50%; background: #6e7681; box-shadow: 0 0 0 transparent; transition: all .25s ease; }
 .rl-dot.on { background: #3fb950; box-shadow: 0 0 8px rgba(63,185,80,0.65); }
 .rl-dot.warn { background: #d29922; box-shadow: 0 0 8px rgba(210,153,34,0.65); }

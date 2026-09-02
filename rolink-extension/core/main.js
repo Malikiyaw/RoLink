@@ -130,7 +130,7 @@
     injectPreUser: null,      // userCount at the time of inject (used by preHideWholeItems)
     injectHideUntil: 0,       // one-shot pre-hide window for injected result turns
     activeTurnItem: null,     // the current assistant turn being processed
-    nudgesLeft: 4,            // how many question-nudges we can send before giving up
+    nudgesLeft: 1,            // Q2: only self-heal cantRun once, free chat after greeting
     toolNames: new Set(),     // known tool names from the live tool list
     turnedStopped: false,     // the AI's own stop button was clicked
     stoppedAt: 0,             // timestamp of stop (for grace windows)
@@ -226,7 +226,7 @@
   launcher.setAttribute("aria-label", "Start RoLink agent");
   root.appendChild(launcher);
 
-  // Status bar (mounted inside the composer via provider.barMount)
+  // Status bar (mounted inside the composer via provider.barMount) — Q3: Trace collapsed into … to not cover Deep thinking
   const bar = el("div", "rl-bar"); bar.id = "rl-bar"; bar.style.display = "none";
   bar.innerHTML = `
     <span class="rl-dot" id="rl-dot"></span>
@@ -235,8 +235,8 @@
     <span class="rl-counter" id="rl-counter">0 tools</span>
     <button class="rl-btn" id="rl-tools-btn" title="Show available tools">🛠 Tools</button>
     <button class="rl-btn" id="rl-feed-btn" title="Show activity">📜 Log</button>
-    <button class="rl-btn" id="rl-trace-btn" title="Show execution trace">🔍 Trace</button>
     <button class="rl-btn" id="rl-workspace-btn" title="Workspace memory">🧠</button>
+    <button class="rl-btn" id="rl-more-btn" title="More">…</button>
     <button class="rl-btn warn" id="rl-stop-btn" style="display:none" title="Stop the agent">■ Stop</button>
   `;
   root.appendChild(bar);
@@ -367,8 +367,8 @@
   function wireUi(){
     document.getElementById("rl-tools-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); toolsPanel.classList.toggle("rl-show"); };
     document.getElementById("rl-feed-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); toolsPanel.classList.remove("rl-show"); feed.classList.toggle("rl-show"); };
-    const trBtn = document.getElementById("rl-trace-btn");
-    if(trBtn) trBtn.onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show"); tracePanel.classList.toggle("rl-show"); };
+    const moreBtn = document.getElementById("rl-more-btn");
+    if(moreBtn) moreBtn.onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show"); tracePanel.classList.toggle("rl-show"); };
     document.getElementById("rl-feed-clear").onclick = e => { e.stopPropagation(); document.getElementById("rl-feed-list").innerHTML=""; };
     document.getElementById("rl-workspace-btn").onclick = e => {
       e.stopPropagation();
@@ -404,13 +404,18 @@
     document.getElementById("rl-custom-prompt").value = A.customPrompt || "";
   }
 
-  // Mount the bar inside the composer frame
+  // Mount the bar inside the composer frame — Q3: avoid covering Deep thinking/Smart Search
   function placeBar(){
     try{
       const m = P.barMount();
       if(!m) return;
       if(bar.parentElement !== m.parent){ if(bar.parentElement) bar.parentElement.removeChild(bar); m.parent.insertBefore(bar, m.before || null); }
       bar.style.display = "flex";
+      bar.classList.add("rl-inline");
+      // keep bar compact so it doesn't overlap Deep thinking pills
+      bar.style.position = "relative";
+      bar.style.top = "auto"; bar.style.left = "auto"; bar.style.transform = "none";
+      bar.style.margin = "0 0 6px 0"; bar.style.width = "100%";
     }catch{}
   }
   window.addEventListener("resize", placeBar);
@@ -481,15 +486,15 @@ For execute_luau specifically, you can also use ###LUA### ... ###END_LUA### (no 
 ${customBlock}
 # Rules
 
-- ACT FIRST. Never ask the user "what should I build?" — if no task is given, PICK one (e.g. "I'll make a simple obby with checkpoints") and start building it. The user will redirect you if they want something different.
-- NEVER say "I cannot run commands" or "I don't have access to your files". Your tools ARE working. Just emit the right ###MCP_TOOL### block with the EXACT tool name from the list above.
+- GREETING ONLY ON START: After the single get_studio_state call, greet once: "Studio is connected and ready in Edit mode. What would you like to build?" then STOP and wait for the user. Do NOT auto-pick a project. Do NOT call another tool until the user gives a task.
+- After greeting, wait for user — free chat. Only execute tools when the user asks.
+- If a tool fails, self-heal: read the error, fix args/JSON/Luau, retry exactly once. Don't apologize and stop.
+- NEVER say "I cannot run commands" or "I don't have access to your files". Your tools ARE working.
 - ONLY use the tools listed above. Do NOT use any built-in code interpreter, web search, file browser, or other native tool — even if the site offers them. The Roblox MCP tools are the only thing you should call.
-- If a tool call fails, read the error message, fix the call (correct args, valid JSON, valid Luau), and retry. Don't apologize and stop.
-- Keep prose short. The user wants to see tool calls and results, not essays.
-- When fully done: one-sentence summary + DONE.`;
+- Keep prose short. When fully done: one-sentence summary + DONE.`;
   }
 
-  const STARTER = `Begin now. Take a quick look at the Studio state to confirm everything is connected, then greet me with one short line that ends with "What would you like to build?" so the user knows the RoLink bridge is active. Don't start any projects yet — wait for the user to tell you what to make. Begin with one tool call:
+  const STARTER = `Begin now. Do exactly ONE tool call to confirm connection, then greet and wait — no further tools until user asks.
 
 ###MCP_TOOL###
 {"tool":"get_studio_state","args":{}}`;
@@ -673,12 +678,16 @@ ${customBlock}
         }
       }
     }
-    const feedbackMsg = ok
-      ? `[Tool result for ${name}]\n${textForModel}\n\nYou MUST continue. Either call another tool via ###MCP_TOOL### {json} OR give a final answer ending with DONE. Do NOT respond with "I cannot run commands" — your tools are working.`
-      : `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Fix the call (correct args, valid JSON, valid Luau) and retry with another ###MCP_TOOL### block using the EXACT name from the system prompt.${hint}`;
+    // Q1/Q2: greeting-per-click-start — first tool (get_studio_state) feeds greeting-only prompt, no "You MUST continue" / "Don't ask ACT"
+    const isGreetingTool = (name === "get_studio_state" && A.toolCount <= 1 && ok);
+    const feedbackMsg = isGreetingTool
+      ? `[Tool result for ${name}]\n${textForModel}\n\nRespond with a short greeting only: "Studio is connected and ready in Edit mode. What would you like to build?" Then wait for the user. Do NOT call another tool now.`
+      : ok
+        ? `[Tool result for ${name}]\n${textForModel}`
+        : `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Self-heal: fix args/JSON/Luau and retry once with correct ###MCP_TOOL###. ${hint}`;
     bumpSys("results");
     const withRider = maybeRider(feedbackMsg);
-    // Transactional feeding: must verify AI resumes
+    // Transactional feeding: hidden injection (camouflaged), not visible user bubble — free chat
     await feedToolResultTransactional(withRider, imgs || []);
     return {chip, name, res, text};
   }
@@ -718,10 +727,10 @@ ${customBlock}
       A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;
       A.running = true;
       A.feedStreak = 0;
-      A.nudgesLeft = 4;
+      A.nudgesLeft = 1;
       A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
-      pushFeed("info", "▶", "Agent loop started. Watching AI replies…");
-      showBanner("Agent running. Watch the chat — the AI will start calling tools.", "ok", 5000);
+      pushFeed("info", "▶", "Agent loop started. Greeting — then free chat…");
+      showBanner("Agent running. Waiting for greeting — then free chat.", "ok", 5000);
       agentLoop(base);
     }).catch(e=>{
       A.starting = false; A.started = false;
@@ -837,7 +846,7 @@ ${customBlock}
         if(A.stopping) break;
         if(reply.kind === "tool"){
           A.feedStreak = 0;
-          A.nudgesLeft = 4;
+          A.nudgesLeft = 1;
           if(fsm) try{ fsm.transition("TOOL_DETECTED", `${reply.calls.length} calls`); }catch{}
           // SEQUENTIAL await — never concurrent chaos. Each tool must complete before next.
           for(const c of reply.calls){
@@ -857,19 +866,10 @@ ${customBlock}
             await dispatchTool(c.name, c.arguments, null, reply.item);
           }
         } else if(reply.kind === "text"){
-          if(looksLikeAQuestion(reply.text) && A.nudgesLeft > 0){
+          // Q1: delete "Don't ask ACT" nudge — free chat after greeting. Only self-heal cantRun (once)
+          if(looksLikeCantRun(reply.text) && A.nudgesLeft > 0 && A.toolCount > 0){
             A.nudgesLeft--;
-            pushFeed("warn", "↻", `AI asked a question (${4 - A.nudgesLeft}/4) — nudging to ACT`);
-            A.injecting = true;
-            try{ inputCover(true); }catch{}
-            await P.typeAndSend(`Don't ask. ACT. Pick the simplest reasonable interpretation of the user's intent and start building it right now. If a tool fails, fix it. If you need to make up defaults, do it. Emit a ###MCP_TOOL### block in your very next reply.`, []);
-            try{ inputCover(false); }catch{}
-            A.injecting = false;
-            continue;
-          }
-          if(looksLikeCantRun(reply.text) && A.nudgesLeft > 0){
-            A.nudgesLeft--;
-            pushFeed("warn", "↻", `AI claimed it can't run tools (${4 - A.nudgesLeft}/4) — re-grounding`);
+            pushFeed("warn", "↻", `AI claimed it can't run tools (${1 - A.nudgesLeft}/1) — re-grounding (self-heal)`);
             A.injecting = true;
             try{ inputCover(true); }catch{}
             await P.typeAndSend(`You DO have tools. They are listed in your system prompt and have been used successfully in this session. Re-read your system prompt. The valid tool names are: ${(A.tools||[]).map(t=>(typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Emit a ###MCP_TOOL### block now using one of these exact names.`, []);
@@ -1142,14 +1142,14 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     const myGen = ++A.startGen;
     A.started = true; A.sessionEverStarted = true; A.starting = true; A.running = false; A.stopping = false;
     A.feedStreak = 0; A.toolCount = 0; A.lastFeedText = ""; A.lastFeedAt = 0; A.lastFeedId = null;
-    A.nudgesLeft = 4; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
+    A.nudgesLeft = 1; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
     setCounter(0);
     document.getElementById("rl-feed-list").innerHTML = "";
     launcher.classList.add("is-active", "is-starting");
-    launcher.innerHTML = `<span class="rl-spinner-inline"></span><span class="rl-label">Starting…</span>`;
+    launcher.innerHTML = `<span class="rl-spinner-inline"></span><span class="rl-label">Starting up…</span>`;
     document.getElementById("rl-stop-btn").style.display = "inline-flex";
-    pushFeed("info", "▶", `Agent starting on ${location.hostname}`);
-    showBanner("Activating RoLink bridge…", "ok", 2500);
+    pushFeed("info", "⏳", `Agent starting up on ${location.hostname} — waiting for AI greeting…`);
+    showBanner("Starting up — AI will say I'm ready…", "ok", 3500);
     placeBar();
     try{
       const s = await bg({type:"status"});
@@ -1339,9 +1339,11 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   // ── CAMOUFLAGE: hide raw tool blocks + injected feedback turns ──────────
   const S_CHAT_ITEM = "[data-message-author-role], .ds-message, [data-testid*='conversation-turn'], article, .message, main p";
   const INJECTED_RE = /^\s*\[(Tool result for|Tool error for) /;
+  const DONT_ASK_RE = /Don't ask\. ACT\./i;
   function isInjectedText(txt){
     if(!txt) return false;
     if(INJECTED_RE.test(txt)) return true;
+    if(DONT_ASK_RE.test(txt)) return true;
     if(txt.indexOf(SYS_MARKER_TEXT) !== -1) return true;
     return false;
   }
@@ -1537,7 +1539,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         setTimeout(() => {
           if(A.stopping || A.userStopped) return;
           if(!A.running && !A.injecting){
-            A.feedStreak = 0; A.nudgesLeft = 4; A.toolCount = 0;
+            A.feedStreak = 0; A.nudgesLeft = 1; A.toolCount = 0;
             A.strippedBlocks = new WeakSet();
             A.dispatchedItems = new WeakSet();
             A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;
