@@ -404,11 +404,18 @@
     document.getElementById("rl-custom-prompt").value = A.customPrompt || "";
   }
 
-  // Mount the bar inside the composer frame — Q3: avoid covering Deep thinking/Smart Search
+  // Mount the bar inside the composer frame — ensure always visible even if barMount fails
   function placeBar(){
     try{
       const m = P.barMount();
-      if(!m) return;
+      if(!m){
+        // fallback: keep bar visible fixed at top-center so user sees buttons even if composer not found
+        bar.style.display = "flex";
+        bar.style.position = "fixed";
+        bar.style.top = "48px"; bar.style.left = "50%"; bar.style.transform = "translateX(-50%)";
+        bar.style.width = "auto"; bar.style.maxWidth = "90%";
+        return;
+      }
       if(bar.parentElement !== m.parent){ if(bar.parentElement) bar.parentElement.removeChild(bar); m.parent.insertBefore(bar, m.before || null); }
       bar.style.display = "flex";
       bar.classList.add("rl-inline");
