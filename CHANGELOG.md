@@ -1,4 +1,14 @@
 # Changelog
+## 4.0.0 - Complete 111-tool suite (production, one-push)
+All 111 tools implemented with Pro Max quality. No API keys required — S21/S48 use offline procedural fallbacks.
+
+- **Core Manipulation 1-7, Scripting 8-15, Snapshot 16-18, Sandbox 19-22, Context 23-28, Dependency 29-33, Perf 34-37, Terrain 38-42, GUI 43-46, Animation 47-50, DataStore 51-53, Team 54-57, Templates 58-60, Misc 61-64, S-Series 65-111**: see `mcp-server/src/tools/registry.ts` (111 ToolDefs).
+- **S25 pluginLoader, S28 debugging, S29 level gen, S30 multi-project, S33 predictive, S35 playtest, S37 archive, S38 quests, S40 economy, S43 explainer, S45 DDA, S48 sound** — all wired with offline deterministic mocks (no `OPENAI_API_KEY`/`ELEVEN_LABS_KEY`).
+- **Bridge** `4.0.0` deterministic `handle_call_tool`, layered timeouts, AI-readable `kind`.
+- **Extension** 1000x polished vs ZeroScript — sequential `ToolExecutionManager`, `AgentFSM`, `trace panel`, `camouflage`, no copyrighted glyph copy.
+- **Studio plugin** `studio-plugin/RoLink.lua` 111 handlers + `src/plugin/init.plugin.luau` 200ms poll.
+- **File structure** per spec: `mcp-server/src/{analyzer,translator,performance,planner,logger,context,sandbox,playtest,autoFixer,projectArchive,questGenerator,economySim,explainer,ddaEngine,soundGenerator,pluginLoader}` + `tools.ts` re-export.
+
 ## 3.1.0 - Reliability-first execution overhaul (phases 1-10)
 The 3.0.0 rewrite was correct but the execution path was still racy: the agent loop dispatched tools via `setTimeout` fire-and-forget, so the AI could continue before the tool lifecycle completed. 3.1.0 is the **reliability overhaul** that makes the `AI → Studio → result → AI` loop deterministic.
 

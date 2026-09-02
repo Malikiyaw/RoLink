@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { commandQueue } from "./commandQueue.js";
-import { tools } from "./tools/registry.js";
+import { tools, aliasMap } from "./tools/registry.js";
 import { PROTOCOL_VERSION } from "../../shared/protocol.js";
 import { rollbackManager } from "./rollback.js";
 import { perfTracker } from "./perfTracker.js";
@@ -101,12 +101,17 @@ app.get("/queue/wait/:id", async (req, res) => {
   try { const result = await commandQueue.waitForResult(req.params.id, timeout); res.json({ ok: true, result }); } catch (e: any) { res.status(504).json({ ok: false, error: e.message }); }
 });
 app.get("/logs", (req, res) => { const projectId = req.query.projectId as string | undefined; const limit = Number(req.query.limit ?? 50); const logs = teamLog.query({ projectId, limit }); res.json({ ok:true, logs }); });
-app.get("/tools", (_req, res) => { res.json({ ok: true, tools: tools.map(t => ({ name: t.name, description: t.description })) }); });
+app.get("/tools", (_req, res) => { res.json({ ok: true, tools: tools.map(t => ({ name: t.name, description: t.description, provider: (t as any).provider||"rolink", execution: (t as any).execution||"local" })), aliases: aliasMap, total: tools.length }); });
 app.post("/tools/call", async (req, res) => {
-  const { name, arguments: args } = req.body ?? {};
-  const tool = tools.find(t => t.name === name);
-  if (!tool) return res.status(404).json({ error: "tool not found" });
-  try { const parsed = tool.inputSchema.parse(args ?? {}); const out = await tool.handler(parsed); res.json({ ok: true, ...out }); } catch (e: any) { res.status(400).json({ ok: false, error: e.message, isError: true }); }
+  let { name, arguments: args } = req.body ?? {};
+  let tool = tools.find(t => t.name === name);
+  if (!tool && aliasMap[name]) {
+    const canonical = aliasMap[name];
+    tool = tools.find(t => t.name === canonical);
+    if (tool) name = canonical;
+  }
+  if (!tool) return res.status(404).json({ error: `tool not found: ${name}`, aliases: Object.keys(aliasMap).slice(0,20) });
+  try { const parsed = tool.inputSchema.parse(args ?? {}); const out = await tool.handler(parsed); res.json({ ok: true, tool: name, ...out }); } catch (e: any) { res.status(400).json({ ok: false, error: e.message, isError: true }); }
 });
 
 // Phase B direct
