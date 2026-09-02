@@ -341,20 +341,23 @@
   // ###END_LUA### from execute_luau's code. Used when a model wraps execute_luau
   // in a JSON envelope and KEEPS the markers inside the code string
   // (seen live on GLM: `{"command":"execute_luau","params":{"code":"###LUA###\n<lua>\n###END_LUA###"}}`).
-  // Idempotent: running it on a clean code string is a no-op.
+  // Idempotent. When the code came from a ###RAW:code### block the value is
+  // passed through VERBATIM (no trim, no chrome-strip) — the model already
+  // opted out of JSON escaping for that field, so we don't second-guess.
   function cleanLuaCall(call) {
     if (!call || call.tool !== "execute_luau") return call;
     const code = call.args && call.args.code;
     if (typeof code !== "string") return call;
+    const fromRaw = call.rawFields && Object.prototype.hasOwnProperty.call(call.rawFields, "code");
     const s = findLuaStart(code);
     if (s.pos !== -1) {
       const e = findLuaEnd(code, s.pos + s.len);
       call.args.code = code.slice(s.pos + s.len, e === -1 ? code.length : e).trim();
       if (!call.args.datamodel_type) call.args.datamodel_type = s.dm;
-    } else {
-      // No ###LUA### markers - this is the JSON-envelope path. Still apply
-      // stripCodeChrome so a Kimi/GLM-rendered "Copy " prefix at the start
-      // of the body is removed. Idempotent: a clean body stays clean.
+    } else if (!fromRaw) {
+      // No ###LUA### markers and the value did NOT come from a RAW block —
+      // this is the JSON-envelope path. Apply stripCodeChrome so a Kimi/GLM
+      // "Copy " prefix at the start of the body is removed. Idempotent.
       call.args.code = stripCodeChrome(code.trim());
     }
     return call;
@@ -516,8 +519,15 @@
       const [idx, parser] = candidates[0];
       const allowed = getStringFields();
       const slice = remaining.slice(idx);
-      const parsed = allowed ? parser(slice, allowed) : parser(slice);
+      let parsed = allowed ? parser(slice, allowed) : parser(slice);
       if (!parsed) { remaining = remaining.slice(idx + 8); continue; }
+      // For parseMcp / parseBare: merge any out-of-band RAW:field blocks
+      // sitting elsewhere in the same text. parseLua / parseJsonFence
+      // are JSON-bounded so they never need the merge (RAW blocks are
+      // matched by parseRawTool above). parseRawTool already merged.
+      if (parser === parseMcp || parser === parseBare) {
+        parsed = applyRawFields(parsed, extractRawBlocks(slice, allowed));
+      }
       out.push(cleanLuaCall(parsed));
       remaining = slice.slice(Math.max(parsed.raw?.length || 0, 8));
     }

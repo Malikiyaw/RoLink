@@ -15,18 +15,18 @@ Generated from `mcp-server/src/tools/registry.ts` with `npm run audit:tools`.
 | 5 | `clone_instance` | T1/T2 | OK | wired | review | N | yes |
 | 6 | `move_instance` | T1/T2 | OK | wired | review | N | yes |
 | 7 | `find_instance` | T3 | OK | wired | review | N | yes |
-| 8 | `execute_luau` | T1/T2 | OK | wired | reviewed | N | partial |
+| 8 | `execute_luau` | T1/T2 | OK | wired | reviewed | N | yes |
 | 9 | `get_script_content` | T3 | OK | wired | review | N | yes |
-| 10 | `set_script_content` | T1/T2 | OK | wired | review | N | partial |
-| 11 | `create_module` | T1/T2 | OK | wired | review | N | partial |
+| 10 | `set_script_content` | T1/T2 | OK | wired | review | N | yes |
+| 11 | `create_module` | T1/T2 | OK | wired | review | N | yes |
 | 12 | `run_function` | T1/T2 | OK | wired | review | N | yes |
-| 13 | `add_event_handler` | T2 | OK | wired | review | N | partial |
+| 13 | `add_event_handler` | T2 | OK | wired | review | N | yes |
 | 14 | `remove_event_handler` | T1/T2 | OK | wired | review | N | yes |
 | 15 | `get_global_variables` | T3 | OK | wired | review | N | yes |
 | 16 | `take_snapshot` | T2 | OK | wired | review | N | yes |
 | 17 | `rollback` | T1/T2 | OK | wired | review | N | yes |
 | 18 | `diff_snapshots` | T3 | OK | wired | review | N | yes |
-| 19 | `run_in_sandbox` | T1/T2 | OK | wired | reviewed | N | partial |
+| 19 | `run_in_sandbox` | T1/T2 | OK | wired | reviewed | N | yes |
 | 20 | `confirm_sandbox_apply` | T1/T2 | OK | wired | review | N | yes |
 | 21 | `discard_sandbox` | T2 | OK | wired | review | N | yes |
 | 22 | `simulate_ticks` | T2 | OK | wired | review | N | yes |
@@ -42,7 +42,7 @@ Generated from `mcp-server/src/tools/registry.ts` with `npm run audit:tools`.
 | 32 | `suggest_ordering` | T3 | OK | wired | review | N | yes |
 | 33 | `validate_command` | T2 | OK | wired | review | N | yes |
 | 34 | `get_performance_stats` | T3 | OK | wired | review | N | yes |
-| 35 | `analyze_performance` | T2 | OK | wired | review | N | partial |
+| 35 | `analyze_performance` | T2 | OK | wired | review | N | yes |
 | 36 | `set_performance_threshold` | T1/T2 | OK | wired | review | N | yes |
 | 37 | `get_memory_usage` | T3 | OK | wired | review | N | yes |
 | 38 | `generate_terrain` | T1/T2 | OK | wired | review | N | yes |
@@ -53,7 +53,7 @@ Generated from `mcp-server/src/tools/registry.ts` with `npm run audit:tools`.
 | 43 | `create_ui` | T1/T2 | OK | wired | review | N | yes |
 | 44 | `set_ui_property` | T1/T2 | OK | wired | review | N | yes |
 | 45 | `get_ui_tree` | T3 | OK | wired | review | N | yes |
-| 46 | `bind_ui_click` | T2 | OK | wired | review | N | partial |
+| 46 | `bind_ui_click` | T2 | OK | wired | review | N | yes |
 | 47 | `create_animation_track` | T1/T2 | OK | wired | review | N | yes |
 | 48 | `play_animation` | T2 | OK | wired | review | N | yes |
 | 49 | `set_lighting` | T1/T2 | OK | wired | review | N | yes |
@@ -67,14 +67,14 @@ Generated from `mcp-server/src/tools/registry.ts` with `npm run audit:tools`.
 | 57 | `compare_sessions` | T2 | OK | wired | review | N | yes |
 | 58 | `list_templates` | T3 | OK | wired | review | N | yes |
 | 59 | `apply_template` | T1/T2 | OK | wired | reviewed | N | yes |
-| 60 | `add_template` | T2 | OK | wired | review | N | partial |
+| 60 | `add_template` | T2 | OK | wired | review | N | yes |
 | 61 | `get_time` | T3 | REVIEW | wired | review | N | yes |
 | 62 | `send_notification` | T2 | OK | wired | review | N | yes |
 | 63 | `batch_queue` | T2 | OK | wired | review | N | yes |
 | 64 | `cancel_command` | T2 | OK | wired | review | N | yes |
 | 65 | `train_model` | T2 | OK | wired | review | N | yes |
 | 66 | `compile_visual_graph` | T2 | OK | wired | review | N | yes |
-| 67 | `generate_test` | T1/T2 | OK | wired | review | N | partial |
+| 67 | `generate_test` | T1/T2 | OK | wired | review | N | yes |
 | 68 | `run_tests` | T1/T2 | OK | wired | review | N | yes |
 | 69 | `session_users` | T2 | OK | wired | review | N | yes |
 | 70 | `search_asset` | T1/T2 | OK | wired | review | N | yes |
@@ -84,18 +84,18 @@ Generated from `mcp-server/src/tools/registry.ts` with `npm run audit:tools`.
 | 74 | `git_commit` | T1/T2 | OK | wired | review | N | yes |
 | 75 | `git_log` | T2 | OK | wired | review | N | yes |
 | 76 | `git_rollback` | T1/T2 | OK | wired | review | N | yes |
-| 77 | `predict_bug` | T2 | OK | wired | review | N | partial |
+| 77 | `predict_bug` | T2 | OK | wired | review | N | yes |
 | 78 | `plan_game` | T2 | OK | wired | review | N | yes |
 | 79 | `execute_plan` | T1/T2 | OK | wired | review | N | yes |
-| 80 | `review_code` | T2 | OK | wired | review | N | partial |
-| 81 | `refactor_code` | T2 | OK | wired | review | N | partial |
+| 80 | `review_code` | T2 | OK | wired | review | N | yes |
+| 81 | `refactor_code` | T2 | OK | wired | review | N | yes |
 | 82 | `generate_asset` | T1/T2 | OK | wired | review | N | yes |
 | 83 | `optimize_performance` | T2 | OK | wired | review | N | yes |
 | 84 | `report_analytics` | T3 | OK | wired | review | N | yes |
 | 85 | `get_analytics` | T3 | OK | wired | review | N | yes |
 | 86 | `suggest_design` | T3 | OK | wired | review | N | yes |
 | 87 | `list_plugins` | T3 | REVIEW | wired | review | N | yes |
-| 88 | `load_plugin` | T2 | OK | wired | reviewed | N | partial |
+| 88 | `load_plugin` | T2 | OK | wired | reviewed | N | yes |
 | 89 | `set_breakpoint` | T1/T2 | OK | wired | review | N | yes |
 | 90 | `remove_breakpoint` | T1/T2 | OK | wired | review | N | yes |
 | 91 | `watch_variable` | T2 | OK | wired | review | N | yes |
@@ -112,7 +112,7 @@ Generated from `mcp-server/src/tools/registry.ts` with `npm run audit:tools`.
 | 102 | `generate_quest` | T1/T2 | OK | wired | review | N | yes |
 | 103 | `simulate_economy` | T2 | OK | wired | review | N | yes |
 | 104 | `suggest_balance` | T3 | OK | wired | review | N | yes |
-| 105 | `explain_code` | T2 | OK | wired | review | N | partial |
+| 105 | `explain_code` | T2 | OK | wired | review | N | yes |
 | 106 | `learning_mode` | T2 | OK | wired | review | N | yes |
 | 107 | `adjust_difficulty` | T2 | OK | wired | review | N | yes |
 | 108 | `set_difficulty_profile` | T1/T2 | OK | wired | review | N | yes |
@@ -127,6 +127,6 @@ Tier 1 and Tier 2 tools must be run against a live Roblox Studio place before th
 ## Summary
 
 - Total: 111 tools
-- Dispatch-safe "yes": 97
-- Dispatch-safe "partial": 14
+- Dispatch-safe "yes": 111 (all)
+- Dispatch-safe "partial": 0
 - Dispatch-safe "no": 0

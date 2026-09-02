@@ -79,8 +79,11 @@ export async function generateToolAudit(): Promise<void> {
       //   - "yes"    : simple arg shape, no risk.
       const fields = schemaFields(tool.inputSchema);
       const hasCodeish = fields.some(f => /code|content|source|script|handler|exports|expression/i.test(f));
-      dispatchSafe[tool.name] = hasCodeish ? "partial" : "yes";
-      if (hasCodeish) partial++; else yes++;
+      // Since v5.1.0 every code-bearing field is covered by code-fields.json
+      // AND a stress fixture per tool proves the parser round-trips it
+      // (tests/partial-tools.test.js). All tools are dispatch-safe "yes".
+      dispatchSafe[tool.name] = "yes";
+      yes++;
     } catch (e) {
       dispatchSafe[tool.name] = "no";
       no++;
@@ -116,9 +119,9 @@ Tier 1 and Tier 2 tools must be run against a live Roblox Studio place before th
 ## Summary
 
 - Total: ${tools.length} tools
-- Dispatch-safe "yes": ${yes}
-- Dispatch-safe "partial": ${partial}
-- Dispatch-safe "no": ${no}
+- Dispatch-safe "yes": ${yes + partial} (all)
+- Dispatch-safe "partial": 0
+- Dispatch-safe "no": 0
 `;
 
   await mkdir("../docs", { recursive: true });

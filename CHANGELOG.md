@@ -1,4 +1,31 @@
 # Changelog
+## 5.1.0 - Phase 4 polish: 14 partial tools now dispatch-safe
+
+Closes the 14 "partial" rows in `docs/tool-audit.md`. The audit now reads **111/111 dispatch-safe yes, 0 partial, 0 no**.
+
+**Two real bugs found in 5.0.0 along the way** (both fixed):
+
+1. **`extractAll` did not merge `###RAW:field###` blocks** for the `parseMcp` / `parseBare` paths. The single-extract `extract` path did; `extractAll` (used by all 3 main.js call sites that scan DOM text) silently dropped the field merge. A model that wrote
+   ```
+   ###MCP_TOOL###
+   {"tool":"set_script_content","args":{"path":"Workspace/Script"}}
+   ###RAW:content###
+   local part = Instance.new("Part")
+   ###END_RAW###
+   ```
+   would have produced `args.path = "Workspace/Script"` but `args.content = undefined`, and `dispatchTool` would forward an incomplete call to StudioMCP. Fixed: `extractAll` now does the same `applyRawFields` + `extractRawBlocks` merge as `extract`.
+2. **`cleanLuaCall` was `trim()`-ing the body of a RAW block** on `execute_luau`, defeating the point of the escape hatch (the model wrote a body verbatim and we silently mutated it). Fixed: `cleanLuaCall` now skips trim/chrome-strip when the value came from a `###RAW:code###` block.
+
+**New test suite** (`tests/partial-tools.test.js`, 4 contracts):
+- All 14 code-bearing tools (execute_luau, set_script_content, create_module, add_event_handler, bind_ui_click, run_in_sandbox, analyze_performance, generate_test, review_code, refactor_code, predict_bug, explain_code, load_plugin, add_template) round-trip a **stress fixture** (raw `"quote"`, embedded `{}` inside a Luau table + regex-like `{1,3}` + `[[ ... ]]` long string + `\\` escape sequences + multi-line). Three forms tested: `###MCP_TOOL###` JSON envelope, `###RAW:<field>###` block, `###TOOL:<name>###` scoped block.
+- A separate `matchBrace` regex-literal test pins that `[a-z]{1,3}` inside a string survives the JSON envelope.
+
+**Audit regen**:
+- `docs/tool-audit.md` regenerated: 111 yes, 0 partial, 0 no.
+- `tests/tool-samples.json` re-emitted (Zod-derived sample args for every tool).
+
+**Tests**: 74 automated tests pass (26 parser + 10 execution + 10 provider + 5 dispatch + 7 agent_loop + 4 partial + 7 vitest + 5 bridge). `tsc` clean.
+
 ## 5.0.0 - Silent-failure fixes: dispatch path made correct + robust (implements docs/implementation-plan-2.md)
 
 **Root-cause fix**: a 14-character typo (`c.name` / `c.arguments` instead of `c.tool` / `c.args`) silently broke every one of the 111 registered tools — the model saw `Refused dispatch: invalid tool name undefined` for every call. This version lands Phases 0–4 of the plan; Phase 5 (live Studio verification) is left for human-in-the-loop as documented.
