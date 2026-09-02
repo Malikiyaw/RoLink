@@ -491,7 +491,7 @@
     // If live list is tiny (<10) keep grouped 111 + live to avoid hiding search_game_tree
     if(tools && tools.length > 0 && tools.length < 10){
       const liveLines = tools.map(t => {
-        const nm = (t && (t as any).name) || (t as string);
+        const nm = (t && t.name) || (typeof t === "string" ? t : "?");
         return `- ${nm} (live)`;
       }).join("\n");
       toolBlock = "LIVE tools from bridge (" + tools.length + "):\n" + liveLines + "\n\nFULL 111 grouped fallback:\n" + TOOL_NOTES;

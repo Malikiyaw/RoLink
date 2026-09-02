@@ -1,4 +1,7 @@
 # Changelog
+## 4.0.5 - Fix bar invisible — JS syntax crash (bump rule)
+Fix `can't see the fucking buttons` — `core/main.js:494` had TypeScript `as any` causing `SyntaxError` so entire extension failed to inject. Removed TS syntax, bar now visible. Ensure `placeBar` fallback keeps bar fixed even if composer not found.
+
 ## 4.0.4 - Fix bar all buttons visible — wrap + gap polish (bump rule)
 Fix `can't see all buttons` : bar `gap 10→6px`, `flex-wrap:wrap`, `overflow:visible`, restore `Trace` button directly (was collapsed to `…`), ensure `Tools/Log/Trace/Workspace/Stop` all visible even on narrow composer.
 
