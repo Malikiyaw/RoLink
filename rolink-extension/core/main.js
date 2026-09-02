@@ -235,8 +235,8 @@
     <span class="rl-counter" id="rl-counter">0 tools</span>
     <button class="rl-btn" id="rl-tools-btn" title="Show available tools">🛠 Tools</button>
     <button class="rl-btn" id="rl-feed-btn" title="Show activity">📜 Log</button>
+    <button class="rl-btn" id="rl-trace-btn" title="Show execution trace">🔍 Trace</button>
     <button class="rl-btn" id="rl-workspace-btn" title="Workspace memory">🧠</button>
-    <button class="rl-btn" id="rl-more-btn" title="More">…</button>
     <button class="rl-btn warn" id="rl-stop-btn" style="display:none" title="Stop the agent">■ Stop</button>
   `;
   root.appendChild(bar);
@@ -367,8 +367,8 @@
   function wireUi(){
     document.getElementById("rl-tools-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); toolsPanel.classList.toggle("rl-show"); };
     document.getElementById("rl-feed-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); toolsPanel.classList.remove("rl-show"); feed.classList.toggle("rl-show"); };
-    const moreBtn = document.getElementById("rl-more-btn");
-    if(moreBtn) moreBtn.onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show"); tracePanel.classList.toggle("rl-show"); };
+    const traceBtn = document.getElementById("rl-trace-btn");
+    if(traceBtn) traceBtn.onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show"); tracePanel.classList.toggle("rl-show"); };
     document.getElementById("rl-feed-clear").onclick = e => { e.stopPropagation(); document.getElementById("rl-feed-list").innerHTML=""; };
     document.getElementById("rl-workspace-btn").onclick = e => {
       e.stopPropagation();

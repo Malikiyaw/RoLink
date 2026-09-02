@@ -1,4 +1,7 @@
 # Changelog
+## 4.0.4 - Fix bar all buttons visible — wrap + gap polish (bump rule)
+Fix `can't see all buttons` : bar `gap 10→6px`, `flex-wrap:wrap`, `overflow:visible`, restore `Trace` button directly (was collapsed to `…`), ensure `Tools/Log/Trace/Workspace/Stop` all visible even on narrow composer.
+
 ## 4.0.3 - Fix invisible AI commands — all 111 visible, search_game_tree alias
 Fix `search_game_tree / script_search / list_commands` invisible: prompt now forces `###MCP_TOOL###` JSON example, `buildSystemPrompt` keeps grouped 111 when live <10, `aliasMap` adds `search_game_tree→get_instances` etc so chip becomes visible and `bridge` not touched per request.
 
