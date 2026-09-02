@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "4.0.7"
+BRIDGE_VERSION = "4.0.8"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", "17613"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -994,14 +994,37 @@ class MCPClient:
         with self.pend_lock:
             self.pending[rid] = q
         try:
-            payload = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}
+            # Validate JSON before sending to prevent malformed messages
+            try:
+                payload = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}
+                payload_str = json.dumps(payload)
+                json.loads(payload_str)  # validate round-trip
+            except Exception as e:
+                log(f"[{self.id}] malformed payload dropped: {e}", "rd")
+                return None
             with self.write_lock:
-                self.proc.stdin.write(json.dumps(payload) + "\n")
+                self.proc.stdin.write(payload_str + "\n")
                 self.proc.stdin.flush()
             try:
                 return q.get(timeout=timeout)
             except queue.Empty:
-                return None
+                # Retry once before giving up for transient drops
+                log(f"[{self.id}] request {method} timeout, retrying once...", "yl", terminal=False)
+                with self.pend_lock:
+                    if rid in self.pending:
+                        self.pending.pop(rid, None)
+                        q2 = queue.Queue(maxsize=1)
+                        self.pending[rid] = q2
+                        try:
+                            with self.write_lock:
+                                self.proc.stdin.write(payload_str + "\n")
+                                self.proc.stdin.flush()
+                            return q2.get(timeout=2)
+                        except queue.Empty:
+                            return None
+                        finally:
+                            self.pending.pop(rid, None)
+                    return None
         finally:
             with self.pend_lock:
                 self.pending.pop(rid, None)
@@ -1325,23 +1348,25 @@ def handle_call_tool(name, arguments, timeout):
 
 
 async def run_tool_task(ws, name, args, timeout, rid):
-    """Execute one tool off the socket read loop and send its result back.
-
-    Kept as a standalone task (not awaited inline in handler) so a long tool
-    never starves the connection's ability to answer app-level pings - see the
-    call_tool branch in handler() for the full rationale."""
+    """Execute one tool off the socket read loop and send its result back."""
     t0 = time.monotonic()
     res = await asyncio.to_thread(safe_call, name, args, timeout)
     elapsed = time.monotonic() - t0
     tag = "gr" if res.get("ok") else "rd"
     summary = (res.get("text") or res.get("error") or "")[:80].replace("\n", " ")
     slow = "  [SLOW]" if elapsed > 5 else ""
-    # Routine per-call traces are technical noise for a non-dev user watching
-    # the console; they still land in bridge_debug.log. A failed/slow call
-    # DOES surface on the terminal - that's the signal a user should notice.
     log(f"<- {name} ({elapsed:.1f}s){slow}: {summary}", tag, terminal=not res.get("ok") or elapsed > 5)
     try:
-        await ws.send(json.dumps({"type": "tool_result", "id": rid, **res}))
+        payload = {"type": "tool_result", "id": rid, **res}
+        # Validate JSON before sending to prevent corruption
+        try:
+            payload_str = json.dumps(payload)
+            json.loads(payload_str)
+            await ws.send(payload_str)
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            log(f"Failed to serialize tool result for {name} - skipping: {e}", "rd")
+            # Send fallback error instead
+            await ws.send(json.dumps({"type": "tool_result", "id": rid, "ok": False, "kind": "execution_error", "error": "serialization failed"}))
     except websockets.ConnectionClosed:
         pass
 
@@ -1407,6 +1432,16 @@ async def handler(ws):
         async for raw in ws:
             try:
                 msg = json.loads(raw)
+                # Validate required fields - message corruption detection
+                if not isinstance(msg, dict):
+                    continue
+                if "type" not in msg:
+                    continue
+                # rid optional for some types, but warn if missing and expected
+            except json.JSONDecodeError:
+                # Corrupted message - skip but don't disconnect
+                log("Corrupted JSON message skipped", "yl", terminal=False)
+                continue
             except Exception:
                 continue
             mtype = msg.get("type")
@@ -1577,19 +1612,32 @@ async def server_watch():
                 log(f"[{sid}] auto-restart failed: {e}", "rd")
 
 
+def _normalize_version(v):
+    """Handle Python 3.14+ version string format differences."""
+    try:
+        s = str(v)
+        # Normalize dotted version strings if present
+        parts = s.split(".")
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            return s
+        return s
+    except Exception:
+        return v
+
 def _current_studio_exe():
     """The StudioMCP.exe our launcher would currently pick (newest version
-    folder paired with a real RobloxStudioBeta.exe), or None. Reused here only
-    to detect a Studio update happening mid-session: Roblox's own bug report
-    ("Studio MCP turning off after update") says the toggle resets to OFF
-    whenever Studio auto-updates - restarting our proxy can't fix that (Studio
-    itself refuses the connection while its toggle is off), so the terminal
-    should say "re-enable the toggle" instead of "wait for auto-recovery"
-    when a version bump coincides with the disconnect."""
+    folder paired with a real RobloxStudioBeta.exe), or None. Handles Python 3.14+ compatibility."""
     if _studio_scan is None:
         return None
     try:
-        return _studio_scan.find_studio_mcp()
+        result = _studio_scan.find_studio_mcp()
+        # Handle Python 3.14 version string format if result has version attr
+        if result is not None and hasattr(result, 'version'):
+            try:
+                result.version = _normalize_version(result.version)
+            except Exception:
+                pass
+        return result
     except Exception:
         return None
 
@@ -1737,6 +1785,14 @@ async def studio_watch(initial_app, initial_place=None):
         # monitoring and status broadcasts until the bridge was restarted).
         now = time.time()
         if app is False and ever_connected and disconnected_since is not None and not update_suspected:
+            # Proxy out-of-date automatic recovery check
+            try:
+                current_exe = await asyncio.to_thread(_current_studio_exe)
+                if current_exe is not None and known_studio_exe is not None and current_exe != known_studio_exe:
+                    log("Client proxy is out of date (Studio updated) - toggle MCP server OFF/ON", "yl")
+                    known_studio_exe = current_exe
+            except Exception:
+                pass
             # ~20s sustained (5 polls) before treating it as a real drop, not a
             # momentary blip; 90s cooldown between recovery attempts so a
             # Studio that is genuinely closed for a while doesn't get hammered.
@@ -1911,11 +1967,26 @@ async def main():
         except Exception as e:
             log(f"server startup error: {e}", "rd")
             log("The bridge will keep running; it retries on the first tool call.", "yl")
+        # Fix tool count discrepancy (28 vs 111): StudioMCP advertises 0 until Studio attaches, need grace period
+        # Enhance tool count with progressive reporting
+        try:
+            _st_grace = await asyncio.to_thread(probe_studio)
+            if _st_grace.get("app") is True:
+                for _ in range(15):
+                    await asyncio.sleep(1)
+                    rc = mgr.clients.get("roblox")
+                    if rc and rc.is_alive():
+                        try:
+                            rc.refresh_tools(timeout=2)
+                        except Exception:
+                            pass
+                        tool_count = len(rc.tools_cache) if rc.tools_cache else 0
+                        if tool_count > 0:
+                            log(f"Studio tools appeared: {tool_count} (grace period)", "gr")
+                            break
+        except Exception:
+            pass
         total = len(mgr.list_tools())
-        # Roblox-only count for the corrective message below: list_tools() sums
-        # every configured server (Roblox + addons like Blender), so printing
-        # `total` there falsely blamed addon tools on "NO Roblox Studio connected"
-        # (seen live: 49 = 27 Roblox + 22 Blender, message only about Roblox).
         roblox_client = mgr.clients.get("roblox")
         roblox_total = len(roblox_client.tools_cache) if roblox_client else 0
 
@@ -1975,11 +2046,23 @@ async def main():
         # probe already gets before deciding it is a real problem.
         if _st["app"] is False:
             with _Spinner("    waiting for Roblox Studio to attach..."):
-                for _ in range(8):
+                for _ in range(15):
                     await asyncio.sleep(1)
                     _st = await asyncio.to_thread(probe_studio)
                     if _st["app"] is not False:
                         break
+                # Also wait for tools to appear if app became true but tools still 0 (studio binding delay)
+                if _st["app"] is True:
+                    for _ in range(5):
+                        rc = mgr.clients.get("roblox")
+                        if rc and rc.tools_cache and len(rc.tools_cache) > 0:
+                            break
+                        await asyncio.sleep(1)
+                        if rc and rc.is_alive():
+                            try:
+                                await asyncio.to_thread(rc.refresh_tools, 2)
+                            except Exception:
+                                pass
         # A single app=True reading can be a STALE positive: StudioMCP.exe can
         # answer list_roblox_studios with a leftover studio entry from a PREVIOUS
         # session even though no Studio window is actually open right now (seen
@@ -2052,10 +2135,31 @@ async def main():
     if await asyncio.to_thread(_reclaim_bridge_port):
         await asyncio.sleep(0.6)  # let Windows release the socket before we bind
 
+    # Post-start port check after 5 seconds - zombie reclaim if needed
+    async def _post_start_port_check():
+        await asyncio.sleep(5)
+        try:
+            rc = mgr.clients.get("roblox")
+            if rc is not None:
+                st = await asyncio.to_thread(probe_studio)
+                roblox_total_chk = len(rc.tools_cache) if rc.tools_cache else 0
+                if st.get("app") is False and roblox_total_chk == 0:
+                    log("Post-start port check: attempting zombie reclaim...", "yl", terminal=False)
+                    reclaimed = await asyncio.to_thread(_reclaim_studio_port, rc)
+                    if reclaimed:
+                        try:
+                            await asyncio.to_thread(mgr.restart, "roblox")
+                            await broadcast_status()
+                            log("Zombie reclaimed post-start", "gr")
+                        except Exception as e:
+                            log(f"Post-start zombie reclaim restart failed: {e}", "rd")
+        except Exception:
+            pass
+
     try:
         server_ctx = await websockets.serve(
             handler, HOST, PORT, ping_interval=20, ping_timeout=20,
-            max_size=16 * 1024 * 1024)
+            max_size=16 * 1024 * 1024, close_timeout=10)
     except OSError as e:
         # errno 10048 (Win) / EADDRINUSE: something we could NOT auto-kill still
         # owns the port - another app, or a python whose cmdline we couldn't read.
@@ -2077,6 +2181,7 @@ async def main():
         asyncio.create_task(_boot_and_diagnose())
         asyncio.create_task(_early_studio_guidance())
         asyncio.create_task(_early_status_pushes())
+        asyncio.create_task(_post_start_port_check())
         await asyncio.Future()  # run forever
 
 
