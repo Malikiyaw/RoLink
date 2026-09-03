@@ -121,7 +121,13 @@
 .rl-chip-head .rl-ico { width: 18px; height: 18px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--cat) 22%, transparent); color: #fff; font-size: 10px; font-weight: 700; flex-shrink: 0; }
 .rl-chip-head .rl-name { color: #fff; font-weight: 700; }
 .rl-chip-head .rl-detail { color: #8b949e; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.rl-chip-head .rl-time { color: #8b949e; font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.rl-chip-head .rl-gen { color: #79c0ff; font-size: 10px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
 .rl-chip-head .rl-chevron { margin-left: auto; font-size: 10px; opacity: 0.6; transition: transform .18s ease; }
+.rl-chip-foot { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid rgba(255,255,255,0.06); }
+.rl-chip-foot .rl-copy { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); color: #e6edf3; font-size: 10.5px; padding: 2px 8px; border-radius: 6px; cursor: pointer; }
+.rl-chip-foot .rl-copy:hover { background: rgba(255,255,255,0.12); }
+.rl-chip-foot .rl-dur { color: #8b949e; font-size: 10px; margin-left: auto; }
 .rl-chip.open .rl-chevron { transform: rotate(180deg); }
 .rl-chip-body { max-height: 0; overflow: hidden; transition: max-height .22s ease; background: rgba(255,255,255,0.02); }
 .rl-chip.open .rl-chip-body { max-height: 420px; overflow: auto; }

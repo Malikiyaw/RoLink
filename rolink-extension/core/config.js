@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "5.1.0";
+const ROLINK_VERSION = "5.2.0";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
@@ -88,6 +88,8 @@ Groups:
 
 For workspace explores use search_game_tree — ALWAYS emit ###MCP_TOOL### JSON.
 Never describe the tool in prose — emit the JSON block.
+For multi-step builds use batch_queue with {commands:[{tool,args}]} (max 20, no nesting).
+Chain async jobs via IDs: pass generate_asset/generate_sound generationId to wait/run steps; never invent IDs.
 `.trim();
 
 function buildSystemPrompt(provider) {

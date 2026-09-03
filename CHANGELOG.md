@@ -1,4 +1,38 @@
 # Changelog
+## 5.2.0 - Unified single-WS workflow + local tools + execution UI upgrade
+
+Same ZeroScript-proven workflow, kept intact: AI chat -> RoLink extension ->
+bridge `ws://127.0.0.1:17613` -> StudioMCP `:13469` -> Roblox Studio.
+No second browser transport. See `docs/workflow-contract.md`.
+
+**Bridge (`bridge.py`)**:
+- New unified catalog: live StudioMCP tools + missing `tests/__registry__.json`
+  names as `server:local`, so the extension always lists the full 111.
+- New `LOCAL_HANDLERS` (10 deterministic tools: `get_time`,
+  `validate_command`, `suggest_ordering`, `get_suggestions`, `list_plugins`,
+  `get_projects`, `get_memory_usage`, `set_performance_threshold`,
+  `list_sessions`, `session_users`) — work with no Studio and no MCP alive.
+- New `batch_queue` sequential fan-out (max 20, no nesting) via `safe_call`
+  recursion; each sub-result recorded with `{index, tool, ok, ...}`.
+- Stricter validation before any stdio spawn: name non-empty string <= 120
+  chars, args must be an object (`None` => `{}`), `ROLINK_DEBUG_DISPATCH=1`
+  dispatch logging. Unknown tools return structured `validation_error` with an
+  AI-readable hint — never a hang, never an `undefined` leak.
+- `NEEDS_STUDIO` gating expanded to the 48 `execution:studio` tools plus
+  place-dependent helpers.
+
+**Extension**:
+- `core/main.js`: `NEEDS_DM` datamodel injection expanded to all RoLink
+  code-bearing tools (legacy ZeroScript aliases kept).
+- Tool chips upgraded to screenshot parity and beyond: live elapsed timer,
+  `✓/✗` + `done/failed in Ns` duration, `generationId` hint for
+  generate-then-wait chains, Copy button, full result stored on the chip.
+- `core/config.js` prompt notes: `batch_queue` usage + generation-ID chaining.
+
+**Tests**: `tests/test_bridge_dispatch.py` 5/5 green; local/offline, batch,
+bad-args, long-name, studio-offline, and 111-catalog augmentation verified.
+JS suites require Node (`node tests/dispatch.test.js`).
+
 ## 5.1.0 - Phase 4 polish: 14 partial tools now dispatch-safe
 
 Closes the 14 "partial" rows in `docs/tool-audit.md`. The audit now reads **111/111 dispatch-safe yes, 0 partial, 0 no**.

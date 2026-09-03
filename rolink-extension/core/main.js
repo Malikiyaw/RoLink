@@ -449,24 +449,58 @@
     const chip = el("div", "rl-chip");
     const cat=getToolCategory(name);
     chip.dataset.cat=cat;
+    chip.dataset.t0=String(Date.now());
     const detail=shortArgSummary(name, args);
-    chip.innerHTML = `<div class="rl-chip-head"><span class="rl-spinner"></span><span class="rl-ico">⚙</span><span class="rl-name">${escapeHtml(name)}</span><span class="rl-detail">${escapeHtml(detail)}</span><span class="rl-chevron">▼</span></div><div class="rl-chip-body"><pre></pre></div>`;
+    // generationId link hint (e.g. generate_mesh -> wait_job_finished flow)
+    let genHint="";
+    try{
+      const gid=args && (args.generationId||args.generation_id||args.id);
+      if(typeof gid==="string" && gid.length>=8) genHint=` <span class="rl-gen">${escapeHtml(String(gid).slice(0,18))}</span>`;
+    }catch{}
+    chip.innerHTML = `<div class="rl-chip-head"><span class="rl-spinner"></span><span class="rl-ico">⚙</span><span class="rl-name">${escapeHtml(name)}</span><span class="rl-detail">${escapeHtml(detail)}</span><span class="rl-time">0s</span>${genHint}<span class="rl-chevron">▼</span></div><div class="rl-chip-body"><pre></pre><div class="rl-chip-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur"></span></div></div>`;
     chip.querySelector(".rl-chip-head").onclick=(e)=>{ e.stopPropagation(); chip.classList.toggle("open"); };
+    try{
+      const pre=chip.querySelector(".rl-chip-body pre");
+      const btn=chip.querySelector(".rl-copy");
+      if(btn) btn.onclick=(e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(pre?pre.textContent:""); btn.textContent="Copied"; setTimeout(()=>{btn.textContent="Copy";},1200); }catch{} };
+    }catch{}
+    // Live elapsed timer (ZeroScript parity: chip timer keeps ticking while running)
+    try{
+      const tEl=chip.querySelector(".rl-time");
+      const t0=Date.now();
+      const iv=setInterval(()=>{
+        if(!chip.isConnected){ clearInterval(iv); return; }
+        if(chip.classList.contains("rl-ok")||chip.classList.contains("rl-err")){ clearInterval(iv); return; }
+        const s=((Date.now()-t0)/1000);
+        if(tEl) tEl.textContent=(s<10?s.toFixed(1)+"s":Math.round(s)+"s");
+      },200);
+      chip._timer=iv;
+    }catch{}
     return chip;
   }
   function chipFinalize(chip, name, res){
     chip.classList.remove("rl-err"); chip.classList.add(res.ok ? "rl-ok" : "rl-err");
+    try{ if(chip._timer) clearInterval(chip._timer); }catch{}
     const ico=res.ok?"✓":"✗";
-    let body=res.ok ? (res.text||"done") : (res.error||"failed");
-    if(typeof body==="string" && body.length>800) body=body.slice(0,760)+"…";
+    const full=res.ok ? (res.text||"done") : (res.error||"failed");
+    let body=full;
+    if(typeof body==="string" && body.length>2000) body=body.slice(0,1960)+"… (truncated, Copy for full)";
+    const secs=chip.dataset.t0?((Date.now()-Number(chip.dataset.t0))/1000):0;
+    const dur=secs<10?secs.toFixed(1)+"s":Math.round(secs)+"s";
     const head=chip.querySelector(".rl-chip-head");
     if(head){
       const icoEl=head.querySelector(".rl-ico"); if(icoEl) icoEl.textContent=ico;
-      const d=head.querySelector(".rl-detail"); if(d) d.textContent=shorten(String(body).replace(/\n/g," "), 120);
+      const d=head.querySelector(".rl-detail"); if(d) d.textContent=shorten(String(full).replace(/\n/g," "), 120);
+      const tEl=head.querySelector(".rl-time"); if(tEl) tEl.textContent=dur;
+      const sp=head.querySelector(".rl-spinner"); if(sp) sp.style.display="none";
     }
     const pre=chip.querySelector(".rl-chip-body pre");
     if(pre) pre.textContent=String(body);
+    const durEl=chip.querySelector(".rl-dur");
+    if(durEl) durEl.textContent=(res.ok?"done in ":"failed in ")+dur;
+    // Result-row semantics: collapsed result body, head shows outcome (screenshot parity)
     chip.classList.add("open");
+    try{ chip.dataset.full=String(full).slice(0,8000); }catch{}
   }
 
   // ── THE SYSTEM PROMPT ─────────────────────────────────────────────────────
@@ -617,7 +651,9 @@ ${customBlock}
     // is honoured by the next call.
     if(args && typeof args === "object"){
       if(!args.datamodel_type && A.focusedDataModel){
-        const NEEDS_DM = /^(execute_luau|multi_edit|script_read|script_grep|inspect_instance|start_stop_play|search_game_tree|delete_instance|set_property|get_property|generate_asset|search_assets|import_asset|insert_asset|search_asset|get_console_output|get_snapshot)$/i;
+        // Code-bearing + instance-mutating tools need the focused DataModel.
+        // RoLink names first, ZeroScript legacy aliases kept for compat.
+        const NEEDS_DM = /^(execute_luau|set_script_content|create_module|add_event_handler|bind_ui_click|run_in_sandbox|run_function|get_script_content|create_instance|clone_instance|move_instance|delete_instance|set_properties|get_property_value|get_all_properties|generate_asset|import_asset|search_asset|get_snapshot|take_snapshot|multi_edit|script_read|script_grep|inspect_instance|start_stop_play|search_game_tree|set_property|get_property|get_console_output)$/i;
         if(NEEDS_DM.test(name)) args = Object.assign({}, args, { datamodel_type: A.focusedDataModel });
       }
       if(!args.studio_id && A.currentStudioId && name !== "list_roblox_studios"){

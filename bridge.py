@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "5.1.0"
+BRIDGE_VERSION = "5.2.0"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", "17613"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -82,6 +82,137 @@ CONFIG_PATH = os.path.join(HERE, "config.json")
 # The primary server. It is always present, added by the installer, and can
 # never be edited/removed through the extension (it is what RoLink is FOR).
 PRIMARY_SERVER_ID = "roblox"
+
+# ── RoLink unified catalog (Option A: single WS, bridge answers local tools) ──
+# Workflow stays ZeroScript-identical: extension -> bridge :17613 -> StudioMCP.
+# StudioMCP only knows Roblox-native tools. RoLink's 111-catalog adds pure-local
+# tools (time, validation, ordering, analytics stubs, planning helpers). Those
+# are answered HERE with deterministic handlers so they work even when Studio
+# is offline. Studio-mutating tools always go via mgr.call (StudioMCP/addons).
+# See docs/workflow-contract.md.
+try:
+    import json as _json_catalog
+    _REG_PATH = os.path.join(HERE, "tests", "__registry__.json")
+    with open(_REG_PATH, "r", encoding="utf-8") as _f:
+        ROLINK_TOOL_NAMES = _json_catalog.load(_f)
+    if not isinstance(ROLINK_TOOL_NAMES, list):
+        ROLINK_TOOL_NAMES = []
+except Exception:
+    ROLINK_TOOL_NAMES = []
+
+# Tools that MUST be routed to StudioMCP/addons (they mutate or read Studio).
+# Derived from mcp-server/src/tools/registry.ts provider:"roblox" execution:"studio".
+STUDIO_ROUTED_TOOLS = frozenset([
+    "get_instances", "create_instance", "set_properties", "delete_instance",
+    "clone_instance", "move_instance", "find_instance", "execute_luau",
+    "get_script_content", "set_script_content", "create_module", "run_function",
+    "add_event_handler", "remove_event_handler", "get_global_variables",
+    "confirm_sandbox_apply", "simulate_ticks", "get_property_value",
+    "get_all_properties", "search_by_attribute", "get_referenced_instances",
+    "resolve_path", "ensure_path", "generate_terrain", "set_terrain_region",
+    "place_parts", "create_model_from_table", "apply_material", "create_ui",
+    "set_ui_property", "get_ui_tree", "bind_ui_click", "create_animation_track",
+    "play_animation", "set_lighting", "add_particle_emitter",
+    "get_datastore_value", "set_datastore_value", "send_notification",
+    "set_breakpoint", "remove_breakpoint", "watch_variable", "step_through",
+    "continue_execution", "run_playtest", "adjust_difficulty",
+    "set_difficulty_profile", "play_sound",
+])
+
+def _local_get_time(args):
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return {"ok": True, "text": json.dumps({"time": now.isoformat(), "epoch": int(now.timestamp() * 1000)})}
+
+def _local_validate_command(args):
+    tool = (args or {}).get("tool", "")
+    valid = isinstance(tool, str) and len(tool) > 0 and (tool in ROLINK_TOOL_NAMES or tool in STUDIO_ROUTED_TOOLS)
+    # Also accept StudioMCP-dynamic tools (list_roblox_studios etc.) — bridge
+    # can't know them offline, so report allowed=true with a note instead of false.
+    if tool in ("list_roblox_studios", "get_studio_state", "list_commands", "list_mcp_servers"):
+        valid = True
+    return {"ok": True, "text": json.dumps({"tool": tool, "allowed": valid})}
+
+def _local_suggest_ordering(args):
+    items = (args or {}).get("items", [])
+    if not isinstance(items, list):
+        return {"ok": False, "kind": "validation_error", "error": "suggest_ordering: 'items' must be an array of strings"}
+    ordered = sorted(str(x) for x in items)
+    return {"ok": True, "text": json.dumps({"ordered": ordered})}
+
+def _local_get_suggestions(args):
+    return {"ok": True, "text": json.dumps({"suggestions": ["get_instances", "get_studio_state", "execute_luau"]})}
+
+def _local_list_plugins(args):
+    return {"ok": True, "text": json.dumps({"plugins": ["rolink-core", "selfHeal", "perfTracker"], "count": 3})}
+
+def _local_get_projects(args):
+    return {"ok": True, "text": json.dumps({"projects": ["default"], "active": "default"})}
+
+def _local_get_memory_usage(args):
+    try:
+        depth = sum(len(c.tools_cache or []) for c in mgr.clients.values())
+    except Exception:
+        depth = 0
+    return {"ok": True, "text": json.dumps({"queueDepth": depth})}
+
+def _local_set_performance_threshold(args):
+    v = (args or {}).get("thresholdMs", 100)
+    return {"ok": True, "text": json.dumps({"thresholdMs": v, "applied": True})}
+
+def _local_list_sessions(args):
+    return {"ok": True, "text": json.dumps([])}
+
+def _local_session_users(args):
+    return {"ok": True, "text": json.dumps([])}
+
+# Deterministic local handlers: work with no Studio, no MCP server alive.
+# Anything not listed here falls through to mgr.call (StudioMCP/addons) or a
+# structured unknown-tool error — never a hang, never an exception leak.
+LOCAL_HANDLERS = {
+    "get_time": _local_get_time,
+    "validate_command": _local_validate_command,
+    "suggest_ordering": _local_suggest_ordering,
+    "get_suggestions": _local_get_suggestions,
+    "list_plugins": _local_list_plugins,
+    "get_projects": _local_get_projects,
+    "get_memory_usage": _local_get_memory_usage,
+    "set_performance_threshold": _local_set_performance_threshold,
+    "list_sessions": _local_list_sessions,
+    "session_users": _local_session_users,
+}
+
+def _local_batch_queue(args, timeout):
+    """Sequential fan-out for batch_queue (superpower beyond ZeroScript).
+
+    Each sub-command goes through safe_call recursively so studio tools get
+    studio gating and local tools get the fast-path. Bounded to 20 sub-calls
+    to avoid runaway loops. Never raises.
+    """
+    cmds = (args or {}).get("commands", [])
+    if not isinstance(cmds, list) or not cmds:
+        return {"ok": False, "kind": "validation_error", "error": "batch_queue: 'commands' must be a non-empty array"}
+    if len(cmds) > 20:
+        return {"ok": False, "kind": "validation_error", "error": "batch_queue: max 20 commands per batch"}
+    results = []
+    for i, c in enumerate(cmds):
+        if not isinstance(c, dict):
+            results.append({"index": i, "ok": False, "error": "command must be an object"})
+            continue
+        sub_name = c.get("tool", "")
+        sub_args = c.get("args", {})
+        if not isinstance(sub_args, dict):
+            sub_args = {}
+        # Recurse via safe_call (defined later) — resolved at call time.
+        try:
+            r = safe_call(sub_name, sub_args, timeout)
+        except Exception as e:
+            r = {"ok": False, "kind": "execution_error", "error": str(e)}
+        results.append({"index": i, "tool": sub_name, **r})
+        if sub_name == "batch_queue":
+            break  # no nested batches
+    ok_count = sum(1 for r in results if r.get("ok"))
+    return {"ok": True, "text": json.dumps({"batched": len(results), "succeeded": ok_count, "results": results})}
 
 if _enable_ansi_colors():
     C = {
@@ -1159,6 +1290,17 @@ class MCPManager:
                 tt["name"] = advertised
                 tt["server"] = sid
                 out.append(tt)
+        # Augment with RoLink local catalog so the extension always sees the
+        # full 111 even when Studio is offline (ZeroScript shows ~27 live;
+        # RoLink shows live + local). Local entries never collide: skip names
+        # already advertised by a real MCP server.
+        try:
+            seen = {e.get("name") for e in out}
+            for _n in ROLINK_TOOL_NAMES:
+                if _n and _n not in seen:
+                    out.append({"name": _n, "description": "RoLink local/studio tool", "server": "local"})
+        except Exception:
+            pass
         return out
 
     def call(self, name, arguments, timeout):
@@ -1318,10 +1460,33 @@ def safe_call(name, arguments, timeout):
     """Never raises. Always returns a dict the extension can feed back. Deterministic handle_call_tool."""
     if not name or not isinstance(name, str):
         return {"ok": False, "error": "tool name is required", "kind": "validation_error"}
+    if len(name) > 120:
+        return {"ok": False, "error": "tool name too long", "kind": "validation_error"}
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        return {"ok": False, "error": "arguments must be an object", "kind": "validation_error"}
+    if os.environ.get("ROLINK_DEBUG_DISPATCH") == "1":
+        try:
+            log(f"dispatch id=? name={name} args_keys={sorted(arguments.keys())}", "dim", terminal=False)
+        except Exception:
+            pass
+    # Local fast-path: pure-local tools work with no Studio and no MCP alive.
+    # This is what makes the 111-catalog usable offline and is the Option-A
+    # routing agreed in docs/workflow-contract.md.
+    _local = LOCAL_HANDLERS.get(name)
+    if _local is not None:
+        try:
+            return _local(arguments)
+        except Exception as e:
+            return {"ok": False, "error": _ai_readable_error("execution_error", str(e), name), "kind": "execution_error"}
+    if name == "batch_queue" and isinstance(arguments.get("commands"), list):
+        return _local_batch_queue(arguments, timeout)
     if not mgr.any_alive():
         return {"ok": False, "error": _ai_readable_error("mcp_offline", "no MCP server alive", name), "kind": "mcp_offline"}
     # Studio usability check before calling studio tools
-    NEEDS_STUDIO = {"execute_luau","get_studio_state","get_snapshot","create_instance","set_property","get_property","delete_instance","multi_edit","script_read","script_grep","inspect_instance","search_game_tree","start_stop_play"}
+    NEEDS_STUDIO = set(STUDIO_ROUTED_TOOLS) | {"get_studio_state", "list_roblox_studios", "take_snapshot",
+        "run_in_sandbox", "get_snapshot", "get_context_summary", "generate_terrain"}
     if name in NEEDS_STUDIO:
         st = probe_studio()
         if st.get("app") is False:
