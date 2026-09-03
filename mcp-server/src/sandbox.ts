@@ -22,22 +22,77 @@ export interface SandboxResult {
   sanitized: string;
 }
 
+/**
+ * Normalize render bleed before any check: BOM/ZWSP/NBSP, smart quotes.
+ * Returns the code Studio will actually receive.
+ */
+export function normalizeLuau(code: string): string {
+  return String(code || "")
+    .replace(/[\u200b\u200c\u200d\ufeff]/g, "").replace(/^\uFEFF/, "")
+    .replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/\u00a0/g, " ");
+}
+
+/** String/comment-aware balance scan: braces inside literals never count. */
+function scanBalance(code: string): { paren: number; brace: number; bracket: number; unterminated: string | null } {
+  let paren = 0, brace = 0, bracket = 0;
+  let i = 0; const n = code.length;
+  let str: string | null = null; // '"', "'", or "]]" (long string)
+  while (i < n) {
+    const c = code[i];
+    if (str === '"' || str === "'") {
+      if (c === "\\") { i += 2; continue; }
+      if (c === str) str = null;
+      i++; continue;
+    }
+    if (str === "]]") {
+      if (c === "]" && code[i + 1] === "]") { str = null; i += 2; continue; }
+      i++; continue;
+    }
+    if (c === "-" && code[i + 1] === "-") {
+      if (code[i + 2] === "[" && code[i + 3] === "[") {
+        const end = code.indexOf("]]", i + 4); i = end === -1 ? n : end + 2; continue;
+      }
+      const nl = code.indexOf("\n", i + 2); i = nl === -1 ? n : nl + 1; continue;
+    }
+    if (c === '"' || c === "'") { str = c; i++; continue; }
+    if (c === "[" && code[i + 1] === "[") { str = "]]"; i += 2; continue; }
+    if (c === "(") paren++; else if (c === ")") paren--;
+    else if (c === "{") brace++; else if (c === "}") brace--;
+    else if (c === "[") bracket++; else if (c === "]") bracket--;
+    i++;
+  }
+  return { paren, brace, bracket, unterminated: str };
+}
+
 export function validateLuau(code: string): SandboxResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const norm = normalizeLuau(code);
 
-  if (code.length > 50000) errors.push("code too large (max 50k)");
-  if ((code.match(/\(/g) || []).length !== (code.match(/\)/g) || []).length) errors.push("unbalanced parentheses");
+  if (!norm.trim()) {
+    errors.push("empty code after stripping render chrome");
+    return { ok: false, errors, warnings, sanitized: norm };
+  }
+  if (norm.length > 50000) errors.push("code too large (max 50k)");
+  if (norm.startsWith("```") || /^(?:copy\s+code|copy|json)(?![A-Za-z0-9_(])[\s]/i.test(norm))
+    errors.push("render chrome prefix (Copy/fence) — strip before sending to Studio");
+  if (norm.trimEnd().endsWith("```"))
+    errors.push("render chrome suffix (fence) — strip before sending to Studio");
+  const bal = scanBalance(norm);
+  if (bal.unterminated) errors.push(`unterminated ${bal.unterminated === "]]" ? "long string" : "string literal"}`);
+  if (bal.paren !== 0) errors.push("unbalanced parentheses");
+  if (bal.brace !== 0) errors.push("unbalanced braces");
+  if (bal.bracket !== 0) errors.push("unbalanced brackets");
   // check end count roughly
-  const opens = (code.match(/\b(function|if|for|while|do)\b/g) || []).length;
-  const ends = (code.match(/\bend\b/g) || []).length;
+  const opens = (norm.match(/\b(function|if|for|while|do)\b/g) || []).length;
+  const ends = (norm.match(/\bend\b/g) || []).length;
   if (opens > ends + 2) warnings.push(`Possible missing 'end' (opens ${opens} > ends ${ends})`);
 
-  for (const b of BLOCKED) if (b.test(code)) errors.push(`blocked pattern ${b}`);
+  for (const b of BLOCKED) if (b.test(norm)) errors.push(`blocked pattern ${b}`);
 
-  for (const w of WARN_PATTERNS) if (w.re.test(code)) warnings.push(w.msg);
+  for (const w of WARN_PATTERNS) if (w.re.test(norm)) warnings.push(w.msg);
 
-  return { ok: errors.length === 0, errors, warnings, sanitized: code };
+  return { ok: errors.length === 0, errors, warnings, sanitized: norm };
 }
 
 export function makeSandboxTestHarness(code: string, tests: string): string {

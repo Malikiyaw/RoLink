@@ -1,6 +1,6 @@
 {
   "name": "rolink-mcp-server",
-  "version": "5.2.0",
+  "version": "5.3.0",
   "description": "RoLink MCP server - bridge between AI and Roblox Studio",
   "type": "module",
   "scripts": {
@@ -15,6 +15,7 @@
     "test:agent_loop": "node ../tests/agent_loop.test.js",
     "test:partial": "node ../tests/partial-tools.test.js",
     "generate:code-fields": "tsx ../scripts/generate-code-fields-impl.ts",
+    "generate:prompts": "tsx ../scripts/generate-tool-prompts.ts",
     "generate:fixtures": "tsx ../scripts/generate-tool-fixtures-impl.ts",
     "audit:tools": "tsx ../scripts/generate-tool-audit-impl.ts"
   },

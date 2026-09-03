@@ -35,7 +35,14 @@
   const LUA_END_RE = /###\s*end[_\- ]?lua\s*###/i;
   const LUA_DEFAULT_DM = "Edit";
   const DSML_RE = /<[\s\/]*[|｜][\s|｜]*DSML[\s|｜]*[|｜]/i;
-  const CODE_CHROME_RE = /^(?:json|copy)\s+/i;
+  // Extended chrome stripping (Kimi/GLM/Qwen render bleed): ```lua fences,
+  // "Copy"/"Copy code" button captions, BOM/ZWSP/NBSP, smart quotes. The
+  // negative lookahead protects legit identifiers: Copy(x), copycat,
+  // jsonify are never stripped (requires trailing whitespace so a script
+  // genuinely starting with Copy(x) survives).
+  const CODE_CHROME_RE = /^(?:```(?:lua|luau|json)?|copy\s+code|json|copy)(?![A-Za-z0-9_(])[\s\u200b\u200c\u200d\ufeff]*/i;
+  const CODE_CHROME_TRAIL_RE = /[\s\u200b\u200c\u200d\ufeff]*```[\s\u200b\u200c\u200d\ufeff]*$/;
+  const ZWSP_RE = /[\u200b\u200c\u200d\ufeff]/g;
 
   // Fallback list (used only when code-fields.js didn't load). Kept short on
   // purpose — it is NOT the source of truth. The real list is in
@@ -67,7 +74,12 @@
   // trailing whitespace so it never eats a legitimate identifier like
   // `Copy(x)` that a script might genuinely start with.
   function stripCodeChrome(code) {
-    return String(code || "").replace(CODE_CHROME_RE, "");
+    let s = String(code || "").replace(ZWSP_RE, "").replace(/^\uFEFF/, "");
+    // Smart quotes / NBSP from rich-text renders break Studio loadstring.
+    s = s.replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/\u00a0/g, " ");
+    s = s.replace(CODE_CHROME_RE, "");
+    s = s.replace(CODE_CHROME_TRAIL_RE, "");
+    return s;
   }
 
   // Find the first LUA start marker at or after `from`. Returns { pos, len, dm }
@@ -346,18 +358,24 @@
   // opted out of JSON escaping for that field, so we don't second-guess.
   function cleanLuaCall(call) {
     if (!call || call.tool !== "execute_luau") return call;
-    const code = call.args && call.args.code;
+    let code = call.args && call.args.code;
     if (typeof code !== "string") return call;
     const fromRaw = call.rawFields && Object.prototype.hasOwnProperty.call(call.rawFields, "code");
-    const s = findLuaStart(code);
-    if (s.pos !== -1) {
+    // Multi-pass: nested/duplicate markers (model wraps twice) are stripped
+    // until fixpoint, max 3 passes. Idempotent — running twice is a no-op.
+    for (let pass = 0; pass < 3; pass++) {
+      const s = findLuaStart(code);
+      if (s.pos === -1) break;
       const e = findLuaEnd(code, s.pos + s.len);
-      call.args.code = code.slice(s.pos + s.len, e === -1 ? code.length : e).trim();
+      code = code.slice(s.pos + s.len, e === -1 ? code.length : e).trim();
       if (!call.args.datamodel_type) call.args.datamodel_type = s.dm;
-    } else if (!fromRaw) {
-      // No ###LUA### markers and the value did NOT come from a RAW block —
-      // this is the JSON-envelope path. Apply stripCodeChrome so a Kimi/GLM
-      // "Copy " prefix at the start of the body is removed. Idempotent.
+    }
+    if (fromRaw) {
+      // RAW block: model opted out of JSON escaping — pass through verbatim
+      // except marker residue already sliced above.
+      call.args.code = code;
+    } else {
+      // JSON-envelope path: strip render chrome (Copy/fences/ZWSP/quotes).
       call.args.code = stripCodeChrome(code.trim());
     }
     return call;
@@ -543,6 +561,11 @@
     const source = String(text || "");
     if (/###RAW:[^#]+###/.test(source) && !/###END_RAW###/.test(source)) return true;
     if (/###TOOL:[A-Za-z0-9_.-]+###/.test(source) && !/###END_TOOL###/.test(source)) return true;
+    // A streaming ###LUA### block without its ###END_LUA### is still open:
+    // without this, waitForReply verdicts premature `text` mid-stream and the
+    // call is never dispatched (no chip). LUA_START_RE/LUA_END_RE are not
+    // global so .test() is stateless here.
+    if (LUA_START_RE.test(source) && !LUA_END_RE.test(source)) return true;
     const idx = source.lastIndexOf(START_M);
     if (idx >= 0) {
       const brace = source.indexOf("{", idx + START_M.length);

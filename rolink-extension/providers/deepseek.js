@@ -524,7 +524,13 @@ const ZSProvider = (() => {
       for (let i = 0; i < kids.length; i++) {
         const txt = (kids[i].textContent || "");
         const tLow = txt.toLowerCase();
-        const isStart = tLow.includes("###mcp_tool###") || tLow.includes("###lua###") || tLow.includes("```lua") || tLow.includes("```json");
+        // Accept every shape parser.js extractAll handles: MCP marker, LUA
+        // marker, TOOL-scoped blocks, fenced lua/json, and bare JSON envelopes
+        // {"tool":...} / {"command":...}. A block the parser sees but the
+        // spotter misses falls back to body-insert (invisible chip).
+        const isStart = tLow.includes("###mcp_tool###") || tLow.includes("###lua###") || tLow.includes("###tool:")
+          || tLow.includes("```lua") || tLow.includes("```json")
+          || /"(tool|command)"\s*:\s*"/i.test(txt);
         if (!isStart) continue;
         let runEnd = i;
         if (tLow.includes("###mcp_tool###")) {

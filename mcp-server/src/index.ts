@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import { commandQueue } from "./commandQueue.js";
 import { tools, aliasMap } from "./tools/registry.js";
+import { toolPrompts, getToolPrompt } from "./tools/toolPrompts.js";
 import { PROTOCOL_VERSION } from "../../shared/protocol.js";
 import { rollbackManager } from "./rollback.js";
 import { perfTracker } from "./perfTracker.js";
@@ -101,7 +102,14 @@ app.get("/queue/wait/:id", async (req, res) => {
   try { const result = await commandQueue.waitForResult(req.params.id, timeout); res.json({ ok: true, result }); } catch (e: any) { res.status(504).json({ ok: false, error: e.message }); }
 });
 app.get("/logs", (req, res) => { const projectId = req.query.projectId as string | undefined; const limit = Number(req.query.limit ?? 50); const logs = teamLog.query({ projectId, limit }); res.json({ ok:true, logs }); });
-app.get("/tools", (_req, res) => { res.json({ ok: true, tools: tools.map(t => ({ name: t.name, description: t.description, provider: (t as any).provider||"rolink", execution: (t as any).execution||"local" })), aliases: aliasMap, total: tools.length }); });
+app.get("/tools", (_req, res) => { res.json({ ok: true, tools: tools.map(t => ({ name: t.name, description: t.description, provider: (t as any).provider||"rolink", execution: (t as any).execution||"local", hasPrompt: t.name in toolPrompts })), aliases: aliasMap, total: tools.length, prompts: Object.keys(toolPrompts).length }); });
+// Per-tool master prompts (lazy serving: extension fetches on demand, never bundled bulk).
+app.get("/tools/prompts", (_req, res) => { res.json({ ok: true, count: Object.keys(toolPrompts).length, tools: Object.keys(toolPrompts) }); });
+app.get("/tools/:name/prompt", (req, res) => {
+  const p = getToolPrompt(req.params.name);
+  if (!p) return res.status(404).json({ ok: false, error: `no master prompt for: ${req.params.name}` });
+  res.json({ ok: true, tool: req.params.name, prompt: p });
+});
 app.post("/tools/call", async (req, res) => {
   let { name, arguments: args } = req.body ?? {};
   let tool = tools.find(t => t.name === name);

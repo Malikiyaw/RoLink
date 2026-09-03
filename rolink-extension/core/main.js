@@ -226,18 +226,21 @@
   launcher.setAttribute("aria-label", "Start RoLink agent");
   root.appendChild(launcher);
 
-  // Status bar (mounted inside the composer via provider.barMount) — Q3: Trace collapsed into … to not cover Deep thinking
+  // Status bar (mounted inside the composer via provider.barMount): brand +
+  // flexing status + demoted tool count + primary Start / solid Stop + icon
+  // buttons. IDs are stable (wireUi/setCounter/setStatus depend on them).
   const bar = el("div", "rl-bar"); bar.id = "rl-bar"; bar.style.display = "none";
   bar.innerHTML = `
     <span class="rl-dot" id="rl-dot"></span>
-    <span class="rl-state" id="rl-state">RoLink: <small>…</small></span>
-    <span class="rl-spacer"></span>
-    <span class="rl-counter" id="rl-counter">0 tools</span>
-    <button class="rl-btn" id="rl-tools-btn" title="Show available tools">🛠 Tools</button>
-    <button class="rl-btn" id="rl-feed-btn" title="Show activity">📜 Log</button>
-    <button class="rl-btn" id="rl-trace-btn" title="Show execution trace">🔍 Trace</button>
-    <button class="rl-btn" id="rl-workspace-btn" title="Workspace memory">🧠</button>
-    <button class="rl-btn warn" id="rl-stop-btn" style="display:none" title="Stop the agent">■ Stop</button>
+    <span class="rl-brand">RoLink <span class="rl-ver">FREE</span></span>
+    <span class="rl-state" id="rl-state"><b>…</b></span>
+    <span class="rl-counter" id="rl-counter"></span>
+    <button class="rl-primary" id="rl-act-btn" title="Start the RoLink agent">▶ Start</button>
+    <button class="rl-icon" id="rl-tools-btn" title="Show available tools">🛠</button>
+    <button class="rl-icon" id="rl-feed-btn" title="Show activity">📜</button>
+    <button class="rl-icon" id="rl-trace-btn" title="Show execution trace">🔍</button>
+    <button class="rl-icon" id="rl-workspace-btn" title="Workspace memory">🧠</button>
+    <button class="rl-stop" id="rl-stop-btn" style="display:none" title="Stop the agent">■ Stop</button>
   `;
   root.appendChild(bar);
 
@@ -329,15 +332,16 @@
     list.scrollTop = list.scrollHeight;
     if(feed) feed.classList.add("rl-show");
   }
-  function setCounter(n){ const c = document.getElementById("rl-counter"); if(c) c.textContent = n + " tool" + (n === 1 ? "" : "s"); }
+  function setCounter(n){ const c = document.getElementById("rl-counter"); if(c) c.textContent = `· ${n} tool${n === 1 ? "" : "s"}`; }
   function setStatus(s){
     const dot = document.getElementById("rl-dot"), state = document.getElementById("rl-state");
     if(!dot || !state) return;
     dot.classList.remove("on","warn","err");
-    if(s === "ready"){ dot.classList.add("on"); state.innerHTML = `RoLink: <small>Bridge + Studio ready</small>`; }
-    else if(s === "studioOff"){ dot.classList.add("warn"); state.innerHTML = `RoLink: <small>Enable MCP in Roblox Studio</small>`; }
-    else if(s === "bridge"){ dot.classList.add("warn"); state.innerHTML = `RoLink: <small>Bridge OK, open Studio</small>`; }
-    else { state.innerHTML = `RoLink: <small>offline — run start.bat</small>`; }
+    bar.classList.remove("is-ok","is-warn","is-err");
+    if(s === "ready"){ dot.classList.add("on"); bar.classList.add("is-ok"); state.innerHTML = `<b>Bridge + Studio ready</b>`; }
+    else if(s === "studioOff"){ dot.classList.add("warn"); bar.classList.add("is-warn"); state.innerHTML = `<b>Enable MCP in Roblox Studio</b>`; }
+    else if(s === "bridge"){ dot.classList.add("warn"); bar.classList.add("is-warn"); state.innerHTML = `<b>Bridge OK</b> · open Studio`; }
+    else { dot.classList.add("err"); bar.classList.add("is-err"); state.innerHTML = `<b>Offline</b> · run start.bat`; }
   }
   async function refreshTools(){
     const list = document.getElementById("rl-tools-list"), count = document.getElementById("rl-tools-count");
@@ -358,7 +362,13 @@
     } else {
       list.innerHTML = A.tools.map(t => {
         const nm = (typeof t === "string") ? t : (t.name || JSON.stringify(t));
-        return `<span class="t" title="${escapeHtml((typeof t==="object"&&t&&t.description)||"")}">${escapeHtml(nm)}</span>`;
+        let tip = (typeof t === "object" && t && t.description) || "";
+        try{
+          const allP = (typeof window !== "undefined" && window.ROLINK_TOOL_PROMPTS) || null;
+          const mp = allP && allP[nm];
+          if(mp && mp.when_to_use) tip = (tip ? tip + " — " : "") + mp.when_to_use;
+        }catch{}
+        return `<span class="t" title="${escapeHtml(String(tip).slice(0,220))}">${escapeHtml(nm)}</span>`;
       }).join("");
     }
     if(count) count.textContent = A.tools.length + " available";
@@ -682,8 +692,15 @@ ${customBlock}
       spot.parent.insertBefore(chip, spot.ref || null);
     } else if(sourceBlock && sourceBlock.parentElement && sourceBlock.parentElement.parentElement){
       sourceBlock.parentElement.parentElement.insertBefore(chip, sourceBlock.parentElement);
+    } else if(sourceItem && sourceItem.appendChild){
+      // Never document.body: a body-level chip sits outside the chat message,
+      // invisible and unreachable by scroll. Anchor at the end of the
+      // assistant item instead (ZeroScript chip() fallback pattern). Works
+      // even if the item is temporarily detached (virtual-list swap) — the
+      // chip travels with the node and appears on re-attach.
+      try{ sourceItem.appendChild(chip); }catch{ try{ document.body.appendChild(chip); }catch{} }
     } else {
-      (sourceBlock || document.body).appendChild(chip);
+      try{ document.body.appendChild(chip); }catch{}
     }
     A.busy = true; A.toolRunning = name; A.toolStart = Date.now();
     if(fsm) try{ fsm.transition("TOOL_DETECTED", name); }catch{}
@@ -769,6 +786,14 @@ ${customBlock}
     const textForModel = text.length > 12000 ? text.slice(0, 11500) + "\n\n[…result truncated for context; full result is in the chip above…]" : text;
     let hint = "";
     if(!ok){
+      // Master-prompt recovery: feed the failed tool's usage + pitfalls so
+      // the model self-corrects with guidance, not just an error string.
+      // Sourced from generated window.ROLINK_TOOL_PROMPTS (hot-20).
+      try{
+        const allP = (typeof window !== "undefined" && window.ROLINK_TOOL_PROMPTS) || null;
+        const mp = allP && allP[name];
+        if(mp) hint += `\n\n"${name}" usage — ${mp.when_to_use}\nArgs: ${mp.args_guide}\nExample:\n${mp.example_call}\nPitfalls: ${mp.pitfalls}`;
+      }catch{}
       if(/unknown tool/i.test(text) && Array.isArray(A.tools) && A.tools.length){
         hint += `\n\nThe valid tool names right now are: ${A.tools.map(t => (typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}.`;
       }
@@ -1384,14 +1409,19 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     launcher.classList.remove("is-active", "is-starting");
     launcher.innerHTML = `<span class="rl-logo">R</span><span class="rl-label">Start RoLink agent</span>`;
     document.getElementById("rl-stop-btn").style.display = "none";
+    const act = document.getElementById("rl-act-btn");
+    if(act){ act.style.display = "inline-flex"; act.disabled = false; act.textContent = "▶ Start"; }
   }
   function setLauncherRunning(){
     launcher.classList.remove("is-starting");
     launcher.classList.add("is-active");
     launcher.innerHTML = `<span class="rl-stop-dot"></span><span class="rl-label">Stop agent</span>`;
+    const act = document.getElementById("rl-act-btn");
+    if(act) act.style.display = "none";
   }
 
   launcher.addEventListener("click", ()=>{ if(A.started) stopSession(); else startSession(); });
+  document.getElementById("rl-act-btn").addEventListener("click", ()=>{ if(!A.started) startSession(); });
   document.getElementById("rl-stop-btn").addEventListener("click", ()=>stopSession());
 
   // ── LIVE tool-block stripping + whole-item text scan ────────────────────
@@ -1407,7 +1437,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     for(const el of candidates){
       if(!el || A.strippedBlocks.has(el)) continue;
       const txt = el.innerText || el.textContent || "";
-      if(!txt || txt.indexOf("###MCP_TOOL###") === -1) continue;
+      if(!txt || !ZSParse.hasToolSignature(txt)) continue;
       if(ZSParse.hasOpenToolBlock(txt)) continue;
       const calls = ZSParse.extractAll(txt).filter(Boolean);
       if(!calls.length) continue;
@@ -1426,7 +1456,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       for(const it of items){
         if(!it) continue;
         const text = joinItemText(it);
-        if(!text || text.indexOf("###MCP_TOOL###") === -1) continue;
+        if(!text || !ZSParse.hasToolSignature(text)) continue;
         if(ZSParse.hasOpenToolBlock(text)) continue;
         if(it.querySelector(".rl-chip")) continue;
         const calls = ZSParse.extractAll(text).filter(Boolean);
@@ -1438,7 +1468,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         it.querySelectorAll("pre, code, p, div").forEach(el => {
           if(A.strippedBlocks.has(el)) return;
           const t = (el.innerText || el.textContent || "");
-          if(t.indexOf("###MCP_TOOL###") !== -1 || ZSParse.hasOpenToolBlock(t)){
+          if(ZSParse.hasToolSignature(t) || ZSParse.hasOpenToolBlock(t)){
             A.strippedBlocks.add(el);
             el.style.display = "none";
           }
@@ -1448,9 +1478,20 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   }
   function joinItemText(item){
     if(!item) return "";
+    // Exclude the provider's thinking/reasoning subtree: a tool block the
+    // model merely drafts inside Thinking must never count as an executable
+    // call (ZeroScript providers/* thinking-exclusion pattern). Without this,
+    // wholeItemScan hides + marks dispatched a block waitForReply can never
+    // see via readAssistant() — hidden raw, zero chips, zero history.
+    let thinkSel = null;
+    try{ thinkSel = (P && P.thinkingSel) || null; }catch{}
     const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT, {
       acceptNode: (n) => {
         if(!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        try{
+          if(thinkSel && n.parentElement && n.parentElement.closest && n.parentElement.closest(thinkSel))
+            return NodeFilter.FILTER_REJECT;
+        }catch{}
         let p = n.parentElement;
         while(p && p !== item){
           if(p.id && (p.id === "rl-root" || p.id === "rl-bar" || p.id === "rl-tools" ||

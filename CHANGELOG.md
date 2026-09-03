@@ -1,4 +1,51 @@
 # Changelog
+## 5.3.0 - Visible tool chips, pro status bar, parse-failure hardening, per-tool master prompts
+
+**1. Tool calls are now always visible (was: Thinking text with no chip).**
+- Chip fallback rewritten (`core/main.js`): a missed `findToolBlockSpot` now
+  anchors the chip at the end of the assistant item — never `document.body`
+  (body-level chips were outside the chat message, invisible).
+- `joinItemText` now excludes the provider thinking subtree (`P.thinkingSel`),
+  so blocks the model merely drafts inside Thinking are never hidden/marked
+  dispatched before `waitForReply` can execute them.
+- `hasOpenToolBlock` (`core/parser.js`) now treats `###LUA###` without
+  `###END_LUA###` as open (was: premature `text` verdict mid-stream, no chip).
+- DeepSeek spotter accepts every parser shape (`###TOOL:`, bare
+  `{"tool":}`/`{"command":}` JSON, fences); `wholeItemScan`/`scanToolBlocks`
+  gates use `hasToolSignature` instead of MCP-marker-only.
+
+**2. Status bar redesigned (was: cramped neutral buttons).**
+- Hierarchy: dot + `RoLink FREE` brand + flexing ellipsis status (tone-colored)
+  + demoted `· N tools` counter + gradient primary Start / solid-red Stop +
+  28px icon buttons. Single row, never wraps. Start lives in the bar
+  (`rl-act-btn`, mirrors the launcher pill).
+
+**3. `Failed to parse command code` hardening (Studio loadstring rejects).**
+- `stripCodeChrome` extended: ` ```lua` fences, `Copy`/`Copy code`, BOM/ZWSP/
+  NBSP, smart quotes (with `Copy(x)`/`copycat`/`jsonify` protection);
+  `cleanLuaCall` multi-pass to fixpoint.
+- `validateLuau` (`mcp-server/src/sandbox.ts`): normalize-first, then
+  string/comment-aware balance (parens/braces/brackets), unterminated-string,
+  chrome-prefix, and empty-code errors; `sanitized` is the normalized code and
+  both Luau handlers now enqueue the sanitized form.
+- `aiTraining.personalize` rewrites code segments only (string contents and
+  comments untouched — was: `"a  b"` → `"a\tb"` inside literals).
+- `bridge.py` Luau pre-flight for `execute_luau`/`run_in_sandbox` mirrors the
+  checks on the WS path: guaranteed-to-fail code returns structured
+  `validation_error` for model self-correct instead of a Studio failure.
+
+**4. Per-tool master prompts (top-20, forgeGUI-style).**
+- New source of truth `mcp-server/src/tools/toolPrompts.ts`
+  (`when_to_use/args_guide/example_call/output/pitfalls` × 20 hot tools).
+- Generated `generated/tool-prompts.json` (20/111) + hot bundle
+  `rolink-extension/core/tool-prompts.js` (~14KB, content-script budget kept).
+- Lazy serving: `GET /tools/:name/prompt`, `GET /tools/prompts`,
+  `hasPrompt` on `/tools`; extension injects the failed tool's usage+pitfalls
+  into `[Tool error]` feedback and enriches tools-panel tooltips.
+- `npm run generate:prompts` regenerates (from `mcp-server/`).
+
+**Tests**: bridge dispatch 5/5 + pre-flight matrix green. JS suites need Node.
+
 ## 5.2.0 - Unified single-WS workflow + local tools + execution UI upgrade
 
 Same ZeroScript-proven workflow, kept intact: AI chat -> RoLink extension ->

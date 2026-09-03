@@ -1,0 +1,43 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { toolPrompts, HOT_PROMPT_TOOLS } from "../mcp-server/src/tools/toolPrompts.js";
+import { tools } from "../mcp-server/src/tools/registry.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(HERE, "..");
+
+export async function generateToolPrompts(): Promise<void> {
+  const names = Object.keys(toolPrompts);
+  const registryNames = new Set(tools.map((t) => t.name));
+  const orphans = names.filter((n) => !registryNames.has(n));
+  if (orphans.length) throw new Error(`toolPrompts has unknown tools: ${orphans.join(", ")}`);
+
+  const payload = {
+    version: 1,
+    source: "mcp-server/src/tools/toolPrompts.ts",
+    generatedAt: new Date().toISOString(),
+    promptCount: names.length,
+    toolCount: tools.length,
+    coverage: `${names.length}/${tools.length}`,
+    prompts: toolPrompts,
+  };
+  await mkdir(join(ROOT, "generated"), { recursive: true });
+  await writeFile(join(ROOT, "generated", "tool-prompts.json"), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+
+  // Hot set shipped to the extension bundle (content-script size budget).
+  const hot: Record<string, (typeof toolPrompts)[string]> = {};
+  for (const n of HOT_PROMPT_TOOLS) if (toolPrompts[n]) hot[n] = toolPrompts[n];
+  const js =
+    `// rolink-extension/core/tool-prompts.js — GENERATED. Do not edit by hand.\n` +
+    `// Re-emit with: npm run generate:prompts (from mcp-server/)\n` +
+    `//\n` +
+    `// Source of truth: mcp-server/src/tools/toolPrompts.ts (top-20 hot tools).\n` +
+    `// Loaded by content scripts (see rolink-extension/manifest.json) AFTER\n` +
+    `// core/code-fields.js. main.js consults window.ROLINK_TOOL_PROMPTS on the\n` +
+    `// error-recovery path (failed tool -> usage + pitfalls fed back to model).\n` +
+    `window.ROLINK_TOOL_PROMPTS = ${JSON.stringify(hot, null, 2)};\n`;
+  await writeFile(join(ROOT, "rolink-extension", "core", "tool-prompts.js"), js, "utf8");
+  console.log(`generated/tool-prompts.json: ${names.length}/${tools.length} tools`);
+  console.log(`rolink-extension/core/tool-prompts.js: ${Object.keys(hot).length} hot prompts`);
+}

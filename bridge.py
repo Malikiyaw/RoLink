@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "5.2.0"
+BRIDGE_VERSION = "5.3.0"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", "17613"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -213,6 +213,85 @@ def _local_batch_queue(args, timeout):
             break  # no nested batches
     ok_count = sum(1 for r in results if r.get("ok"))
     return {"ok": True, "text": json.dumps({"batched": len(results), "succeeded": ok_count, "results": results})}
+
+def _luau_preflight(code):
+    """Mirror of mcp-server validateLuau for the WS path (no Node needed).
+
+    Returns an error string when the code is guaranteed to fail Studio's
+    loadstring ("Failed to parse command code"), else None. String-aware:
+    brackets inside literals/comments never count.
+    """
+    import re as _re
+    if not isinstance(code, str):
+        return "code must be a string"
+    s = _re.sub(r"[\u200b\u200c\u200d\ufeff]", "", code).lstrip("\ufeff")
+    s = s.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'").replace("\u00a0", " ")
+    if not s.strip():
+        return "empty code after stripping render chrome"
+    if len(s) > 50000:
+        return "code too large (max 50k)"
+    if s.startswith("```") or _re.match(r"(?:copy\s+code|copy|json)(?![A-Za-z0-9_(])[\s]", s, _re.I):
+        return "render chrome prefix (Copy/fence) — strip before sending to Studio"
+    if s.rstrip().endswith("```"):
+        return "render chrome suffix (fence) — strip before sending to Studio"
+    # string/comment-aware balance scan
+    paren = brace = bracket = 0
+    i, n, st = 0, len(s), None
+    while i < n:
+        c = s[i]
+        if st == '"' or st == "'":
+            if c == "\\":
+                i += 2
+                continue
+            if c == st:
+                st = None
+            i += 1
+            continue
+        if st == "]]":
+            if c == "]" and i + 1 < n and s[i + 1] == "]":
+                st = None
+                i += 2
+                continue
+            i += 1
+            continue
+        if c == "-" and i + 1 < n and s[i + 1] == "-":
+            if s[i + 2:i + 4] == "[[":
+                end = s.find("]]", i + 4)
+                i = n if end == -1 else end + 2
+                continue
+            nl = s.find("\n", i + 2)
+            i = n if nl == -1 else nl + 1
+            continue
+        if c == '"' or c == "'":
+            st = c
+            i += 1
+            continue
+        if c == "[" and i + 1 < n and s[i + 1] == "[":
+            st = "]]"
+            i += 2
+            continue
+        if c == "(":
+            paren += 1
+        elif c == ")":
+            paren -= 1
+        elif c == "{":
+            brace += 1
+        elif c == "}":
+            brace -= 1
+        elif c == "[":
+            bracket += 1
+        elif c == "]":
+            bracket -= 1
+        i += 1
+    if st:
+        return "unterminated string literal"
+    if paren != 0:
+        return "unbalanced parentheses"
+    if brace != 0:
+        return "unbalanced braces"
+    if bracket != 0:
+        return "unbalanced brackets"
+    return None
 
 if _enable_ansi_colors():
     C = {
@@ -1482,6 +1561,13 @@ def safe_call(name, arguments, timeout):
             return {"ok": False, "error": _ai_readable_error("execution_error", str(e), name), "kind": "execution_error"}
     if name == "batch_queue" and isinstance(arguments.get("commands"), list):
         return _local_batch_queue(arguments, timeout)
+    # Luau pre-flight: reject code Studio's loadstring is guaranteed to fail
+    # ("Failed to parse command code") with a structured error the model can
+    # fix, instead of forwarding it. Mirrors mcp-server validateLuau.
+    if name in ("execute_luau", "run_in_sandbox") and isinstance(arguments.get("code"), str):
+        _pre = _luau_preflight(arguments["code"])
+        if _pre:
+            return {"ok": False, "error": _ai_readable_error("validation_error", _pre, name), "kind": "validation_error"}
     if not mgr.any_alive():
         return {"ok": False, "error": _ai_readable_error("mcp_offline", "no MCP server alive", name), "kind": "mcp_offline"}
     # Studio usability check before calling studio tools
