@@ -25,7 +25,7 @@ export async function generateToolPrompts(): Promise<void> {
   await mkdir(join(ROOT, "generated"), { recursive: true });
   await writeFile(join(ROOT, "generated", "tool-prompts.json"), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 
-  // Hot set shipped to the extension bundle (content-script size budget).
+  // Full set shipped to the extension bundle (lazy lookup; ~60KB one-time parse).
   const hot: Record<string, (typeof toolPrompts)[string]> = {};
   for (const n of HOT_PROMPT_TOOLS) if (toolPrompts[n]) hot[n] = toolPrompts[n];
   const js =

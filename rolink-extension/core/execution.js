@@ -111,8 +111,11 @@
       if(this.trace) this.trace.push({ ts: Date.now(), level:"info", msg:`→ ${tool} id=${id}` });
       if(this.state) try{ this.state.transition("EXECUTING_TOOL", tool); }catch{}
 
-      // Ensure tab is visible before sending
-      if(document.hidden){
+      // Ensure tab is visible before sending — skipped in background-run
+      // mode (bridge call_tool is tab-independent; only message sends park).
+      // Defaults to parking when the flag is unset (standalone/test contexts).
+      const bgRun = (typeof window !== "undefined" && window.__rolinkBgRun === true);
+      if(document.hidden && !bgRun){
         if(this.trace) this.trace.push({ ts: Date.now(), level:"warn", msg:"tab hidden — pausing execution" });
         await this._waitForVisible();
         if(this.cancelledIds.has(id)){

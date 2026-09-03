@@ -177,6 +177,10 @@
 .rl-chip-head .rl-time { color: #8b949e; font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .rl-chip-head .rl-gen { color: #79c0ff; font-size: 10px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
 .rl-chip-head .rl-chevron { margin-left: auto; font-size: 10px; opacity: 0.6; transition: transform .18s ease; }
+/* Row 2 result card: neutral grey like ZeroScript .result (green stays on Row 1). */
+.rl-chip.rl-result { --cat: #8b8b93; border-color: rgba(139,139,147,0.35); }
+.rl-chip.rl-result .rl-chip-head .rl-ico { font-size: 12px; }
+.rl-chip.rl-result.rl-err { --cat: #f85149; border-color: rgba(248,81,73,0.50); }
 .rl-chip-foot { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-top: 1px solid rgba(255,255,255,0.06); }
 .rl-chip-foot .rl-copy { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); color: #e6edf3; font-size: 10.5px; padding: 2px 8px; border-radius: 6px; cursor: pointer; }
 .rl-chip-foot .rl-copy:hover { background: rgba(255,255,255,0.12); }

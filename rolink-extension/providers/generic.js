@@ -30,8 +30,11 @@ window.makeGenericProvider = function(opts){
   }, opts.timings || {});
 
   // ── core DOM accessors ──────────────────────────────────────────────────
+  // Hidden-tab safe: innerText needs layout ("" when backgrounded), so every
+  // text read falls back to textContent. Visible behavior unchanged.
+  const visibleText = (el) => (el ? ((el.innerText || el.textContent) || "") : "");
   const allItems = () => [...document.querySelectorAll(S.chatItem)].filter(it => {
-    return it && (it.innerText || "").length > 5 && (it.querySelector("p, div") || it.tagName === "ARTICLE" || it.tagName === "DIV");
+    return it && visibleText(it).length > 5 && (it.querySelector("p, div") || it.tagName === "ARTICLE" || it.tagName === "DIV");
   });
   const isUser = opts.isUser || function(it){
     return it && (it.getAttribute && (
@@ -47,7 +50,10 @@ window.makeGenericProvider = function(opts){
   const lastAssistant = () => { const a = assistantItems(); return a.length ? a[a.length-1] : null; };
 
   const getEditor = opts.getEditor || function(){
-    return [...document.querySelectorAll(S.editor)].filter(e => !e.closest("#rl-root") && e.offsetParent !== null)[0] || null;
+    const list = [...document.querySelectorAll(S.editor)].filter(e => !e.closest("#rl-root"));
+    // offsetParent is null for hidden/backgrounded editors — fall back to any
+    // connected editor so background-run mode keeps working.
+    return list.find(e => e.offsetParent !== null) || list.find(e => e.isConnected) || null;
   };
   const editorText = () => { const e = getEditor(); return e ? (e.value != null ? e.value : e.textContent || "") : ""; };
   const chatIsEmpty = () => allItems().length === 0;
@@ -95,8 +101,8 @@ window.makeGenericProvider = function(opts){
       if(ed.dataset.rlPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.rlPlaceholder);
     }
   }
-  const streamLen = (it) => { const i = it || lastAssistant(); return i ? (i.innerText || "").length : 0; };
-  const snapshot = () => { const it = lastAssistant(); return it ? {th:0, rp: (it.innerText||"").length} : {th:0, rp:0}; };
+  const streamLen = (it) => { const i = it || lastAssistant(); return i ? visibleText(i).length : 0; };
+  const snapshot = () => { const it = lastAssistant(); return it ? {th:0, rp: visibleText(it).length} : {th:0, rp:0}; };
 
   // ── generation detection ────────────────────────────────────────────────
   function isStopBtn(btn){
@@ -127,8 +133,8 @@ window.makeGenericProvider = function(opts){
   // ── continue / scan ─────────────────────────────────────────────────────
   function findContinueBtn(){
     for(const b of document.querySelectorAll("button")){
-      if(b.offsetParent === null) continue;
-      if(/^(continue|continuar|continu)/i.test((b.innerText || "").trim())) return b;
+      if(b.offsetParent === null && !b.isConnected) continue;
+      if(/^(continue|continuar|continu)/i.test(visibleText(b).trim())) return b;
     }
     return null;
   }
@@ -139,7 +145,7 @@ window.makeGenericProvider = function(opts){
   }
   function readAssistant(){
     const i = lastAssistant();
-    return {present: !!i, reply: i ? (opts.readText ? opts.readText(i) : (i.innerText || "")) : "", thinking: "", item: i};
+    return {present: !!i, reply: i ? (opts.readText ? opts.readText(i) : visibleText(i)) : "", thinking: "", item: i};
   }
   function turnHalted(){ return false; }
   function scanError(){ if(!getEditor()) return "Input box gone."; return null; }
@@ -287,8 +293,8 @@ window.makeGenericProvider = function(opts){
     allItems,
     isUserItem: isUser,
     isAssistantItem: isAssistant,
-    itemText: i => i ? (i.innerText || "") : "",
-    classifyText: i => i ? (i.innerText || "") : "",
+    itemText: i => visibleText(i),
+    classifyText: i => visibleText(i),
     assistantCount, userCount, lastAssistant, lastAssistantId, itemIdByIndex, itemKey, readAssistant,
     streamLen, snapshot,
     getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barMount,

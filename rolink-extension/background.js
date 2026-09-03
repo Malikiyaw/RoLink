@@ -357,3 +357,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse)=>{
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 connect();
+
+// ── Background watchdog (MV3 alarms survive service-worker suspension) ─────
+// Fires ~1/min: keeps the bridge WS warm and pulses hidden RoLink tabs so a
+// throttled content loop resyncs. Never dispatches tools — content loop owns
+// execution. `alarms` permission already declared in manifest.json.
+try{
+  if(chrome.alarms){
+    chrome.alarms.create("rolink-tick", { periodInMinutes: 1 });
+    chrome.alarms.onAlarm.addListener((a)=>{
+      if(!a || a.name !== "rolink-tick") return;
+      if(!connected) connect();
+      else send({type:"ping"}).catch(()=>{});
+      try{
+        chrome.tabs.query({url: PROVIDER_URLS.map(h=>"*://"+h+"/*")}, (tabs)=>{
+          for(const t of tabs || []){
+            try{ chrome.tabs.sendMessage(t.id, {type:"rolink-tick"}).catch(()=>{}); }catch{}
+          }
+        });
+      }catch{}
+    });
+  }
+}catch{}

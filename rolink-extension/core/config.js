@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "5.3.0";
+const ROLINK_VERSION = "5.4.0";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
@@ -86,7 +86,7 @@ Groups:
 - DDA 107-108: adjust_difficulty, set_difficulty_profile
 - Sound 109-111: generate_sound, generate_sound_pack, play_sound
 
-For workspace explores use search_game_tree — ALWAYS emit ###MCP_TOOL### JSON.
+For workspace explores use get_instances (search_game_tree is a legacy alias for it) — ALWAYS emit ###MCP_TOOL### JSON.
 Never describe the tool in prose — emit the JSON block.
 For multi-step builds use batch_queue with {commands:[{tool,args}]} (max 20, no nesting).
 Chain async jobs via IDs: pass generate_asset/generate_sound generationId to wait/run steps; never invent IDs.

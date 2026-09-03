@@ -114,6 +114,7 @@
     lastFeedText: "",
     lastTextAt: 0,
     parked: false,
+    bgRun: true,             // background-run: keep executing while tab hidden (toggle in bar, persisted)
     tools: [],
     status: "offline",
     fsm,
@@ -131,12 +132,26 @@
     injectHideUntil: 0,       // one-shot pre-hide window for injected result turns
     activeTurnItem: null,     // the current assistant turn being processed
     nudgesLeft: 1,            // Q2: only self-heal cantRun once, free chat after greeting
+    intentNudgesLeft: 2,      // prose-intent net: model named a tool without emitting its block (max 2 per session)
     toolNames: new Set(),     // known tool names from the live tool list
     turnedStopped: false,     // the AI's own stop button was clicked
     stoppedAt: 0,             // timestamp of stop (for grace windows)
     strippedBlocks: new WeakSet(),
     dispatchedItems: new WeakSet(),  // message items we've already processed
   };
+  // Mirror for execution.js (loaded before/after main.js — reads this flag).
+  try{ window.__rolinkBgRun = A.bgRun !== false; }catch{}
+  function syncBgRun(persist){
+    try{ window.__rolinkBgRun = A.bgRun !== false; }catch{}
+    const b = document.getElementById("rl-bgrun-btn");
+    if(b){
+      const on = A.bgRun !== false;
+      b.style.opacity = on ? "1" : "0.45";
+      b.title = on ? "Background run: ON — agent keeps working when tab hidden (click to pause in background)"
+                   : "Background run: OFF — agent pauses when tab hidden (click to keep working)";
+    }
+    if(persist){ try{ bg({type:"setting_set", key:"rolink_bgRun", value: !!A.bgRun}); }catch{} }
+  }
 
   // ── DOM helpers ──────────────────────────────────────────────────────────
   function el(tag, cls, html){ const e=document.createElement(tag); if(cls) e.className=cls; if(html!=null) e.innerHTML=html; return e; }
@@ -240,6 +255,7 @@
     <button class="rl-icon" id="rl-feed-btn" title="Show activity">📜</button>
     <button class="rl-icon" id="rl-trace-btn" title="Show execution trace">🔍</button>
     <button class="rl-icon" id="rl-workspace-btn" title="Workspace memory">🧠</button>
+    <button class="rl-icon" id="rl-bgrun-btn" title="Background run">🌙</button>
     <button class="rl-stop" id="rl-stop-btn" style="display:none" title="Stop the agent">■ Stop</button>
   `;
   root.appendChild(bar);
@@ -386,6 +402,12 @@
       wsPanel.classList.toggle("rl-show");
       if(wsPanel.classList.contains("rl-show")) updateWorkspaceView();
     };
+    document.getElementById("rl-bgrun-btn").onclick = e => {
+      e.stopPropagation();
+      A.bgRun = !A.bgRun;
+      syncBgRun(true);
+      pushFeed("info", A.bgRun ? "▶" : "⏸", A.bgRun ? "Background run ON — tools keep executing when tab hidden" : "Background run OFF — agent pauses when tab hidden");
+    };
     document.getElementById("rl-workspace-close").onclick = e => { e.stopPropagation(); closeWorkspace(); };
     document.getElementById("rl-save-prompt").onclick = async e => {
       e.stopPropagation();
@@ -512,6 +534,34 @@
     chip.classList.add("open");
     try{ chip.dataset.full=String(full).slice(0,8000); }catch{}
   }
+  // ── Row 2: result chip (ZeroScript `name · result` parity) ───────────────
+  // Separate collapsed card under the call chip: grey on success, red on
+  // error. Owns the final duration + result Copy. The injected model-facing
+  // turn stays hidden — this row IS the visible result.
+  function makeResultChip(name, res, callChip){
+    const rc = el("div", "rl-chip rl-result");
+    let dur = "";
+    try{
+      const t0 = callChip && callChip.dataset.t0 ? Number(callChip.dataset.t0) : Date.now();
+      const secs = (Date.now() - t0) / 1000;
+      dur = secs < 10 ? secs.toFixed(1) + "s" : Math.round(secs) + "s";
+    }catch{}
+    const full = res.ok ? (res.text || "done") : (res.error || "failed");
+    const summary = shorten(String(full).replace(/\n/g, " "), 120) || (res.ok ? "done" : "failed");
+    let body = String(full);
+    if(body.length > 2000) body = body.slice(0, 1960) + "… (truncated, Copy for full)";
+    const ico = res.ok ? "⇩" : "✗";
+    rc.innerHTML = `<div class="rl-chip-head"><span class="rl-ico">${ico}</span><span class="rl-name">${escapeHtml(name)} · result</span><span class="rl-detail">${escapeHtml(summary)}</span><span class="rl-chevron">▼</span></div><div class="rl-chip-body"><pre></pre><div class="rl-chip-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur">${escapeHtml((res.ok ? "done in " : "failed in ") + dur)}</span></div></div>`;
+    if(!res.ok) rc.classList.add("rl-err");
+    rc.querySelector(".rl-chip-head").onclick = (e)=>{ e.stopPropagation(); rc.classList.toggle("open"); };
+    const pre = rc.querySelector(".rl-chip-body pre");
+    if(pre) pre.textContent = body;
+    try{
+      const btn = rc.querySelector(".rl-copy");
+      if(btn) btn.onclick = (e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(String(full)); btn.textContent = "Copied"; setTimeout(()=>{ btn.textContent = "Copy"; }, 1200); }catch{} };
+    }catch{}
+    return rc;
+  }
 
   // ── THE SYSTEM PROMPT ─────────────────────────────────────────────────────
   const SYS_MARKER_TEXT = "⟪RL-SYS⟫";
@@ -565,7 +615,9 @@ For execute_luau specifically, you can also use ###LUA### ... ###END_LUA### (no 
 ###END_LUA###
 \`\`\`
 
-2) You're completely done — short final answer, end with the word DONE on its own line.
+ 2) You're completely done — short final answer, end with the word DONE on its own line.
+
+Patterns 1 and 2 are mutually exclusive — never combine them and never narrate pattern 1 inside pattern 2. BANNED: announcing a tool without writing it ("let me check...", "I'll read the script", "We'll call search_game_tree"). Naming a tool in prose runs nothing and leaves the user stuck — either write the block NOW, or give your final answer. A short note around a command is fine, but never end a turn by only announcing one.
 
 # ${toolBlock}
 ${customBlock}
@@ -757,6 +809,12 @@ ${customBlock}
       return {chip, name, res, text: ""};
     }
     chipFinalize(chip, name, res);
+    // Row 2 directly under Row 1 so virtual-list moves keep them together.
+    try{
+      const rc = makeResultChip(name, res, chip);
+      if(chip.parentNode) chip.parentNode.insertBefore(rc, chip.nextSibling);
+      else if(chip.after) chip.after(rc);
+    }catch{}
     const text = res.ok ? (res.text || "OK") : ("ERROR: " + (res.error || "unknown"));
     const ok = res.ok !== false;
     pushFeed(ok ? "ok" : "err", ok ? "✓" : "✗", `${name}: ${shorten(String(text).replace(/\n/g," "), 200)}`);
@@ -788,7 +846,7 @@ ${customBlock}
     if(!ok){
       // Master-prompt recovery: feed the failed tool's usage + pitfalls so
       // the model self-corrects with guidance, not just an error string.
-      // Sourced from generated window.ROLINK_TOOL_PROMPTS (hot-20).
+      // Sourced from generated window.ROLINK_TOOL_PROMPTS (all 111, lazy lookup).
       try{
         const allP = (typeof window !== "undefined" && window.ROLINK_TOOL_PROMPTS) || null;
         const mp = allP && allP[name];
@@ -848,6 +906,32 @@ ${customBlock}
         || /I (can'?t|cannot) (directly )?(interact|control|modify) (your|the) (studio|project|game|file)/i.test(text)
         || /(there is no|there are no) (way|method) (for me|to).{0,30}(run|execute|invoke|call|use)/i.test(text);
   }
+  // Prose-intent net: the model named a tool in future-tense prose ("We'll
+  // call search_game_tree", "Let me inspect...") but emitted no block. Naming
+  // a tool runs nothing — catch it here instead of ending the session.
+  // Returns the matched tool name or "".
+  function narratedTool(text){
+    if(!text || text.length > 2000) return "";
+    if(!/(will|'ll|gonna|going to|about to|let me|let's|lets)\b/i.test(text)) return "";
+    const known = [];
+    try{
+      for(const t of (A.tools || [])){
+        const nm = (typeof t === "string") ? t : (t && t.name);
+        if(nm) known.push(nm);
+      }
+    }catch{}
+    // Legacy aliases the model still writes (normalize to canonical).
+    const aliasHit = /(search_game_tree|script_search|script_grep|inspect_instance|run_code|get_snapshot)\b/i.exec(text);
+    if(aliasHit){
+      const canon = {search_game_tree:"get_instances", script_search:"get_script_content", script_grep:"search_by_attribute", inspect_instance:"get_instances", run_code:"execute_luau", get_snapshot:"take_snapshot"}[aliasHit[1].toLowerCase()];
+      if(canon && (known.length === 0 || known.includes(canon))) return canon;
+    }
+    const low = text.toLowerCase();
+    for(const nm of known){
+      if(nm && low.includes(String(nm).toLowerCase())) return nm;
+    }
+    return "";
+  }
 
   // ── send the user's starter request (after system prompt) ────────────────
   function sendSystemPromptAndStarter(){
@@ -862,6 +946,7 @@ ${customBlock}
       A.running = true;
       A.feedStreak = 0;
       A.nudgesLeft = 1;
+      A.intentNudgesLeft = 2;
       A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
       pushFeed("info", "▶", "Agent loop started. Greeting — then free chat…");
       showBanner("Agent running. Waiting for greeting — then free chat.", "ok", 5000);
@@ -972,7 +1057,10 @@ ${customBlock}
     if(A.stopping){ A.running = false; setLauncherStopped(); return; }
     (async function tick(){
       while(A.running && !A.stopping){
-        if(document.hidden){
+        // Background-run: loop/dispatch continue while hidden (bridge calls
+        // are tab-independent). Only message SENDS still park (see
+        // submitAndGetBase) — typing into a hidden tab is unreliable.
+        if(document.hidden && !A.bgRun){
           await waitForVisible();
           if(A.stopping) break;
         }
@@ -981,12 +1069,13 @@ ${customBlock}
         if(reply.kind === "tool"){
           A.feedStreak = 0;
           A.nudgesLeft = 1;
+          A.intentNudgesLeft = 2;
           if(fsm) try{ fsm.transition("TOOL_DETECTED", `${reply.calls.length} calls`); }catch{}
           // SEQUENTIAL await — never concurrent chaos. Each tool must complete before next.
           for(const c of reply.calls){
             if(A.stopping) break;
-            // Visibility gate per-tool
-            if(document.hidden){
+            // Visibility gate per-tool (skipped in background-run mode)
+            if(document.hidden && !A.bgRun){
               await waitForVisible();
               if(A.stopping) break;
             }
@@ -1010,6 +1099,20 @@ ${customBlock}
             A.injecting = true;
             try{ inputCover(true); }catch{}
             await P.typeAndSend(`You DO have tools. They are listed in your system prompt and have been used successfully in this session. Re-read your system prompt. The valid tool names are: ${(A.tools||[]).map(t=>(typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Emit a ###MCP_TOOL### block now using one of these exact names.`, []);
+            try{ inputCover(false); }catch{}
+            A.injecting = false;
+            continue;
+          }
+          // Prose-intent net (bounded): narrating a tool is a pattern-1
+          // violation, not a done answer. Re-ground once or twice, then let
+          // genuine prose end the session as before.
+          const intentTool = (A.intentNudgesLeft > 0) ? narratedTool(reply.text) : "";
+          if(intentTool){
+            A.intentNudgesLeft--;
+            pushFeed("warn", "↻", `AI narrated "${intentTool}" without emitting it (${2 - A.intentNudgesLeft}/2) — re-grounding`);
+            A.injecting = true;
+            try{ inputCover(true); }catch{}
+            await P.typeAndSend(`You named "${intentTool}" in prose but emitted no tool block — that runs nothing. Emit the ###MCP_TOOL### block for "${intentTool}" NOW with your best-guess args (e.g. {"tool":"${intentTool}","args":{}}), don't narrate it.`, []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
             continue;
@@ -1146,7 +1249,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     while(Date.now() - lastActive < TIMEOUT){
       if(A.stopping) return {kind:"stopped"};
 
-      if(document.hidden){
+      if(document.hidden && !A.bgRun){
         const parked = await waitForVisible();
         if(A.stopping) return {kind:"stopped"};
         lastActive += 500;
@@ -1158,6 +1261,19 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         if(unsettledSince) unsettledSince += 500;
         if(genOffFirstAt) genOffFirstAt += 500;
         continue;
+      }
+      if(document.hidden && A.bgRun){
+        // Background-run: keep reading with layout-independent providers,
+        // but slide inactivity deadlines — throttled timers must not fake a
+        // timeout while the tab is simply backgrounded.
+        lastActive += 500;
+        lastChange += 500;
+        if(genFalseSince) genFalseSince += 500;
+        if(warmSince) warmSince += 500;
+        if(reasonSince) reasonSince += 500;
+        if(noTurnSince) noTurnSince += 500;
+        if(unsettledSince) unsettledSince += 500;
+        if(genOffFirstAt) genOffFirstAt += 500;
       }
 
       const gen = P.isGenerating();
@@ -1302,7 +1418,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     const myGen = ++A.startGen;
     A.started = true; A.sessionEverStarted = true; A.starting = true; A.running = false; A.stopping = false;
     A.feedStreak = 0; A.toolCount = 0; A.lastFeedText = ""; A.lastFeedAt = 0; A.lastFeedId = null;
-    A.nudgesLeft = 1; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
+    A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
     setCounter(0);
     document.getElementById("rl-feed-list").innerHTML = "";
     launcher.classList.add("is-active", "is-starting");
@@ -1650,6 +1766,12 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     }
     if(msg.type === "rolink-start"){ if(!A.started) startSession(); sendResponse({ok:true, started:A.started}); return; }
     if(msg.type === "rolink-stop"){ if(A.started) stopSession(); sendResponse({ok:true, started:A.started}); return; }
+    if(msg.type === "rolink-tick"){
+      // Background watchdog pulse (chrome.alarms, ~1/min): cheap resync only.
+      // Never dispatches — the loop owns execution.
+      try{ if(A.running && !A.stopping){ syncSessionState(); if(document.hidden && A.bgRun) camouflageSweep(); } }catch{}
+      sendResponse({ok:true, running: !!A.running}); return;
+    }
     sendResponse({ok:false});
   });
   setInterval(()=>{
@@ -1663,6 +1785,12 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     refreshTools();
   }, 3000);
   bg({type:"status"}).then(s=>{ if(s){ if(!s.connected) setStatus("offline"); else setStatus("bridge"); } });
+  try{
+    bg({type:"setting_get", key:"rolink_bgRun"}).then(r=>{
+      if(r && r.ok && typeof r.value === "boolean") A.bgRun = r.value;
+      syncBgRun(false);
+    }).catch(()=>syncBgRun(false));
+  }catch{ syncBgRun(false); }
   refreshTools();
 
   startObserver();
@@ -1725,7 +1853,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         setTimeout(() => {
           if(A.stopping || A.userStopped) return;
           if(!A.running && !A.injecting){
-            A.feedStreak = 0; A.nudgesLeft = 1; A.toolCount = 0;
+            A.feedStreak = 0; A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.toolCount = 0;
             A.strippedBlocks = new WeakSet();
             A.dispatchedItems = new WeakSet();
             A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;

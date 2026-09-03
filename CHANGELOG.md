@@ -1,4 +1,46 @@
 # Changelog
+## 5.4.0 - Background run, narration guard, two-row result chips, all 111 master prompts
+
+**1. Background run (was: `Tab hidden — paused` loop).**
+- New `bgRun` mode, default ON with a `🌙` bar toggle (persisted via
+  `setting_get/set`). Loop, per-tool, `waitForReply`, and execution-manager
+  gates are skipped while hidden; inactivity deadlines slide so throttled
+  timers can't fake a timeout. Bridge `call_tool` is tab-independent, so
+  Studio keeps building while you're on another tab; only message SENDS still
+  park (typing into a hidden tab is unreliable — ZeroScript documents the
+  same duplicate-send hazard).
+- Layout-independent reads: generic provider `innerText`→`textContent`
+  fallbacks, editor lookup falls back to any connected editor,
+  `offsetParent` guards relaxed. Visible behavior unchanged.
+- Service-worker watchdog: `chrome.alarms` `rolink-tick` (~1/min, permission
+  already declared) keeps the bridge WS warm and pulses hidden tabs
+  (`rolink-tick` → cheap resync, never dispatches).
+
+**2. Narration guard (was: `We'll call search_game_tree` with no block).**
+- Reply discipline hardened with ZeroScript's rule, ported verbatim in spirit:
+  patterns 1/2 are mutually exclusive; announcing a tool without writing its
+  block is a violation — write it NOW or give the final answer.
+- `search_game_tree` alias contradiction fixed: prompt now says
+  `get_instances` canonically (alias named once as legacy).
+- New prose-intent net in the `text` branch: future-tense tool mention
+  (`will/'ll/gonna/let me/...` + known tool/alias name) triggers a bounded
+  re-ground (`intentNudgesLeft: 2`, reset on tool/start/re-arm) instead of
+  `Agent finished`. Genuine prose (no tool names) still ends the session.
+
+**3. Two-row result chips (ZeroScript parity).**
+- Row 1 (call, green `✓ name + args`) unchanged; new Row 2 result card
+  `⇩ name · result` directly beneath — grey on success, red on error, always
+  collapsed, own Copy + final duration. Injected model turns stay hidden.
+
+**4. All 111 master prompts (was: top-20).**
+- `toolPrompts.ts` now covers 111/111 (`when_to_use/args_guide/example_call/
+  output/pitfalls`), verified 1:1 against `tests/__registry__.json`.
+- Regenerated `generated/tool-prompts.json` + `core/tool-prompts.js`
+  (~60KB, lazy lookup — zero per-turn token cost). Server endpoints +
+  error-feedback injection unchanged.
+
+**Tests**: bridge dispatch 5/5 + pre-flight matrix (incl. fence-prefix fix) green. JS suites need Node.
+
 ## 5.3.0 - Visible tool chips, pro status bar, parse-failure hardening, per-tool master prompts
 
 **1. Tool calls are now always visible (was: Thinking text with no chip).**
