@@ -1,5 +1,5 @@
 # Changelog
-## 5.4.1 - Sprint 4 Heal+Prove patch
+## 5.5.1 - Sprint 1-4 Super plan on top of 5.5.0 (rebased: 5.5.0 force-emission + manifest fix kept)
 
 **Trace + feed + diagnostics (#13).**
 - Activity feed nudge rows now use the styled `nudge` kind (purple
