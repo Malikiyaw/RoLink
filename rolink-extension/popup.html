@@ -102,6 +102,9 @@
     .tool-chip.power{background:rgba(163,113,247,.14);border-color:rgba(163,113,247,.4);color:#a371f7}
     .tool-chip.power.connected{background:rgba(163,113,247,.18);border-color:rgba(163,113,247,.5);color:#a371f7}
     .tool-chip.power.connected::before{content:"★ ";color:#a371f7;font-size:8px}
+    /* Sprint B: live highlight — pulse the running tool chip */
+    .tool-chip.live{animation:rl-live-pulse 1s ease-in-out infinite;border-color:#a371f7!important;color:#d2a8ff!important;background:rgba(163,113,247,.22)!important}
+    @keyframes rl-live-pulse{0%,100%{box-shadow:0 0 4px rgba(163,113,247,.35)}50%{box-shadow:0 0 12px rgba(163,113,247,.8)}}
     .logs-box{max-height:160px;overflow-y:auto;background:rgba(0,0,0,.25);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;line-height:1.5}
     .logs-box::-webkit-scrollbar{width:5px}
     .logs-box::-webkit-scrollbar-thumb{background:#3a3a44;border-radius:3px}
@@ -171,6 +174,7 @@
     </div>
   </div>
   <div class="toast" id="toast"></div>
+  <script src="core/persona-lines.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

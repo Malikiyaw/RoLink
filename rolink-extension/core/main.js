@@ -140,6 +140,8 @@
     busy: false,
     toolRunning: "",
     toolStart: 0,
+    streamOpened: false,       // Sprint B: Tool Stream auto-opened once this session
+    streamDismissed: false,    // Sprint B: user pinned the Tool Stream closed
     feedStreak: 0,
     maxFeedStreak: 14,
     observeTarget: null,
@@ -297,10 +299,12 @@
     <span class="rl-dot" id="rl-dot"></span>
     <span class="rl-brand">RoLink <span class="rl-ver">FREE</span></span>
     <span class="rl-state" id="rl-state"><b>…</b></span>
+    <span class="rl-live" id="rl-live" style="display:none" data-cat="tool"><span class="rl-spinner"></span><span class="rl-live-tag">⚡ AI USING</span><span class="rl-live-name"></span><span class="rl-live-time">0s</span></span>
     <span class="rl-counter" id="rl-counter"></span>
     <button class="rl-primary" id="rl-act-btn" title="Start the RoLink agent">▶ Start</button>
     <button class="rl-icon" id="rl-tools-btn" title="Show available tools">🛠</button>
     <button class="rl-icon" id="rl-feed-btn" title="Show activity">📜</button>
+    <button class="rl-icon" id="rl-stream-btn" title="Tool Stream — every tool call, live (auto-opens)">📺</button>
     <button class="rl-icon" id="rl-trace-btn" title="Show execution trace">🔍</button>
     <button class="rl-icon" id="rl-workspace-btn" title="Workspace memory">🧠</button>
     <button class="rl-icon" id="rl-bgrun-btn" title="Background run">🌙</button>
@@ -316,10 +320,10 @@
   `;
   root.appendChild(toolsPanel);
 
-  // Activity feed
-  const feed = el("div", "rl-feed");
-  feed.innerHTML = `
+  // Activity feed    const feed = el("div", "rl-feed");
+    feed.innerHTML = `
     <div class="rl-feed-head"><span class="rl-feed-title">Activity</span><button class="rl-feed-clear" id="rl-feed-clear" title="Clear log">⌫</button></div>
+
     <div class="rl-feed-list" id="rl-feed-list"></div>
   `;
   root.appendChild(feed);
@@ -349,6 +353,21 @@
     const tc = ()=>{ const l=document.getElementById("rl-trace-list"); if(l) l.innerHTML=""; if(__trace) __trace.clear(); };
     setTimeout(()=>{ const b=document.getElementById("rl-trace-clear"); if(b) b.onclick=e=>{e.stopPropagation(); tc();}; }, 500);
   }
+
+  // Tool Stream panel (Sprint B): chronological per-tool cards — the
+  // never-miss record of what the AI is using. Auto-opens on the first
+  // dispatch of a session; once the user closes it, it stays closed.
+  const streamPanel = el("div", "rl-stream");
+  streamPanel.innerHTML = `
+    <div class="rl-stream-head"><span class="rl-stream-title">📺 Tool Stream</span><span class="rl-stream-old" id="rl-stream-old"></span><button class="rl-feed-clear rl-stream-follow" id="rl-stream-follow" title="Follow live — auto-scroll (on)">⬇</button><button class="rl-feed-clear" id="rl-stream-clear" title="Clear stream">⌫</button></div>
+    <div class="rl-stream-list" id="rl-stream-list"></div>
+  `;
+  root.appendChild(streamPanel);
+  setTimeout(()=>{
+    const fb = document.getElementById("rl-stream-follow"), cb = document.getElementById("rl-stream-clear");
+    if(fb) fb.onclick = e => { e.stopPropagation(); streamFollow = !streamFollow; fb.classList.toggle("off", !streamFollow); fb.title = streamFollow ? "Follow live — auto-scroll (on)" : "Follow live — paused (off)"; if(streamFollow){ const l = document.getElementById("rl-stream-list"); if(l) l.scrollTop = l.scrollHeight; } };
+    if(cb) cb.onclick = e => { e.stopPropagation(); const l = document.getElementById("rl-stream-list"); if(l) l.innerHTML = ""; streamOldCount = 0; const o = document.getElementById("rl-stream-old"); if(o) o.textContent = ""; };
+  }, 300);
 
   // Workspace / memory panel
   const wsPanel = el("div", "rl-workspace");
@@ -403,6 +422,7 @@
   }
   function setCounter(n){ const c = document.getElementById("rl-counter"); if(c) c.textContent = `· ${n} tool${n === 1 ? "" : "s"}`; }
   function setStatus(s){
+    lastConnStatus = s;
     const dot = document.getElementById("rl-dot"), state = document.getElementById("rl-state");
     if(!dot || !state) return;
     dot.classList.remove("on","warn","err");
@@ -435,7 +455,11 @@
         try{
           const allP = (typeof window !== "undefined" && window.ROLINK_TOOL_PROMPTS) || null;
           const mp = allP && allP[nm];
-          if(mp && mp.when_to_use) tip = (tip ? tip + " — " : "") + mp.when_to_use;
+          // Sprint A: persona first line leads the tooltip; usage follows.
+          const first = mp && mp.persona ? String(mp.persona).match(/^.*?[.!?](?=\s|$)/s) : null;
+          const personaLine = first ? first[0].trim() : (mp && mp.persona ? String(mp.persona).trim() : "");
+          if(personaLine) tip = personaLine + (tip ? " — " + tip : "");
+          else if(mp && mp.when_to_use) tip = (tip ? tip + " — " : "") + mp.when_to_use;
         }catch{}
         return `<span class="t" title="${escapeHtml(String(tip).slice(0,220))}">${escapeHtml(nm)}</span>`;
       }).join("");
@@ -444,10 +468,12 @@
     return A.tools;
   }
   function wireUi(){
-    document.getElementById("rl-tools-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); toolsPanel.classList.toggle("rl-show"); };
-    document.getElementById("rl-feed-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); toolsPanel.classList.remove("rl-show"); feed.classList.toggle("rl-show"); };
+    document.getElementById("rl-tools-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); streamPanel.classList.remove("rl-show"); toolsPanel.classList.toggle("rl-show"); };
+    document.getElementById("rl-feed-btn").onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); streamPanel.classList.remove("rl-show"); toolsPanel.classList.remove("rl-show"); feed.classList.toggle("rl-show"); };
+    const streamBtn = document.getElementById("rl-stream-btn");
+    if(streamBtn) streamBtn.onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show"); streamPanel.classList.toggle("rl-show"); if(!streamPanel.classList.contains("rl-show")) A.streamDismissed = true; };
     const traceBtn = document.getElementById("rl-trace-btn");
-    if(traceBtn) traceBtn.onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show"); tracePanel.classList.toggle("rl-show"); };
+    if(traceBtn) traceBtn.onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show"); streamPanel.classList.remove("rl-show"); tracePanel.classList.toggle("rl-show"); };
     document.getElementById("rl-feed-clear").onclick = e => { e.stopPropagation(); document.getElementById("rl-feed-list").innerHTML=""; };
     document.getElementById("rl-workspace-btn").onclick = e => {
       e.stopPropagation();
@@ -624,6 +650,148 @@
   window.addEventListener("resize", placeBar);
   setInterval(placeBar, 1500);
   setTimeout(placeBar, 600);
+
+  // ── Sprint B — 1000x tool visibility: live pill + Tool Stream ─────────
+  // While a tool runs, the bar's idle connection text is replaced by a live
+  // "⚡ AI USING · name · Ns" pill in the tool's category neon. Every dispatch
+  // also appends a chronological card to the right-docked Tool Stream panel
+  // (auto-opens once per session; chat chips stay the primary record and the
+  // Stream is the never-miss fallback — see the anchor chain in dispatchTool).
+  // 100% RoLink design language; no ZeroScript classes, markup or text.
+  const CAT_NEON = {
+    read: "#58a6ff", edit: "#2f81f7", inspect: "#39c5cf", generate: "#a371f7",
+    asset: "#ffb454", visual: "#ff6ec7", test: "#3fb950", tool: "#79c0ff"
+  };
+  function catNeon(cat){ return CAT_NEON[cat] || CAT_NEON.tool; }
+  let liveTick = null, lastConnStatus = "", streamFollow = true, streamOldCount = 0;
+  function clearLiveTick(){ try{ if(liveTick){ clearInterval(liveTick); liveTick = null; } }catch{} }
+  function updateLiveTime(){
+    const t = document.getElementById("rl-live");
+    if(!t) return;
+    const te = t.querySelector(".rl-live-time");
+    if(!te) return;
+    const s = (Date.now() - (A.toolStart || Date.now())) / 1000;
+    te.textContent = (s < 10 ? s.toFixed(1) + "s" : Math.round(s) + "s");
+  }
+  function setToolLive(name){
+    A.toolRunning = name; A.toolStart = Date.now();
+    const live = document.getElementById("rl-live");
+    if(!live) return;
+    const cat = getToolCategory(name) || "tool";
+    live.dataset.cat = cat;
+    live.style.setProperty("--cat", catNeon(cat));
+    live.classList.remove("rl-err");
+    const nm = live.querySelector(".rl-live-name"); if(nm) nm.textContent = name;
+    bar.classList.add("rl-tooling");
+    live.style.display = "inline-flex";
+    updateLiveTime();
+    clearLiveTick();
+    liveTick = setInterval(updateLiveTime, 200);
+  }
+  function hideLive(){
+    clearLiveTick();
+    const live = document.getElementById("rl-live");
+    if(live){ live.style.display = "none"; live.classList.remove("rl-err"); }
+    bar.classList.remove("rl-tooling");
+    A.toolRunning = "";
+    if(!A.parked && lastConnStatus) setStatus(lastConnStatus);
+  }
+  // End of a tool's run in the bar pill: ok -> straight back to the
+  // connection state. error -> 1.5s red flash with the tool name still shown.
+  // stale / user-stop -> no flash, immediate revert.
+  function toolEnd(name, res, opts){
+    opts = opts || {};
+    const ok = !!(res && res.ok !== false);
+    const live = document.getElementById("rl-live");
+    const shown = live && live.style.display !== "none";
+    if(!shown || opts.kind === "stale" || A.stopping || ok){ hideLive(); return; }
+    live.classList.add("rl-err");
+    live.style.setProperty("--cat", "#f85149");
+    const nm = live.querySelector(".rl-live-name"); if(nm) nm.textContent = name;
+    const flashName = name;
+    setTimeout(()=>{
+      const cur = document.getElementById("rl-live");
+      const curName = cur && cur.querySelector(".rl-live-name");
+      if(curName && curName.textContent === flashName) hideLive();
+    }, 1500);
+  }
+  function streamAppend(card){
+    const list = document.getElementById("rl-stream-list");
+    if(!list) return;
+    list.appendChild(card);
+    while(list.children.length > 200){
+      list.removeChild(list.firstChild); streamOldCount++;
+    }
+    const oldEl = document.getElementById("rl-stream-old");
+    if(oldEl) oldEl.textContent = streamOldCount ? "… " + streamOldCount + " older" : "";
+    if(streamFollow) list.scrollTop = list.scrollHeight;
+  }
+  function makeStreamCard(name, args, pinned){
+    const card = el("div", "rl-stream-card rl-pending");
+    const cat = getToolCategory(name) || "tool";
+    card.dataset.cat = cat;
+    card.dataset.t0 = String(Date.now());
+    card.style.setProperty("--cat", catNeon(cat));
+    const detail = shortArgSummary(name, args);
+    const tag = pinned ? `<span class="rl-stream-tag">pinned from chat</span>` : "";
+    card.innerHTML =
+      `<div class="rl-stream-card-head"><span class="rl-spinner"></span><span class="rl-ico">⚙</span>` +
+      `<span class="rl-name">${escapeHtml(name)}</span><span class="rl-detail">${escapeHtml(detail)}</span>` +
+      `<span class="rl-time">0s</span>${tag}<span class="rl-chevron">▼</span></div>` +
+      `<div class="rl-stream-card-body"><pre></pre><div class="rl-stream-card-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur"></span></div></div>`;
+    try{
+      card.querySelector(".rl-stream-card-head").onclick = (e)=>{ e.stopPropagation(); card.classList.toggle("open"); };
+      const btn = card.querySelector(".rl-copy");
+      if(btn) btn.onclick = (e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(String((card.querySelector("pre") || {}).textContent || "")); btn.textContent = "Copied"; setTimeout(()=>{ btn.textContent = "Copy"; }, 1200); }catch{} };
+      const tEl = card.querySelector(".rl-time");
+      const iv = setInterval(()=>{
+        if(!card.isConnected){ clearInterval(iv); return; }
+        if(card.classList.contains("rl-ok") || card.classList.contains("rl-err")){ clearInterval(iv); return; }
+        const s = (Date.now() - Number(card.dataset.t0)) / 1000;
+        if(tEl) tEl.textContent = (s < 10 ? s.toFixed(1) + "s" : Math.round(s) + "s");
+      }, 200);
+      card._timer = iv;
+    }catch{}
+    streamAppend(card);
+    return card;
+  }
+  function settleStreamCard(card, res, meta){
+    if(!card || !card.querySelector) return;
+    meta = meta || {};
+    try{ if(card._timer){ clearInterval(card._timer); card._timer = null; } }catch{}
+    const ok = !!(res && res.ok !== false);
+    const durMs = (meta.durationMs != null) ? meta.durationMs
+      : (Number(card.dataset.t0 || 0) ? Date.now() - Number(card.dataset.t0) : 0);
+    const full = ok ? (res && (res.text || "done")) : (res && (res.error || "failed"));
+    const dur = durMs < 10000 ? (durMs / 1000).toFixed(1) + "s" : Math.round(durMs / 1000) + "s";
+    card.classList.remove("rl-pending");
+    card.classList.add(ok ? "rl-ok" : "rl-err");
+    const head = card.querySelector(".rl-stream-card-head");
+    if(head){
+      const icoEl = head.querySelector(".rl-ico"); if(icoEl) icoEl.textContent = ok ? "✓" : "✗";
+      const sp = head.querySelector(".rl-spinner"); if(sp) sp.style.display = "none";
+      const tEl = head.querySelector(".rl-time"); if(tEl) tEl.textContent = dur;
+      const dEl = head.querySelector(".rl-detail");
+      if(dEl && !dEl.textContent) dEl.textContent = shorten(String(full).replace(/\n/g, " "), 100);
+      if(meta.stale){
+        const chev = head.querySelector(".rl-chevron");
+        const tag = el("span", "rl-stream-tag rl-stream-tag-warn"); tag.textContent = "stale — not injected";
+        if(chev) head.insertBefore(tag, chev);
+      }
+    }
+    const pre = card.querySelector(".rl-stream-card-body pre");
+    if(pre) pre.textContent = String(full).slice(0, 4000);
+    const durEl = card.querySelector(".rl-dur");
+    if(durEl) durEl.textContent = (ok ? "done in " : "failed in ") + dur;
+  }
+  function openStreamOnce(){
+    if(A.streamOpened || A.streamDismissed) return;
+    A.streamOpened = true;
+    streamPanel.classList.add("rl-show");
+  }
+  function notifyBgTool(state, name, extra){
+    try{ bg({type: "tool-state", state, name, ...(extra || {})}); }catch{}
+  }
 
   // ── tool chip helpers — 1000x original (head + collapsible body, category color, no copy) ──
   function getToolCategory(name){
@@ -905,29 +1073,35 @@ ${customBlock}
       try{ afterChip.parentNode.insertBefore(chip, afterChip.nextSibling); }
       catch{ afterChip = null; }
     }
+    // Sprint B anchor-never-miss: findToolBlockSpot -> sourceBlock parent ->
+    // end of the assistant item. NEVER document.body — a body-level chip sits
+    // outside the chat message, invisible and unreachable by scroll. If no
+    // chat anchor exists, the Tool Stream card carries the "pinned from chat"
+    // tag (it is already the never-miss record of the call).
+    let chipPinned = false;
     if(!(afterChip && chip.parentNode)){
-    // S11: multi-call chip placement. If this is the Nth call in a single
-    // assistant reply, anchor chips after the previous one instead of into
-    // the shared assistant bubble.
-    const spot = (P && P.findToolBlockSpot)
-      ? P.findToolBlockSpot(sourceItem, chip)
-      : null;
-    if(spot && spot.parent){
-      spot.parent.insertBefore(chip, spot.ref || null);
-    } else if(sourceBlock && sourceBlock.parentElement && sourceBlock.parentElement.parentElement){
-      sourceBlock.parentElement.parentElement.insertBefore(chip, sourceBlock.parentElement);
-    } else if(sourceItem && sourceItem.appendChild){
-      // Never document.body: a body-level chip sits outside the chat message,
-      // invisible and unreachable by scroll. Anchor at the end of the
-      // assistant item instead (ZeroScript chip() fallback pattern). Works
-      // even if the item is temporarily detached (virtual-list swap) — the
-      // chip travels with the node and appears on re-attach.
-      try{ sourceItem.appendChild(chip); }catch{ try{ document.body.appendChild(chip); }catch{} }
-    } else {
-      try{ document.body.appendChild(chip); }catch{}
-    }
+      const spot = (P && P.findToolBlockSpot)
+        ? P.findToolBlockSpot(sourceItem, chip)
+        : null;
+      if(spot && spot.parent){
+        spot.parent.insertBefore(chip, spot.ref || null);
+      } else if(sourceBlock && sourceBlock.parentElement && sourceBlock.parentElement.parentElement){
+        sourceBlock.parentElement.parentElement.insertBefore(chip, sourceBlock.parentElement);
+      } else if(sourceItem && sourceItem.appendChild){
+        try{ sourceItem.appendChild(chip); }catch{}
+      }
+      chipPinned = !(chip && chip.parentNode);
+      if(chipPinned) diag("chip.fallback", { name });
     }
     A.busy = true; A.toolRunning = name; A.toolStart = Date.now();
+    // Sprint B: live pill + Tool Stream — every dispatch is visible from the
+    // moment it starts (the pill replaces the idle status; the panel
+    // auto-opens once per session). The stream card outlives the pill so the
+    // run stays inspectable after the bar reverts.
+    setToolLive(name);
+    const sc = makeStreamCard(name, args, chipPinned);
+    openStreamOnce();
+    notifyBgTool("running", name, {});
     if(fsm) try{ fsm.transition("TOOL_DETECTED", name); }catch{}
     pushFeed("tool", "⚙", `${name} ${JSON.stringify(args).slice(0,180)}`);
     if(__trace) __trace.push({ ts: Date.now(), level:"info", msg:`TOOL_DETECTED ${name}` });
@@ -956,7 +1130,10 @@ ${customBlock}
         if(res && res.stale){
           chipFinalize(chip, name, {ok:false, error:"Result arrived for previous chat — not injecting."});
           pushFeed("nudge","↻",`${name}: stale result discarded (new chat opened)`);
-          A.busy = false; A.toolRunning = "";
+          A.busy = false;
+          toolEnd(name, {ok:false, error:"stale"}, {kind:"stale"});
+          settleStreamCard(sc, {ok:false, error:"Result arrived for previous chat — not injecting.", stale:true}, {stale:true, durationMs: Date.now()-callStart});
+          notifyBgTool("done", name, {ok:false, kind:"stale", durationMs: Date.now()-callStart});
           if(fsm) try{ fsm.transition("WAITING_FOR_AI", "stale"); }catch{}
           return {chip, name, res, text: res.text||"", stale:true};
         }
@@ -972,10 +1149,13 @@ ${customBlock}
       pushFeed("err", "✗", `${name}: EXCEPTION ${msg.slice(0,200)}`);
     }
 
-    A.busy = false; A.toolRunning = "";
+    A.busy = false;
     if(!res) res = {ok:false, error:"no response from bridge", kind:"bridge_offline"};
+    toolEnd(name, res);
     if(res.kind === "stale-extension" || isContextInvalidated(res.error)){
       chipFinalize(chip, name, {ok:false, error:"Extension updated — please reload this page and click Start again."});
+      settleStreamCard(sc, {ok:false, error:"Extension updated — please reload this page and click Start again."}, {});
+      notifyBgTool("done", name, {ok:false, kind:"stale-extension"});
       pushFeed("err", "✗", "Extension context invalidated. Reload the page.");
       A.running = false; setLauncherStopped();
       if(fsm) try{ fsm.transition("ERROR", "contextInvalidated"); }catch{}
@@ -999,6 +1179,10 @@ ${customBlock}
     // S9: result provenance
     (A.history = A.history || []).push({role:"tool_result", name, ok, text, ts:Date.now(), durationMs: Date.now()-callStart, kind: res.kind||(ok?"success":"error")});
     saveSession();
+    // Sprint B: settle the Tool Stream card with the real outcome + tell the
+    // background so the popup can pulse the tool chip and stamp last-used.
+    settleStreamCard(sc, res, {ok, durationMs: Date.now()-callStart});
+    notifyBgTool("done", name, {ok, durationMs: Date.now()-callStart});
     // Drift detection: a successful call resets the per-provider counter.
     try{ if(typeof window !== "undefined" && window.__rolinkDrift && window.__rolinkDrift.noteSuccessfulTool) window.__rolinkDrift.noteSuccessfulTool(P.id || "generic"); }catch{}
     if(name === "get_studio_state" && ok){
@@ -1033,7 +1217,15 @@ ${customBlock}
       try{
         const allP = (typeof window !== "undefined" && window.ROLINK_TOOL_PROMPTS) || null;
         const mp = allP && allP[name];
-        if(mp) hint += `\n\n"${name}" usage — ${mp.when_to_use}\nArgs: ${mp.args_guide}\nExample:\n${mp.example_call}\nPitfalls: ${mp.pitfalls}`;
+        if(mp){
+          // Sprint A: lead with the tool's expert persona (first line) + pitfalls, capped ~400 chars.
+          let expert = "";
+          try{
+            const first = String(mp.persona || "").match(/^.*?[.!?](?=\s|$)/s);
+            expert = ((first ? first[0] : String(mp.persona || "")).trim() + " Pitfalls: " + String(mp.pitfalls || "")).slice(0, 400);
+          }catch{}
+          hint += (expert ? `\n\nExpert voice — ${expert}` : "") + `\n\n"${name}" usage — ${mp.when_to_use}\nArgs: ${mp.args_guide}\nExample:\n${mp.example_call}\nPitfalls: ${mp.pitfalls}`;
+        }
       }catch{}
       if(/unknown tool/i.test(text) && Array.isArray(A.tools) && A.tools.length){
         hint += `\n\nThe valid tool names right now are: ${A.tools.map(t => (typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}.`;
@@ -1655,6 +1847,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     const myGen = ++A.startGen;
     A.started = true; A.sessionEverStarted = true; A.starting = true; A.running = false; A.stopping = false;
     A.feedStreak = 0; A.toolCount = 0; A.lastFeedText = ""; A.lastFeedAt = 0; A.lastFeedId = null;
+    A.streamOpened = false; A.streamDismissed = false;
     A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
     A.driftRegrounded = false; A.thinkingDriftMs = 45000;
     setCounter(0);
@@ -1754,6 +1947,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   function stopSession(){
     if(!A.started) return;
     A.stopping = true; A.running = false; A.busy = false; A.injecting = false;
+    hideLive();
     A.startGen++;
     if(execMgr) try{ execMgr.cancelAll("user stop"); }catch{}
     if(fsm) try{ fsm.transition("STOPPED", "user"); }catch{}

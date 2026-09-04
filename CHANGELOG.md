@@ -1,4 +1,20 @@
 # Changelog
+## 5.6.0 - Pro-Max personas + 1000x tool visibility (Sprint A + Sprint B)
+
+**Sprint A — Pro-Max Personas (every tool becomes the specialist).**
+- All 111 tools now carry an expert `persona` (2-4 sentences, second person: who you are, what mastery you hold, the quality bar you enforce, what you never do) in `mcp-server/src/tools/toolPrompts.ts` — regenerated into `generated/tool-prompts.json`, `rolink-extension/core/tool-prompts.js` (additive `window.RLPrompts.get()` shim; old 5-field readers untouched) and new `rolink-extension/core/persona-lines.js` (compact first-line map for popup tooltips).
+- Persona injection paths: failed-tool error feedback leads with the tool's persona + pitfalls (capped); tools-panel and popup tooltips lead with the persona's first line; the system prompt carries a per-category expert-persona note plus the Studio-equivalence map.
+- `docs/studio-equivalence.md` — every Studio menu (Explorer, Properties, Toolbox, Animation Editor, Terrain Editor, Material Manager, Playtest, Asset Manager, Team Collaboration, DataStores, Lighting, UI Editor, Sound, Script Editor) mapped to its RoLink tools, so "the AI can do everything Studio can" is provable.
+- `when_to_use` names the Studio menu equivalent and `args_guide` adds one Studio gotcha per tool; no field exceeds ~80 words (lazy per-turn budget).
+
+**Sprint B — 1000x Tool Visibility (see what the AI is using, live).**
+- Live `⚡ AI USING · <tool> · <elapsed>` pill in the bar: category-neon accent + 200ms ticker while a tool runs; error flashes red with the tool name for 1.5s, then the bar reverts to its connection state. Replaces the idle status text (`#rl-bar.rl-tooling`), never a second row.
+- New right-docked **Tool Stream** panel (340px): every dispatch appends a chronological card (category color, args preview, live timer, expandable result + Copy, true duration, ✓/✗ settle). Auto-opens on the first dispatch of each session; closing it pins it closed for the session. Follow-live auto-scroll (toggleable) and a 200-card cap that collapses the oldest into a count.
+- Anchor-never-miss: the chat-chip anchor chain (`findToolBlockSpot` → sourceBlock parent → end of assistant item) no longer falls back to `document.body`; an unplaceable chip logs `chip.fallback` to the diag ring and its stream card is tagged **pinned from chat**.
+- Popup live highlight: the running tool's chip pulses in the Tools tab and every tool chip shows its last-used time; a "⚡ using <tool>" line appears in the tools header. Content script relays `tool-state` running/done transitions to the background, which carries the `agent` snapshot in its status broadcasts.
+
+**Tests**: chip-render extended to 8 contracts (111-tool stream settle, 5 exit paths × 111 stream mirrors, Sprint B source contract: body-free anchors + stream markers + relay wiring). Full suites green: parser 26, providers 10, dispatch 5, agent-loop 7, partial-tools 4, intent-net 24, tool-prompts 14, chip-render 8, execution + vitest suites, `tsc --noEmit` clean, syntax check clean, audit stays 111 yes / 0 partial. Python bridge dispatch tests and the live 8-site matrix remain for a human with Roblox Studio (no Studio E2E possible in a sandbox).
+
 ## 5.5.1 - Sprint 1-4 Super plan on top of 5.5.0 (rebased: 5.5.0 force-emission + manifest fix kept)
 
 **Trace + feed + diagnostics (#13).**

@@ -93,6 +93,7 @@ function render(s){
   renderMcpServers(s);
   allTools = tools;
   renderTools(tools);
+  applyLive();
 }
 
 // Per-server dots, scoped per server. The header dot above only reflects
@@ -114,6 +115,38 @@ function renderMcpServers(s){
       return `<div class="mcp-srv ${(id==="roblox")?"roblox":"addon"} ${on?"on":"off"}"><span class="mcp-dot">${on?"●":"○"}</span><span>${id}</span>${n}</div>`;
     }).join("");
   }
+}
+
+// Sprint B: popup live highlight — pulse the running tool chip and stamp
+// per-tool "last used" times. Runs after every render/broadcast regardless
+// of whether renderTools' signature cache short-circuited a full repaint.
+function applyLive(){
+  try{
+    const agent=(lastStatus && lastStatus.agent)||null;
+    const run=(agent && agent.running && agent.running.name)||"";
+    const lastUsed=(agent && agent.lastUsed)||{};
+    toolsListEl.querySelectorAll(".tool-chip").forEach(ch=>{
+      const nm=ch.dataset.tool||"";
+      ch.classList.toggle("live", !!run && nm===run);
+      const ts=lastUsed[nm];
+      if(ts){
+        const hhmm=new Date(ts).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+        if(ch.dataset.lu !== String(ts)){
+          ch.dataset.lu=String(ts);
+          const base=ch.title ? ch.title.split(" — last used")[0] : nm;
+          ch.title=base+" — last used "+hhmm;
+        }
+      }
+    });
+    const hintEl=document.getElementById("toolsHint");
+    if(hintEl){
+      const base=hintEl.dataset.base || hintEl.textContent;
+      hintEl.dataset.base=base;
+      hintEl.innerHTML=run
+        ? `${base} — <span style="color:#a371f7">⚡ using <b>${escapeHtml(run)}</b></span>`
+        : base;
+    }
+  }catch{}
 }
 
 function renderTools(tools){
@@ -150,7 +183,14 @@ function renderTools(tools){
     for(const x of arr){
       const isConnected=connectedSet.has(x.name);
       const isPower = /^(self_heal|rollback|generate_test|review_code|generate_asset|train_model|optimize_performance|generate_sound|adjust_difficulty|explain_code|simulate_economy|suggest_design|compile_visual_graph|generate_level|generate_quest|export_project|get_analytics|git_rollback|playtest|run_playtest|get_performance_stats|analyze_performance)/.test(x.name);
-      html += `<span class="tool-chip ${isConnected?'connected':''} ${isPower?'power':''}" title="${escapeHtml(x.name)} — ${escapeHtml(x.raw.description||'')}" data-tool="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>`;
+      // Sprint A: persona first line leads the tooltip (persona-lines.js); description follows.
+      let tip = `${x.name} — ${x.raw.description||''}`;
+      try{
+        const pl = (typeof window !== "undefined" && window.ROLINK_PERSONA_LINES) || null;
+        const line = pl && pl[x.name];
+        if(line) tip = `${line} — ${x.raw.description||x.name}`;
+      }catch{}
+      html += `<span class="tool-chip ${isConnected?'connected':''} ${isPower?'power':''}" title="${escapeHtml(tip)}" data-tool="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>`;
     }
     html += `</div>`;
   }
@@ -161,7 +201,14 @@ function renderTools(tools){
       if(filter) arr=arr.filter(x=> x.name.toLowerCase().includes(filter));
       if(arr.length){
         html += `<div class="cat-header" data-cat="Other"><span class="arrow">▼</span> Other <span class="count">${arr.length}</span></div><div class="tools-grid" data-grid="Other">`;
-        for(const x of arr) html += `<span class="tool-chip connected" data-tool="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>`;
+        for(const x of arr){
+          let tip = x.name;
+          try{
+            const pl = (typeof window !== "undefined" && window.ROLINK_PERSONA_LINES) || null;
+            if(pl && pl[x.name]) tip = pl[x.name];
+          }catch{}
+          html += `<span class="tool-chip connected" title="${escapeHtml(tip)}" data-tool="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>`;
+        }
         html += `</div>`;
       }
     }

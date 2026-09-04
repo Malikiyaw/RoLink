@@ -1,5 +1,6 @@
 # RoLink Versioning (SemVer)
 
+- **5.6.0** — Pro-Max personas on all 111 tools (expert-voice persona + Studio-equivalence map + persona-led tooltips/error feedback) and 1000x tool visibility (live AI-USING pill, Tool Stream panel, anchor-never-miss → stream, popup live highlight + last-used)
 - **5.5.1** — Sprints 1-4 Super plan rebased on 5.5.0: parser DSML/wrongkey nudges, provider resilience pack, bar/chips/camouflage/popup v2, bgRun send-park, multi-MCP server_list, per-chat memory + session export/import, staged trace, stall watchdog, validate_command Luau pre-flight, offline switch_project, ZS_BRIDGE_PORT alias
 - **5.5.0** — force emission first render second + manifest merge-marker fix
 - **5.4.0** — background run, narration guard, two-row result chips, all 111 master prompts

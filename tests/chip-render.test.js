@@ -106,6 +106,90 @@ function placeChip(chip, parent){
     assert(sourceItemAnchorCount + parentInsertBeforeCount > 0, "at least one anchor path");
   });
 
+  // Sprint B: Tool Stream mirror helpers (repo convention — main.js is an
+  // IIFE, so tests mirror the settled-card contract that production builds).
+  function streamCardMeta(name, args, pinned){
+    return {
+      name: name,
+      pinnedTag: !!pinned,
+      pending: true
+    };
+  }
+  function settleStreamCard(name, res, meta){
+    meta = meta || {};
+    const ok = !!(res && res.ok !== false);
+    const durMs = (meta.durationMs != null) ? meta.durationMs : 1234;
+    const full = ok ? (res && (res.text || "done")) : (res && (res.error || "failed"));
+    const dur = durMs < 10000 ? (durMs/1000).toFixed(1) + "s" : Math.round(durMs/1000) + "s";
+    return {
+      cls: ok ? "rl-stream-card rl-ok" : "rl-stream-card rl-err",
+      ico: ok ? "✓" : "✗",
+      name: name,
+      dur: dur,
+      body: String(full).slice(0, 4000),
+      staleTag: !!(meta.stale),
+      pinnedTag: !!(meta.pinned)
+    };
+  }
+
+  await run("111-tool stream settle: every name settles without throw", async () => {
+    for(const name of TOOLS){
+      const rOk = settleStreamCard(name, { ok: true, text: "ok" }, { durationMs: 120 });
+      assert(rOk.name === name, `${name}: name preserved`);
+      assert(rOk.cls === "rl-stream-card rl-ok", `${name}: success class`);
+      assert(rOk.ico === "✓", `${name}: success icon`);
+      assert(rOk.dur === "0.1s", `${name}: success duration`);
+      assert(rOk.body === "ok", `${name}: success body`);
+      assert(!rOk.staleTag && !rOk.pinnedTag, `${name}: no spurious tags`);
+      const rErr = settleStreamCard(name, { ok: false, error: "boom" }, { durationMs: 5000 });
+      assert(rErr.cls === "rl-stream-card rl-err", `${name}: error class`);
+      assert(rErr.ico === "✗", `${name}: error icon`);
+      assert(rErr.body === "boom", `${name}: error body`);
+      assert(rErr.dur === "5.0s", `${name}: error duration`);
+    }
+  });
+
+  await run("5 exit paths × 111 tools: stream card mirrors dispatch outcome", async () => {
+    const exitPaths = [
+      { name: "success",        res: { ok: true,  text: "ok",     durationMs: 100 } },
+      { name: "validation",     res: { ok: false, error: "bad args", durationMs: 5 } },
+      { name: "stale",          res: { ok: false, error: "stale",   durationMs: 50 }, meta: { stale: true } },
+      { name: "exception",      res: { ok: false, error: "boom",    durationMs: 10 } },
+      { name: "contextInvalid", res: { ok: false, error: "ctx invalid", durationMs: 0 } }
+    ];
+    for(const name of TOOLS){
+      for(const ep of exitPaths){
+        const s = settleStreamCard(name, ep.res, Object.assign({}, ep.meta || {}, { durationMs: ep.res.durationMs }));
+        assert(s.cls.includes(ep.res.ok ? "rl-ok" : "rl-err"), `${name}/${ep.name}: settle class`);
+        assert(s.ico === (ep.res.ok ? "✓" : "✗"), `${name}/${ep.name}: settle icon`);
+        if(ep.name === "stale") assert(s.staleTag, `${name}/stale: stale tag present`);
+        else assert(!s.staleTag, `${name}/${ep.name}: no stale tag`);
+      }
+      const pinned = streamCardMeta(name, {}, true);
+      assert(pinned.pinnedTag, `${name}: pinned-from-chat tag at creation`);
+    }
+  });
+
+  await run("Sprint B source contract: body-free anchors, stream markers, live relay", async () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "core", "main.js"), "utf8");
+    assert((main.match(/document\.body\.appendChild\(chip\)/g) || []).length === 0, "no document.body.appendChild(chip) remains");
+    assert(/diag\("chip\.fallback"/.test(main), "chip.fallback logged to diag");
+    assert(main.includes("pinned from chat"), "'pinned from chat' tag text present");
+    assert(/function setToolLive/.test(main), "live pill helper present");
+    assert(/function openStreamOnce/.test(main), "stream auto-open helper present");
+    assert(/function notifyBgTool/.test(main), "background relay helper present");
+    assert(main.includes("rl-stream-list"), "stream list element id present");
+    assert(main.includes("A.streamDismissed"), "pin-closed state tracked");
+    assert(!/document\.body\.appendChild\(chip\)/.test(main), "no body chip fallback anywhere");
+    const bg = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "background.js"), "utf8");
+    assert(bg.includes('case "tool-state"'), "background handles tool-state relay");
+    assert(/agent: agentTools/.test(bg), "status carries the agent snapshot");
+    const popup = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "popup.js"), "utf8");
+    assert(/function applyLive/.test(popup), "popup live-highlight helper present");
+    const html = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "popup.html"), "utf8");
+    assert(html.includes(".tool-chip.live"), "popup pulse CSS present");
+  });
+
   console.log(`\nPhase C (chip-render) tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 

@@ -34,6 +34,9 @@ let mcpAlive = false;
 let serversCache = [];
 let studioConnected = null;
 let studioApp = null;
+// Sprint B: agent-session snapshot relayed from the content script on each
+// tool start/finish — popup live highlight (pulse + last-used timestamps).
+let agentTools = { running: null, lastUsed: {}, lastResult: null };
 
 function log(...a){ console.log("[rolink-bg]", ...a); }
 
@@ -55,6 +58,7 @@ function connect(){
   };
   ws.onclose=()=>{
     connected=false; mcpAlive=false; studioConnected=null; studioApp=null; serversCache=[];
+    agentTools.running = null;
     stopHeartbeat(); failAllPending("bridge connection closed"); broadcastStatus(); scheduleReconnect();
   };
   ws.onerror=()=>{ try{ ws.close(); }catch{} };
@@ -217,6 +221,7 @@ function statusObj(){
     mcp_servers: mcpServers,
     bridgeState: deriveBridgeState(),
     nudgeStats: getNudgeStats(),
+    agent: agentTools,
     bridgeVersion: chrome.runtime.getManifest().version
   };
 }
@@ -230,6 +235,24 @@ function broadcastStatus(){
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse)=>{
   (async()=>{
     switch(msg.type){
+      case "tool-state": {
+        // Sprint B: content script relays running/done transitions so the
+        // popup can pulse the active tool chip and stamp per-tool last-used.
+        if(msg.state === "running"){
+          agentTools.running = { name: msg.name || "", since: Date.now() };
+        } else if(msg.state === "done"){
+          agentTools.running = null;
+          if(msg.name){
+            agentTools.lastUsed[msg.name] = Date.now();
+            const keys = Object.keys(agentTools.lastUsed);
+            if(keys.length > 200) delete agentTools.lastUsed[keys[0]];
+            agentTools.lastResult = { name: msg.name, ok: !!msg.ok, durationMs: msg.durationMs || 0, ts: Date.now() };
+          }
+        }
+        broadcastStatus();
+        sendResponse({ok:true});
+        break;
+      }
       case "status":
         if(!connected) connect();
         sendResponse(statusObj());

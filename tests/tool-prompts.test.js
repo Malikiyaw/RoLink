@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// tests/tool-prompts.test.js — Phase D prompt-quality gate.
+// tests/tool-prompts.test.js — Phase D prompt-quality gate + Sprint A pro-max personas.
 //
 // Contract for rolink-extension/core/tool-prompts.js (111 tools):
 //   1. Every tool name from the registry has an entry.
-//   2. Every entry has when_to_use, args_guide, example_call, pitfalls.
+//   2. Every entry has persona, when_to_use, args_guide, example_call,
+//      output, pitfalls (persona added Sprint A; old 5-field readers unaffected).
 //   3. example_call is valid: contains either a ###LUA### block (executed
 //      verbatim) or a ###MCP_TOOL### JSON envelope that JSON-parses to a
 //      {tool, args} object whose tool name matches the entry key.
@@ -15,6 +16,10 @@
 //   6. The blocklist: no "Use your code interpreter", "Run the model",
 //      etc. — these are the exact anti-patterns from the v5.4.0
 //      discipline line that the v5.5.0 plan extends.
+//   7. (Sprint A) persona: non-empty, 10+ words, expert voice; every field
+//      ≤ 600 chars and ≤ 80 words; example_call carries a tool marker;
+//      multi_edit is never referenced as a tool (rewrites go through
+//      set_script_content + ###RAW###).
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -213,6 +218,50 @@ function countTokens(s){
     // We assert both are accessible by name.
     for(const n of REGISTRY){
       assert(TP[n], `${n}: window.ROLINK_TOOL_PROMPTS missing`);
+    }
+  });
+
+  // ── 10 (Sprint A): persona present, expert voice, 10+ words ──────────
+  await run("every tool has a non-empty persona (10+ words, second person, 2+ sentences)", async () => {
+    for(const n of REGISTRY){
+      const p = TP[n];
+      assert(typeof p.persona === "string" && p.persona.trim().length > 0, `${n}: persona missing`);
+      const wc = p.persona.trim().split(/\s+/).length;
+      assert(wc >= 10, `${n}: persona only ${wc} words (< 10)`);
+      assert(/\b[Yy]ou\b/.test(p.persona), `${n}: persona not second person`);
+      const sentences = p.persona.split(/(?<=[.!?])\s+/).filter(s => s.trim().length);
+      assert(sentences.length >= 2, `${n}: persona has ${sentences.length} sentence(s) (< 2)`);
+    }
+  });
+
+  // ── 11 (Sprint A): all 6 fields present, each ≤ 600 chars, ≤ 80 words ──
+  await run("all 6 fields present, each field <= 600 chars and <= 80 words", async () => {
+    for(const n of REGISTRY){
+      const p = TP[n];
+      for(const f of ["persona", "when_to_use", "args_guide", "example_call", "output", "pitfalls"]){
+        assert(typeof p[f] === "string" && p[f].trim().length > 0, `${n}: ${f} empty`);
+        assert(p[f].length <= 600, `${n}: ${f} is ${p[f].length} chars (> 600)`);
+        const wc = p[f].trim().split(/\s+/).length;
+        assert(wc <= 80, `${n}: ${f} is ${wc} words (> 80)`);
+      }
+    }
+  });
+
+  // ── 12 (Sprint A): example_call carries a tool marker ─────────────────
+  await run("every example_call contains a tool marker (###MCP_TOOL###, ###LUA###, or tool)", async () => {
+    for(const n of REGISTRY){
+      const ex = TP[n].example_call;
+      assert(/###MCP_TOOL###/.test(ex) || /###LUA###/.test(ex) || /tool/.test(ex),
+        `${n}: example_call has no tool marker`);
+    }
+  });
+
+  // ── 13 (Sprint A): multi_edit is never presented as a tool ────────────
+  await run("no entry references multi_edit as a tool (rewrites go via set_script_content + RAW)", async () => {
+    for(const n of REGISTRY){
+      const p = TP[n];
+      const blob = `${p.persona} ${p.when_to_use} ${p.args_guide} ${p.example_call} ${p.output} ${p.pitfalls}`;
+      assert(!/multi_edit/.test(blob), `${n}: mentions multi_edit as a tool`);
     }
   });
 
