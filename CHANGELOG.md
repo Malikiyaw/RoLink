@@ -1,4 +1,40 @@
 # Changelog
+## 5.4.1 - Sprint 4 Heal+Prove patch
+
+**Trace + feed + diagnostics (#13).**
+- Activity feed nudge rows now use the styled `nudge` kind (purple
+  `.rl-feed-nudge`) instead of the unstyled `warn` kind — re-ground, drift,
+  stale-session and no-resume rows render with the intended border wash.
+- Explicit `.rl-banner.warn` rule so warning banners never depend on the base
+  banner style.
+- Trace panel now records the full pipeline per turn: `Parsed N call(s)` →
+  `Request <id> → Bridge → StudioMCP` → `Studio ✓/✗` → `FEEDING_RESULT` →
+  `AI generation resumed`.
+- New main-thread stall watchdog: event-loop lag >2.5s logs `stall.detected`
+  to the 300-slot diag ring + trace (skipped while hidden).
+- New hidden `#rl-diag` JSON node mirrors the diag ring (updated when dirty,
+  max every 2s) for headless evaluation; `window.ROLINK.diag()` unchanged.
+
+**Self-heal (#14).**
+- Bridge accepts `ZS_BRIDGE_PORT` as a `ROLINK_BRIDGE_PORT` alias (ZeroScript
+  compat); bind-error hint names both. `start.bat` honors `ROLINK_BRIDGE_PORT`
+  in its stale-instance reclaim probe and prints the `VERSION` + bridge exit
+  code on every run.
+
+**Power chains (#15).**
+- `validate_command` is now a real Luau pre-flight gate on both paths: bridge
+  `safe_call` and the MCP `validate_command` handler run the normalize-first,
+  string/comment-aware check on `args.code` and return `validation_error`
+  (guaranteed-fail Luau never reaches Studio, and the model gets a fixable
+  error either way).
+
+**Onboarding (#16).**
+- Session import now asks for confirmation when the file's `sessionId`
+  differs from the current chat (prevents silently importing another
+  conversation's memory).
+- Offline `switch_project` local handler (Sprint 3 gap): deterministic,
+  works with no Studio; `get_projects` reports the in-memory active project.
+
 ## 5.4.0 - Background run, narration guard, two-row result chips, all 111 master prompts
 
 **1. Background run (was: `Tab hidden — paused` loop).**

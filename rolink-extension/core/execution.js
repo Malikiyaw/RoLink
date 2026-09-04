@@ -108,7 +108,7 @@
       req.status = STATUS.RUNNING;
       this.active = req;
       this.diag("execution.start", { id, tool, sessionId, turnId, timeout });
-      if(this.trace) this.trace.push({ ts: Date.now(), level:"info", msg:`→ ${tool} id=${id}` });
+      if(this.trace) this.trace.push({ ts: Date.now(), level:"info", msg:`Request ${id} → Bridge → StudioMCP: ${tool}` });
       if(this.state) try{ this.state.transition("EXECUTING_TOOL", tool); }catch{}
 
       // Ensure tab is visible before sending — skipped in background-run
@@ -180,14 +180,14 @@
         req.status = STATUS.SUCCESS;
         req.result = res.text||"";
         req.kind = "success";
-        if(this.trace) this.trace.push({ ts: Date.now(), level:"ok", msg:`✓ ${tool} ${String(res.text||"done").slice(0,80)}` });
+        if(this.trace) this.trace.push({ ts: Date.now(), level:"ok", msg:`Studio ✓ ${tool} ${String(res.text||"done").slice(0,80)}` });
         return { id, ok:true, kind:"success", error:"", text: res.text||"", images: res.images||[] };
       } else {
         const norm = normalizeError(res);
         req.status = norm.kind === "timeout" ? STATUS.TIMEOUT : STATUS.ERROR;
         req.kind = norm.kind;
         req.error = norm.error;
-        if(this.trace) this.trace.push({ ts: Date.now(), level:"error", msg:`✗ ${tool} ${norm.kind}: ${String(norm.error).slice(0,120)}` });
+        if(this.trace) this.trace.push({ ts: Date.now(), level:"error", msg:`Studio ✗ ${tool} ${norm.kind}: ${String(norm.error).slice(0,120)}` });
         return { id, ok:false, kind: norm.kind, error: norm.error, text: res.text||"" };
       }
     }

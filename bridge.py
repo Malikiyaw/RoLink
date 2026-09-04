@@ -74,8 +74,8 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "5.5.0"
-PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", "17613"))
+BRIDGE_VERSION = "5.5.1"
+PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613")))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 
@@ -131,6 +131,17 @@ def _local_validate_command(args):
     # can't know them offline, so report allowed=true with a note instead of false.
     if tool in ("list_roblox_studios", "get_studio_state", "list_commands", "list_mcp_servers"):
         valid = True
+    # Luau pre-flight (Sprint 4 #15): validate_command doubles as the offline
+    # Luau gate — when the args carry code, run the same string-aware check
+    # safe_call applies to execute_luau, so guaranteed-fail Luau gets a
+    # validation_error the model can self-correct from without Studio.
+    code = (args or {}).get("code", None)
+    if isinstance(code, str):
+        _pre = _luau_preflight(code)
+        if _pre:
+            return {"ok": False, "kind": "validation_error",
+                    "error": "validate_command: Luau pre-flight failed: " + _pre}
+        return {"ok": True, "text": json.dumps({"tool": tool, "allowed": valid, "luau": "ok"})}
     return {"ok": True, "text": json.dumps({"tool": tool, "allowed": valid})}
 
 def _local_suggest_ordering(args):
@@ -147,7 +158,25 @@ def _local_list_plugins(args):
     return {"ok": True, "text": json.dumps({"plugins": ["rolink-core", "selfHeal", "perfTracker"], "count": 3})}
 
 def _local_get_projects(args):
-    return {"ok": True, "text": json.dumps({"projects": ["default"], "active": "default"})}
+    return {"ok": True, "text": json.dumps({"projects": ["default"], "active": _active_project["name"]})}
+
+def _local_switch_project(args):
+    """Offline project switch (Sprint 3 gap, closed Sprint 4): pure-local,
+    deterministic, works with no Studio and no MCP alive — same precedent as
+    get_projects above. The Studio plugin's own switch is a stub, so shadowing
+    it here loses nothing and gains offline usability."""
+    a = args or {}
+    pid = (a.get("projectId", a.get("project", "")) or "")
+    if not isinstance(pid, str):
+        pid = ""
+    pid = pid.strip()
+    if not pid:
+        return {"ok": False, "kind": "validation_error", "error": "switch_project: 'projectId' is required"}
+    _active_project["name"] = pid
+    return {"ok": True, "text": json.dumps({"switched": True, "active": pid})}
+
+# In-memory active project for the offline project handlers above.
+_active_project = {"name": "default"}
 
 def _local_get_memory_usage(args):
     try:
@@ -176,6 +205,7 @@ LOCAL_HANDLERS = {
     "get_suggestions": _local_get_suggestions,
     "list_plugins": _local_list_plugins,
     "get_projects": _local_get_projects,
+    "switch_project": _local_switch_project,
     "get_memory_usage": _local_get_memory_usage,
     "set_performance_threshold": _local_set_performance_threshold,
     "list_sessions": _local_list_sessions,
@@ -2489,7 +2519,7 @@ async def main():
                 f"the port. Close it, then relaunch. To find it:", "yl")
             log(f"      netstat -ano | findstr {PORT}", "yl")
             log(f"      taskkill /F /PID <the pid from the last column>", "yl")
-            log(f"    Or set a different port before start.bat:  set ROLINK_BRIDGE_PORT=17614", "yl")
+            log(f"    Or set a different port before start.bat:  set ROLINK_BRIDGE_PORT=17614  (ZS_BRIDGE_PORT also accepted)", "yl")
             return
         raise
 

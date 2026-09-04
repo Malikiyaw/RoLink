@@ -14,8 +14,10 @@ AI chat DOM
 
 ## Routing rules (bridge.py)
 
-- `LOCAL_HANDLERS`: `get_time, validate_command, suggest_ordering, get_suggestions,
-  list_plugins, get_projects, get_memory_usage, set_performance_threshold,
+- `LOCAL_HANDLERS`: `get_time, validate_command (+Luau pre-flight on args.code),
+  suggest_ordering, get_suggestions,
+  list_plugins, get_projects, switch_project (offline, in-memory active),
+  get_memory_usage, set_performance_threshold,
   list_sessions, session_users` — deterministic, no Studio probe, no `any_alive` gate.
 - `batch_queue`: validated `{commands:[{tool,args}]}` then sequential `safe_call`
   recursion. Nested batches rejected. Each sub-result recorded `{index,tool,ok,...}`.

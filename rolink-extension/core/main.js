@@ -58,12 +58,47 @@
     try{
       const entry = { t: Date.now(), event, data };
       if(A && A.diag){ A.diag.push(entry); while(A.diag.length > 300) A.diag.shift(); }
+      _diagDirty = true;
       if(__trace) __trace.push({ ts: Date.now(), level:"info", msg: `${event} ${data?JSON.stringify(data).slice(0,120):""}` });
       if(window.console && console.debug){
         console.debug("[rolink.diag]", event, data || "");
       }
     }catch{}
   }
+
+  // ── main-thread stall watchdog (Sprint 4 #13) ──────────────────────────
+  // A 1s interval that measures its own drift: a healthy event loop fires
+  // within ~1s; a lag >2.5s means the page (or our own sweeps) blocked the
+  // main thread and chip timers / generation detection went blind for that
+  // window. Logged to the diag ring + trace, never to the user. Skipped
+  // while hidden — background throttling is expected, not a stall.
+  (function stallWatch(){
+    let last = Date.now();
+    setInterval(()=>{
+      const now = Date.now(), lag = now - last - 1000;
+      last = now;
+      if(document.hidden) return;
+      if(lag > 2500){
+        diag("stall.detected", { lagMs: lag });
+        try{ if(__trace) __trace.push({ ts: now, level:"warn", msg:`stall.detected: main thread blocked ~${Math.round(lag)}ms` }); }catch{}
+      }
+    }, 1000);
+  })();
+
+  // ── hidden diag JSON node (Sprint 4 #13) ───────────────────────────────
+  // Mirrors the 300-slot diag ring into <script id="rl-diag"> so a headless
+  // evaluator (or the popup) can read the full ring as JSON without calling
+  // into page JS. Written at most every 2s and only when dirty — no per-turn
+  // DOM churn.
+  let _diagDirty = false;
+  setInterval(()=>{
+    if(!_diagDirty) return; _diagDirty = false;
+    try{
+      let n = document.getElementById("rl-diag");
+      if(!n){ n = document.createElement("script"); n.id = "rl-diag"; n.type = "application/json"; n.style.display = "none"; document.documentElement.appendChild(n); }
+      n.textContent = JSON.stringify((A && A.diag ? A.diag : []).slice(-300));
+    }catch{}
+  }, 2000);
 
   // ── chrome.runtime bridge ──────────────────────────────────────────────────
   let bgAvailable = !!(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id);
@@ -472,6 +507,11 @@
       try{
         const payload = JSON.parse(await f.text());
         if(!payload || !Array.isArray(payload.history)) throw new Error("not a RoLink session file (missing history[])");
+        // Session-ID mismatch guard: importing another conversation's memory
+        // into this one silently poisons custom instructions + history.
+        if(payload.sessionId && A.sessionId && payload.sessionId !== A.sessionId){
+          if(!confirm(`This file is from session "${payload.sessionId}" but this chat is "${A.sessionId}". Import anyway?`)) return;
+        }
         A.history = payload.history.slice(-200);
         if(typeof payload.customPrompt === "string"){
           document.getElementById("rl-custom-prompt").value = payload.customPrompt;
@@ -793,7 +833,7 @@ ${customBlock}
       try{ await sendParked(text, images || []); }catch{}
       const started2 = await waitForGenerationStart(3000);
       if(!started2){
-        pushFeed("warn", "⚠", "AI did not resume after tool result — type a short message to nudge it.");
+        pushFeed("nudge", "⚠", "AI did not resume after tool result — type a short message to nudge it.");
         showBanner("AI did not resume — send a short message", "warn", 5000);
         if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "no-gen"); }catch{}
       } else {
@@ -915,7 +955,7 @@ ${customBlock}
         // Handle stale: don't feed into new chat
         if(res && res.stale){
           chipFinalize(chip, name, {ok:false, error:"Result arrived for previous chat — not injecting."});
-          pushFeed("warn","↻",`${name}: stale result discarded (new chat opened)`);
+          pushFeed("nudge","↻",`${name}: stale result discarded (new chat opened)`);
           A.busy = false; A.toolRunning = "";
           if(fsm) try{ fsm.transition("WAITING_FOR_AI", "stale"); }catch{}
           return {chip, name, res, text: res.text||"", stale:true};
@@ -1215,6 +1255,9 @@ ${customBlock}
           A.nudgesLeft = 1;
           A.intentNudgesLeft = 2;
           if(fsm) try{ fsm.transition("TOOL_DETECTED", `${reply.calls.length} calls`); }catch{}
+          // Trace stage: AI response → Parsed (one row per turn, then one
+          // Request/Bridge/Studio row per call inside dispatchTool/execMgr).
+          if(__trace) __trace.push({ ts: Date.now(), level:"info", msg:`Parsed ${reply.calls.length} call(s): ${reply.calls.map(c=>c.tool||c.name||"?").join(", ").slice(0,120)}` });
           // SEQUENTIAL await — never concurrent chaos. Each tool must complete before next.
           // Chain chips in call order: each chip anchors after the previous one.
           let prevChip = null;
@@ -1229,7 +1272,7 @@ ${customBlock}
             const curKey = P.conversationKey ? P.conversationKey() : location.pathname;
             if(A.loopKey && curKey !== A.loopKey){
               diag("tool.stale_session", { loopKey: A.loopKey, curKey });
-              pushFeed("warn","↻","New chat opened — abandoning pending tools");
+              pushFeed("nudge","↻","New chat opened — abandoning pending tools");
               break;
             }
             // c is the normalised call from the parser; canonical fields are
@@ -1242,7 +1285,7 @@ ${customBlock}
           // Q1: delete "Don't ask ACT" nudge — free chat after greeting. Only self-heal cantRun (once)
           if(looksLikeCantRun(reply.text) && A.nudgesLeft > 0 && A.toolCount > 0){
             A.nudgesLeft--;
-            pushFeed("warn", "↻", `AI claimed it can't run tools (${1 - A.nudgesLeft}/1) — re-grounding (self-heal)`);
+            pushFeed("nudge", "↻", `AI claimed it can't run tools (${1 - A.nudgesLeft}/1) — re-grounding (self-heal)`);
             A.injecting = true;
             try{ inputCover(true); }catch{}
             await sendParked(`You DO have tools. They are listed in your system prompt and have been used successfully in this session. Re-read your system prompt. The valid tool names are: ${(A.tools||[]).map(t=>(typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Emit a ###MCP_TOOL### block now using one of these exact names.`, []);
@@ -1256,7 +1299,7 @@ ${customBlock}
           const intentTool = (A.intentNudgesLeft > 0) ? narratedTool(reply.text) : "";
           if(intentTool){
             A.intentNudgesLeft--;
-            pushFeed("warn", "↻", `AI narrated "${intentTool}" without emitting it (${2 - A.intentNudgesLeft}/2) — re-grounding`);
+            pushFeed("nudge", "↻", `AI narrated "${intentTool}" without emitting it (${2 - A.intentNudgesLeft}/2) — re-grounding`);
             A.injecting = true;
             try{ inputCover(true); }catch{}
             await sendParked(`You named "${intentTool}" in prose but emitted no tool block — that runs nothing. Emit the ###MCP_TOOL### block for "${intentTool}" NOW with your best-guess args (e.g. {"tool":"${intentTool}","args":{}}), don't narrate it.`, []);
@@ -1633,7 +1676,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         return;
       }
       if(!s.mcpAlive){
-        pushFeed("warn", "⚠", "Bridge up but no MCP server. Open Roblox Studio and enable 'Studio as MCP server'.");
+        pushFeed("nudge", "⚠", "Bridge up but no MCP server. Open Roblox Studio and enable 'Studio as MCP server'.");
         showBanner("Open Roblox Studio + enable MCP", "warn", 6000);
       } else {
         pushFeed("ok", "✓", `Bridge connected · ${(s.tools || 0)} tools · Studio ${s.studio ? "ready" : "not connected"}`);
@@ -1651,7 +1694,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     }
     // Kimi native-agent guard: the provider steers the picker at startup,
     // but a lingering Swarm/Agent pick still breaks the loop — banner it.
-    try{ if(P.modeWarning){ const w = P.modeWarning(); if(w){ pushFeed("warn", "⚠", w); showBanner(w, "warn"); } } }catch{}
+    try{ if(P.modeWarning){ const w = P.modeWarning(); if(w){ pushFeed("nudge", "⚠", w); showBanner(w, "warn"); } } }catch{}
     if(myGen !== A.startGen) return; // user opened a new chat mid-bootstrap
     A.sessionId = sessionIdFromUrl();
     await loadSession();
@@ -2000,7 +2043,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     // not on every poll.
     try{
       const w = (P.modeWarning) ? (P.modeWarning() || "") : "";
-      if(w && w !== A.lastModeWarn){ pushFeed("warn", "⚠", w); showBanner(w, "warn"); }
+      if(w && w !== A.lastModeWarn){ pushFeed("nudge", "⚠", w); showBanner(w, "warn"); }
       A.lastModeWarn = w;
     }catch{}
     refreshTools();

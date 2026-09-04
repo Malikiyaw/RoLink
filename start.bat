@@ -11,7 +11,9 @@ call :log "===== %DATE% %TIME%  start.bat launched ====="
 for /f "tokens=*" %%v in ('ver') do call :log "%%v"
 
 echo.
-echo   === RoLink Bridge ===
+set "RLVER=?"
+if exist "%~dp0VERSION" for /f "usebackq delims=" %%v in ("%~dp0VERSION") do set "RLVER=%%v"
+echo   === RoLink Bridge v%RLVER% ===
 echo.
 
 if not exist "%~dp0bridge.py" (
@@ -203,13 +205,14 @@ echo.
 echo   [3/3] Starting bridge...
 
 set "OLDPID="
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :17613 ^| findstr LISTENING 2^>nul') do (
+if not defined ROLINK_BRIDGE_PORT set "ROLINK_BRIDGE_PORT=17613"
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr :%ROLINK_BRIDGE_PORT% ^| findstr LISTENING 2^>nul') do (
     set "OLDPID=%%a"
 )
 if defined OLDPID (
-    echo         A previous bridge ^(pid !OLDPID!^) is already running on this port.
+    echo         A previous bridge ^(pid !OLDPID!^) is already running on port %ROLINK_BRIDGE_PORT%.
     echo         Replacing it with this new instance...
-    call :log "Killing previous bridge instance (pid !OLDPID!) on port 17613."
+    call :log "Killing previous bridge instance (pid !OLDPID!) on port %ROLINK_BRIDGE_PORT%."
     taskkill /F /T /PID !OLDPID! >nul 2>nul
     timeout /t 1 /nobreak >nul
 )
