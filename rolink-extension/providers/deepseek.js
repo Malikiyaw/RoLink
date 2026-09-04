@@ -477,6 +477,27 @@ const ZSProvider = (() => {
   // Conversation key (latch "started" to the chat)
   const conversationKey = () => (location.pathname === "/" ? "" : location.pathname);
 
+  // Core uniformity hooks (same surface as the generic factory):
+  //  - capResult: DeepSeek's composer takes ~160k chars and typeAndSend
+  //    truncates head+tail there, so the core's default feed cap applies.
+  const capResult = (t) => t;
+  //  - overlayBlocking: DeepSeek has no login/modal mask over the composer.
+  const overlayBlocking = () => false;
+  //  - replyUnsettled: still-streaming reasoning/answer means a tool-shaped
+  //    turn may still be growing — hold it open.
+  function replyUnsettled(item) {
+    try {
+      if (isGenerating()) return true;
+      const it = item || lastAssistant();
+      if (it && reasoningInProgress(it)) return grewWithin(timings.REASON_IDLE_MS);
+    } catch {}
+    return false;
+  }
+  //  - hasStreamingLabel: a {"tool":|"command": name matched BEFORE its
+  //    closing quote exists — the turn is tool-shaped mid-stream.
+  const STREAM_LABEL_RE = /"(?:command|tool)"\s*:\s*"([^"]*)/;
+  const hasStreamingLabel = (t) => STREAM_LABEL_RE.test(t || "");
+
   // Send hooks (intercept user input so we can react to manual sends)
   function installSendHooks(handlers) {
     document.addEventListener("keydown", (e) => {
@@ -587,6 +608,7 @@ const ZSProvider = (() => {
     scanError, isTooLongMsg,
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
+    capResult, overlayBlocking, replyUnsettled, hasStreamingLabel,
   };
 })();
 

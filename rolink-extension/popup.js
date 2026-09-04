@@ -198,8 +198,9 @@ async function refresh(){
   try{
     const resp = await chrome.runtime.sendMessage({type:"status-tools"});
     if(resp && resp.status){
-      render(resp.status);
-      if(resp.tools && Array.isArray(resp.tools)) render(resp.status.tools ? resp.status : {...resp.status, tools: resp.tools});
+      // status.tools may be a bare count — prefer the real array when present.
+      const tools = Array.isArray(resp.tools) ? resp.tools : resp.status.tools;
+      render({...resp.status, tools});
     } else {
       chrome.runtime.sendMessage({type:"status"}, s=> s&&render(s));
       chrome.runtime.sendMessage({type:"list_tools"}, r=>{

@@ -88,7 +88,7 @@
     "128": "icon.png"
   },
   "commands": {
-    "open-popup": {
+    "_execute_action": {
       "suggested_key": { "default": "Ctrl+Shift+R" },
       "description": "Open RoLink popup"
     }

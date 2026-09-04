@@ -227,10 +227,52 @@ window.makeGenericProvider = function(opts){
   const conversationKey = opts.conversationKey || (() => location.pathname);
   const enforceComposer = () => ({});
   const ensureComposerReady = opts.ensureComposerReady || (async () => ({ready: true}));
-  const findToolBlockSpot = (item, chip) => {
+  // Default cap: identity (per-site providers like Gemini override with their
+  // own composer limits). The core calls P.capResult(text) before feeding a
+  // tool result back, so huge outputs never jam the composer.
+  const capResult = opts.capResult || ((t) => t);
+  // Default: no modal above the composer. Sites with login masks (Kimi) or
+  // dialogs (Arena) override so the core can park the bar.
+  const overlayBlocking = opts.overlayBlocking || (() => false);
+  // Default: a turn is settled unless a site hook says otherwise. Sites with
+  // out-of-DOM streams (Qwen net tap) override.
+  const replyUnsettled = opts.replyUnsettled || (() => false);
+  // Streaming generic-label probe: matches a {"tool":|"command": name the
+  // moment its opening quote + first chars exist — BEFORE the closing quote
+  // arrives. Lets the core hold a tool-shaped turn open mid-stream instead of
+  // classifying it as prose (safe: gated on the canonical keys only).
+  const STREAM_LABEL_RE = /"(?:command|tool)"\s*:\s*"([^"]*)/;
+  const hasStreamingLabel = (t) => STREAM_LABEL_RE.test(t || "");
+  const findToolBlockSpot = opts.findToolBlockSpot || function(item, chip){
     if(!item) return null;
-    const md = item.querySelector("p, div");
-    return md ? {parent: md.parentElement, ref: md} : null;
+    // Marker-aware scan: walk text nodes for a tool opener, hide its block
+    // element, and anchor the chip right before it. Falls back to the first
+    // paragraph container when no marker node is found (still inside the
+    // message item — never document.body).
+    try{
+      if(item.classList) item.classList.add("rl-cmd-mask");
+      var walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+      var n;
+      while((n = walker.nextNode())){
+        var v = n.nodeValue || "";
+        var low = v.toLowerCase();
+        if(low.indexOf("###mcp_tool###") === -1 && low.indexOf("###lua###") === -1 &&
+           low.indexOf("###tool:") === -1 && !/"(tool|command)"\s*:\s*"/i.test(v) &&
+           !hasStreamingLabel(v)) continue;
+        var host = n.parentElement;
+        while(host && host.parentElement && host.parentElement !== item &&
+              host.tagName !== "PRE" && host.tagName !== "CODE" &&
+              host.tagName !== "P" && host.tagName !== "DIV") host = host.parentElement;
+        if(host && host.parentElement){
+          try{ host.classList.add("rl-tool-hide"); }catch(e){}
+          host.style.display = "none";
+          return { parent: host.parentElement, ref: host };
+        }
+      }
+      var md = item.querySelector("p, div");
+      if(md && md.parentElement) return { parent: md.parentElement, ref: md };
+      return { parent: item, ref: item.firstElementChild || null };
+    }catch(e){ return null; }
   };
   // ── send-hooks (user-send interception) ──────────────────────────────────
   // Wires global keydown + click listeners so the core can be notified when:
@@ -239,6 +281,7 @@ window.makeGenericProvider = function(opts){
   //   - the user clicked the site's native Continue button
   // Required for the agent loop to re-arm after a session ends.
   let _hooks = null;
+  let _hooksInstalled = false;
   function installSendHooks(handlers){
     _hooks = handlers || null;
     if(_hooksInstalled) return;
@@ -281,7 +324,6 @@ window.makeGenericProvider = function(opts){
       if(_hooks.onUserMessage) _hooks.onUserMessage(P ? P.assistantCount() : 0);
     }, true);
   }
-  const _hooksInstalled = false;
   function isFreshChat(){ return chatIsEmpty(); }
 
   // ── the ZSProvider object ────────────────────────────────────────────────
@@ -305,6 +347,7 @@ window.makeGenericProvider = function(opts){
     scanError, isTooLongMsg,
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
+    capResult, overlayBlocking, replyUnsettled, hasStreamingLabel,
   };
 
   // Allow per-site providers to patch the instance before exposing it.

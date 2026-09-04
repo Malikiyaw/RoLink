@@ -436,25 +436,89 @@
     document.getElementById("rl-custom-prompt").value = A.customPrompt || "";
   }
 
-  // Mount the bar inside the composer frame — ensure always visible even if barMount fails
+  // ── Paused state + light-mode detect ───────────────────────────────────
+  function setPaused(on){
+    const dot = document.getElementById("rl-dot"), state = document.getElementById("rl-state");
+    if(!dot || !state) return;
+    if(on){
+      dot.classList.remove("on", "err"); dot.classList.add("warn");
+      bar.classList.remove("is-ok", "is-err"); bar.classList.add("is-warn");
+      state.innerHTML = `<b>Paused</b> · tab hidden`;
+      bar.dataset.paused = "1";
+    } else {
+      delete bar.dataset.paused;
+    }
+  }
+  // Host pages with a light background get html.rl-light so the bar, chips
+  // and panels flip to the light legible theme (see overlay.css).
+  function detectLight(){
+    try{
+      const bg = getComputedStyle(document.body).backgroundColor || "";
+      const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if(!m) return;
+      const lum = (0.2126 * +m[1] + 0.7152 * +m[2] + 0.0722 * +m[3]) / 255;
+      document.documentElement.classList.toggle("rl-light", lum > 0.6);
+    }catch{}
+  }
+  setTimeout(detectLight, 800);
+  setInterval(detectLight, 5000);
+  // placeBar modes: inline inside the composer when possible (pushes content,
+  // never covers it), anchored as a fixed strip hugging the composer's top
+  // edge when the framework owns the composer DOM, fixed top-center fallback
+  // when no composer is found yet. Parked (hidden) while a site modal sits
+  // over the composer. Mode is tracked on bar.dataset.mode.
   function placeBar(){
     try{
-      const m = P.barMount();
-      if(!m){
-        // fallback: keep bar visible fixed at top-center so user sees buttons even if composer not found
-        bar.style.display = "flex";
-        bar.style.position = "fixed";
-        bar.style.top = "48px"; bar.style.left = "50%"; bar.style.transform = "translateX(-50%)";
-        bar.style.width = "auto"; bar.style.maxWidth = "90%";
+      if(P.overlayBlocking && P.overlayBlocking()){
+        bar.style.display = "none";
+        bar.dataset.mode = "parked";
         return;
       }
-      if(bar.parentElement !== m.parent){ if(bar.parentElement) bar.parentElement.removeChild(bar); m.parent.insertBefore(bar, m.before || null); }
+      if(!P.provClassApplied && P.provClass){
+        try{ bar.classList.add(P.provClass); P.provClassApplied = true; }catch{}
+      }
+      const m = P.barMount();
+      if(m){
+        if(bar.parentElement !== m.parent){ if(bar.parentElement) bar.parentElement.removeChild(bar); m.parent.insertBefore(bar, m.before || null); }
+        bar.style.display = "flex";
+        bar.classList.add("rl-inline");
+        bar.classList.remove("rl-anchored");
+        bar.dataset.mode = "inline";
+        // keep bar compact so it doesn't overlap Deep thinking pills
+        bar.style.position = "relative";
+        bar.style.top = "auto"; bar.style.left = "auto"; bar.style.transform = "none";
+        bar.style.margin = "0 0 6px 0"; bar.style.width = "100%";
+        return;
+      }
+      // Anchored: fixed strip sized to the composer frame's width, riding its
+      // top edge — reads as in-flow without entering framework-managed DOM.
+      const frame = P.composerFrame ? P.composerFrame() : null;
+      if(frame && frame.getBoundingClientRect){
+        const r = frame.getBoundingClientRect();
+        if(r && r.width > 200){
+          if(bar.parentElement !== root) root.appendChild(bar);
+          bar.style.display = "flex";
+          bar.classList.remove("rl-inline");
+          bar.classList.add("rl-anchored");
+          bar.dataset.mode = "anchored";
+          bar.style.position = "fixed";
+          bar.style.left = Math.max(8, r.left) + "px";
+          bar.style.top = Math.max(8, r.top - 52) + "px";
+          bar.style.transform = "none";
+          bar.style.margin = "0";
+          bar.style.width = Math.min(r.width, window.innerWidth - 16) + "px";
+          return;
+        }
+      }
+      // fallback: keep bar visible fixed at top-center so user sees buttons even if composer not found
+      if(bar.parentElement !== root) root.appendChild(bar);
       bar.style.display = "flex";
-      bar.classList.add("rl-inline");
-      // keep bar compact so it doesn't overlap Deep thinking pills
-      bar.style.position = "relative";
-      bar.style.top = "auto"; bar.style.left = "auto"; bar.style.transform = "none";
-      bar.style.margin = "0 0 6px 0"; bar.style.width = "100%";
+      bar.classList.remove("rl-inline", "rl-anchored");
+      bar.dataset.mode = "fixed";
+      bar.style.position = "fixed";
+      bar.style.top = "48px"; bar.style.left = "50%"; bar.style.transform = "translateX(-50%)";
+      bar.style.width = "auto"; bar.style.maxWidth = "min(90vw, 720px)";
+      bar.style.margin = "0";
     }catch{}
   }
   window.addEventListener("resize", placeBar);
@@ -687,7 +751,7 @@ ${customBlock}
   }
 
   // ── dispatch a tool call (canonical, awaited, id-correlated) ────────────
-  async function dispatchTool(name, args, sourceBlock, sourceItem, images){
+  async function dispatchTool(name, args, sourceBlock, sourceItem, images, afterChip){
     // Strict validation before execution: valid tool name, complete args
     if(!name || typeof name !== "string"){
       pushFeed("err","✗",`Refused dispatch: invalid tool name ${String(name)}`);
@@ -734,6 +798,14 @@ ${customBlock}
       }
     }
     const chip = makeChip(name, args);
+    // Multi-call chaining: the Nth call in one assistant reply anchors
+    // directly AFTER the previous call's chip, so 2 tools = 2 chips in call
+    // order even when the shared bubble offers a single spot.
+    if(afterChip && afterChip.parentNode){
+      try{ afterChip.parentNode.insertBefore(chip, afterChip.nextSibling); }
+      catch{ afterChip = null; }
+    }
+    if(!(afterChip && chip.parentNode)){
     // S11: multi-call chip placement. If this is the Nth call in a single
     // assistant reply, anchor chips after the previous one instead of into
     // the shared assistant bubble.
@@ -753,6 +825,7 @@ ${customBlock}
       try{ sourceItem.appendChild(chip); }catch{ try{ document.body.appendChild(chip); }catch{} }
     } else {
       try{ document.body.appendChild(chip); }catch{}
+    }
     }
     A.busy = true; A.toolRunning = name; A.toolStart = Date.now();
     if(fsm) try{ fsm.transition("TOOL_DETECTED", name); }catch{}
@@ -810,10 +883,14 @@ ${customBlock}
     }
     chipFinalize(chip, name, res);
     // Row 2 directly under Row 1 so virtual-list moves keep them together.
+    // tail tracks the last inserted node so the next chained call anchors
+    // after the full call+result pair (call1, result1, call2, result2…).
+    let tail = chip;
     try{
       const rc = makeResultChip(name, res, chip);
       if(chip.parentNode) chip.parentNode.insertBefore(rc, chip.nextSibling);
       else if(chip.after) chip.after(rc);
+      tail = rc;
     }catch{}
     const text = res.ok ? (res.text || "OK") : ("ERROR: " + (res.error || "unknown"));
     const ok = res.ok !== false;
@@ -841,7 +918,13 @@ ${customBlock}
     }
     const imgs = (res && res.images && res.images.length) ? res.images : null;
     A.lastFeedText = text; A.lastFeedAt = Date.now(); A.lastFeedId = name + ":" + Date.now();
-    const textForModel = text.length > 12000 ? text.slice(0, 11500) + "\n\n[…result truncated for context; full result is in the chip above…]" : text;
+    // Feed cap: providers with roomy composers (Gemini: 120k/1200 via
+    // P.feedCap) take larger results; everyone else gets the 12k context cap.
+    // A provider capResult() shapes the truncation marker (head+tail yield).
+    const FEED_CAP = (P.feedCap && typeof P.feedCap === "number") ? P.feedCap : 12000;
+    let textForModel = text;
+    try{ if(P.capResult) textForModel = P.capResult(textForModel); }catch{}
+    if(textForModel.length > FEED_CAP) textForModel = textForModel.slice(0, FEED_CAP - 500) + "\n\n[…result truncated for context; full result is in the chip above…]";
     let hint = "";
     if(!ok){
       // Master-prompt recovery: feed the failed tool's usage + pitfalls so
@@ -881,7 +964,7 @@ ${customBlock}
     const withRider = maybeRider(feedbackMsg);
     // Transactional feeding: hidden injection (camouflaged), not visible user bubble — free chat
     await feedToolResultTransactional(withRider, imgs || []);
-    return {chip, name, res, text};
+    return {chip, tail, name, res, text};
   }
 
   // ── detect "AI is asking the user a question" ──────────────────────────────
@@ -1032,8 +1115,9 @@ ${customBlock}
   async function waitForVisible(){
     if(!document.hidden || A.stopping) return Promise.resolve(!A.stopping);
     A.parked = true; pushFeed("info", "⏸", "Tab hidden — paused");
+    try{ setPaused(true); }catch{}
     return new Promise(resolve=>{
-      const done = () => { document.removeEventListener("visibilitychange", onVis); clearInterval(iv); A.parked = false; if(!A.stopping) pushFeed("info", "▶", "Resumed"); resolve(!A.stopping); };
+      const done = () => { document.removeEventListener("visibilitychange", onVis); clearInterval(iv); A.parked = false; try{ setPaused(false); }catch{} if(!A.stopping) pushFeed("info", "▶", "Resumed"); resolve(!A.stopping); };
       const onVis = () => { if(!document.hidden) done(); };
       document.addEventListener("visibilitychange", onVis);
       const iv = setInterval(() => { if(A.stopping || !document.hidden) done(); }, 500);
@@ -1072,6 +1156,8 @@ ${customBlock}
           A.intentNudgesLeft = 2;
           if(fsm) try{ fsm.transition("TOOL_DETECTED", `${reply.calls.length} calls`); }catch{}
           // SEQUENTIAL await — never concurrent chaos. Each tool must complete before next.
+          // Chain chips in call order: each chip anchors after the previous one.
+          let prevChip = null;
           for(const c of reply.calls){
             if(A.stopping) break;
             // Visibility gate per-tool (skipped in background-run mode)
@@ -1089,7 +1175,8 @@ ${customBlock}
             // c is the normalised call from the parser; canonical fields are
             // .tool / .args. The parser also exposes .name / .arguments
             // aliases (see parser.js normalize()) so either form works here.
-            await dispatchTool(c.tool, c.args, null, reply.item);
+            const dr = await dispatchTool(c.tool, c.args, null, reply.item, undefined, prevChip);
+            if(dr && (dr.tail || dr.chip)) prevChip = dr.tail || dr.chip;
           }
         } else if(reply.kind === "text"){
           // Q1: delete "Don't ask ACT" nudge — free chat after greeting. Only self-heal cantRun (once)
@@ -1382,6 +1469,10 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
 
       const cmdShaped = P.replyUnsettled && (
         ZSParse.hasToolSignature(r) ||
+        // Streaming generic-label probe: a {"tool":|"command": name matched
+        // BEFORE its closing quote exists means the turn is tool-shaped
+        // mid-stream — hold it open, don't classify as prose.
+        (P.hasStreamingLabel ? P.hasStreamingLabel(r) : /"(?:command|tool)"\s*:\s*"([^"]*)/.test(r)) ||
         (ZSParse.LUA_END_RE && ZSParse.LUA_END_RE.test(r) && ZSParse.LUA_START_RE && !ZSParse.LUA_START_RE.test(r)) ||
         (/"(?:datamodel_type|edits|old_string|new_string|file_path|target_file)"\s*:/.test(r) &&
           !/"command"\s*:/.test(r))
@@ -1707,7 +1798,10 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     }
   }
 
-  // inputCover: transparent overlay during every inject
+  // inputCover: transparent overlay during every inject, clamped to the
+  // composer's own rect (never a giant slab, never overshooting the box).
+  // The typed text itself is masked via .rl-typing so a tall inject can't
+  // balloon the editor while the cover is up.
   let _inputCoverEl = null;
   function inputCover(on){
     if(on){
@@ -1717,14 +1811,22 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       const frame = ed.closest("form, .ds-message-edit, [class*='composer' i], [class*='editor' i], [class*='input' i]") || ed.parentElement;
       if(!frame) return;
       const rect = frame.getBoundingClientRect();
+      if(!rect || rect.width < 40) return;
+      try{ ed.classList.add("rl-typing"); }catch{}
+      // Clamp to the viewport and cap the height: the cover masks an input,
+      // not the page — a 1500px editor rect must not become a 1500px slab.
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - 60));
+      const top = Math.max(8, Math.min(rect.top, window.innerHeight - 40));
+      const width = Math.max(60, Math.min(rect.width, window.innerWidth - 16));
+      const height = Math.max(28, Math.min(rect.height, 220));
       _inputCoverEl = document.createElement("div");
       _inputCoverEl.id = "rl-input-cover";
       Object.assign(_inputCoverEl.style, {
         position: "fixed",
-        left: rect.left + "px",
-        top: rect.top + "px",
-        width: rect.width + "px",
-        height: rect.height + "px",
+        left: left + "px",
+        top: top + "px",
+        width: width + "px",
+        height: height + "px",
         zIndex: "2147483500",
         background: "rgba(47,129,247,0.06)",
         backdropFilter: "blur(2px)",
@@ -1741,6 +1843,10 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       document.body.appendChild(_inputCoverEl);
     } else {
       if(_inputCoverEl){ _inputCoverEl.remove(); _inputCoverEl = null; }
+      try{
+        const ed = P.getEditor ? P.getEditor() : null;
+        if(ed && ed.classList) ed.classList.remove("rl-typing");
+      }catch{}
     }
   }
 
@@ -1818,6 +1924,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   setInterval(()=>{
     bg({type:"status"}).then(s=>{
       if(!s) return;
+      if(A.parked){ setPaused(true); return; }
       if(!s.connected) setStatus("offline");
       else if(s.mcpAlive && s.studio === true) setStatus("ready");
       else if(s.mcpAlive && s.studio === false) setStatus("studioOff");
