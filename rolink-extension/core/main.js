@@ -290,10 +290,6 @@
   launcher.innerHTML = `<span class="rl-logo">R</span><span class="rl-label">Start RoLink agent</span>`;
   launcher.setAttribute("aria-label", "Start RoLink agent");
   root.appendChild(launcher);
-n  // Sprint B2: defensive click handler — binds immediately at creation time
-  // so the pill works even if init crashes before the real listener at ~1974.
-  launcher.onclick = function(){ if(typeof startSession === "function") startSession(); };
-
   // Status bar (mounted inside the composer via provider.barMount): brand +
   // flexing status + demoted tool count + primary Start / solid Stop + icon
   // buttons. IDs are stable (wireUi/setCounter/setStatus depend on them).
