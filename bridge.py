@@ -203,14 +203,17 @@ def _local_batch_queue(args, timeout):
         sub_args = c.get("args", {})
         if not isinstance(sub_args, dict):
             sub_args = {}
+        if sub_name == "batch_queue":
+            # No nested batches (contract): reject instead of recursing.
+            results.append({"index": i, "tool": sub_name, "ok": False, "kind": "validation_error",
+                            "error": "batch_queue: nested batches are not allowed"})
+            break
         # Recurse via safe_call (defined later) — resolved at call time.
         try:
             r = safe_call(sub_name, sub_args, timeout)
         except Exception as e:
             r = {"ok": False, "kind": "execution_error", "error": str(e)}
         results.append({"index": i, "tool": sub_name, **r})
-        if sub_name == "batch_queue":
-            break  # no nested batches
     ok_count = sum(1 for r in results if r.get("ok"))
     return {"ok": True, "text": json.dumps({"batched": len(results), "succeeded": ok_count, "results": results})}
 

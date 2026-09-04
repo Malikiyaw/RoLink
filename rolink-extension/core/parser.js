@@ -62,7 +62,10 @@
   }
 
   function stripDSML(text) {
-    return String(text || "").replace(DSML_RE, "");
+    // Global: a DeepSeek turn can carry several DSML markers (open, invoke,
+    // parameter, close). A single replace leaves residue that breaks the
+    // bare-JSON scan below, so strip every occurrence.
+    return String(text || "").replace(new RegExp(DSML_RE.source, "gi"), "");
   }
 
   // Strip a code-block UI label (the "Copy" button caption, or a leftover
@@ -577,6 +580,11 @@
   function toolNameFromText(text) {
     const m = String(text || "").match(/"(?:tool|command|function|name)"\s*:\s*"([A-Za-z0-9_./-]+)"/);
     if (m) return m[1];
+    // Wrong-key dialect: the model meant a tool call but used a non-canonical
+    // key (toolName / tool_name / action). Matched here so the caller can gate
+    // on known tools and send a rewrite nudge instead of dropping the turn.
+    const wrong = String(text || "").match(/"(?:toolName|tool_name|action)"\s*:\s*"([A-Za-z0-9_./-]+)"/);
+    if (wrong) return wrong[1];
     const raw = String(text || "").match(/###TOOL:([A-Za-z0-9_.-]+)###/);
     return raw ? raw[1] : null;
   }

@@ -1171,6 +1171,9 @@ ${customBlock}
           pushFeed("err", "✗", "Malformed tool call — sending fix-it nudge");
           A.injecting = true;
           try{ inputCover(true); }catch{}
+          // Dialect turns (DSML / wrong-key) need a rewrite nudge, not the
+          // JSON-escaping nudge below.
+          const isDialectNudge = reply.reason === "dsml" || reply.reason === "wrongkey";
           const targetTool = (reply.raw && ZSParse.toolNameFromText(reply.raw)) || "execute_luau";
           // SUPER-POWERFUL: tool-specific nudge with visible example for the failing tool
           let toolNudge = "";
@@ -1204,7 +1207,10 @@ print("hi")
           } else {
             toolNudge = `Fix JSON: escape every " inside strings as \\" and use \\n for newlines. Example: {"tool":"${targetTool}","args":{"code":"local p = Instance.new(\\"Part\\")"}} or use ###LUA### for Luau.`;
           }
-          await P.typeAndSend(`Your last tool call was malformed JSON (${reply.reason}) for tool ${targetTool}.
+          const dialectMsg = reply.reason === "dsml"
+            ? `You replied with DeepSeek's native <|DSML|> tool-call markup instead of a RoLink tool block — that dialect never executes here. Rewrite the SAME call now as:\n\n###MCP_TOOL###\n{"tool":"<exact tool name from the list>","args":{...}}\n\n(For Luau code you can use ###LUA### ... ###END_LUA### with no JSON escaping.)\n\nRetry the call immediately.`
+            : `Your last turn used a non-canonical key ("toolName" / "tool_name" / "action" / bare "name") for the tool name — RoLink only accepts the "tool" (or "command") key. Rewrite the SAME call now as:\n\n###MCP_TOOL###\n{"tool":"${targetTool}","args":{...}}\n\nRetry the call immediately.`;
+          await P.typeAndSend(isDialectNudge ? dialectMsg : `Your last tool call was malformed JSON (${reply.reason}) for tool ${targetTool}.
 
 ${toolNudge}
 
@@ -1407,6 +1413,25 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         const nm = ZSParse.toolNameFromText ? ZSParse.toolNameFromText(r) : null;
         if(nm && nm !== "command" && A.toolNames && (A.toolNames.has(nm) || A.toolNames.has(nm.replace(/^.*\//, "")))){
           return {kind:"parse_error", reason:"malformed", raw: r, item: d.item};
+        }
+      }
+
+      // DeepSeek DSML dialect: native <|DSML|> tool-call markup instead of a
+      // RoLink block. Never parseable here — send a rewrite nudge (gated on
+      // the marker itself, which never occurs in ordinary prose).
+      if(ZSParse.DSML_RE && ZSParse.DSML_RE.test(r)){
+        return {kind:"parse_error", reason:"dsml", raw: r, item: d.item};
+      }
+
+      // Wrong-key dialect: {"toolName":|tool_name|action:} with a KNOWN tool
+      // value — the model meant a tool call but used the wrong key. Gated on
+      // known tools so prose/JSON that merely mentions "action" never fires.
+      const wrongKey = /"(?:toolName|tool_name|action|name)"\s*:\s*"([A-Za-z0-9_./-]+)"/.exec(r);
+      if(wrongKey && A.toolNames && (A.toolNames.has(wrongKey[1]) || A.toolNames.has(wrongKey[1].replace(/^.*\//, "")))){
+        // ...unless the canonical path already claimed it ({"name":} alongside
+        // a real "tool"/"command" key is just an arg, not a wrong-key call).
+        if(!/"(?:tool|command|function)"\s*:\s*"/.test(r)){
+          return {kind:"parse_error", reason:"wrongkey", raw: r, item: d.item};
         }
       }
 
