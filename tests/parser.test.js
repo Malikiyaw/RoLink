@@ -74,6 +74,15 @@ function loadFixture(p) {
   });
 
   await run("edge-06 truncated mid-object — salvage", async () => {
+    // v5.4.0 path: the v5.4.0 scanBalancedObject sees the chunk as
+    // unbalanced (missing `}`), then repairJSONStringValues + salvageObject
+    // rescue the call because the string body is plain text with no
+    // unescaped quotes. The result is the tool name + the unterminated
+    // string body. v5.5.0 documents this as "we keep v5.4.0's salvage as
+    // a fallback because the depth-tracking scanner is too strict for
+    // the v5.4.0-style chunks the existing tests cover; the v5.5.0
+    // depth-tracking scanner is the source of truth for NEW payloads
+    // and the breaker test (deferred)."
     const r = ZSParse.extract(loadFixture("edge-06-truncated-mid-object.txt"));
     eq(r?.tool, "set_script_content", "tool recovered");
   });

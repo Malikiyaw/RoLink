@@ -1138,6 +1138,21 @@ ${customBlock}
             setLauncherStopped();
             return;
           }
+          // v5.5.0 — thinking-drift re-ground: if the assistant is still
+          // emitting THINKING but no visible reply has appeared, send
+          // ONE bounded re-ground. State A.driftRegrounded ensures it
+          // fires at most once per session.
+          if(!A.driftRegrounded && d.thinking && d.thinking.length &&
+             reasonSince && (Date.now() - reasonSince) > (A.thinkingDriftMs || 45000)){
+            A.driftRegrounded = true;
+            pushFeed("warn", "↻", "AI is reasoning but has emitted no reply — re-grounding (one shot)");
+            A.injecting = true;
+            try{ inputCover(true); }catch{}
+            await P.typeAndSend("If you were planning a tool call, emit the ###MCP_TOOL### block now. Otherwise give your final answer ending with DONE. Don't keep thinking — act.", []);
+            try{ inputCover(false); }catch{}
+            A.injecting = false;
+            continue;
+          }
           if(A.lastFeedText && (Date.now() - A.lastFeedAt) < 60000){
             pushFeed("info", "↻", `Empty reply — re-feeding last result (${A.feedStreak}/${A.maxFeedStreak})`);
             A.injecting = true;
@@ -1419,6 +1434,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     A.started = true; A.sessionEverStarted = true; A.starting = true; A.running = false; A.stopping = false;
     A.feedStreak = 0; A.toolCount = 0; A.lastFeedText = ""; A.lastFeedAt = 0; A.lastFeedId = null;
     A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
+    A.driftRegrounded = false; A.thinkingDriftMs = 45000;
     setCounter(0);
     document.getElementById("rl-feed-list").innerHTML = "";
     launcher.classList.add("is-active", "is-starting");
@@ -1881,6 +1897,16 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     });
   }
 
+  // v5.5.0 — aggressive intent net (deferred). narratedTool() is
+  // a minimal stub that returns ""; the stem→tool map is in
+  // tests/intent-net.test.js as a contract for the follow-up
+  // release. Tests assert this stub exists + has the right shape.
+  const INTENT_STEMS = [];
+  function narratedTool(text){
+    if(!text || text.length > 2000) return "";
+    return "";
+  }
+
   // expose for debug / popup
   window.ROLINK = {
     start: startSession,
@@ -1889,5 +1915,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     tools: ()=>A.tools,
     diag: ()=>A.diag,
     P,
+    narratedTool,
+    INTENT_STEMS,
   };
 })();
