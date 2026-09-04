@@ -645,7 +645,20 @@
       bar.style.top = "48px"; bar.style.left = "50%"; bar.style.transform = "translateX(-50%)";
       bar.style.width = "auto"; bar.style.maxWidth = "min(90vw, 720px)";
       bar.style.margin = "0";
-    }catch{}
+    }catch(e){
+      // Last-resort fallback: if ANY provider call throws (e.g. barMount()
+      // or composerFrame() on a new site layout), make the bar visible anyway
+      // so the user always has Start / Stop buttons.
+      console.warn("[rolink] placeBar fallback (provider threw):", e && e.message);
+      if(bar.parentElement !== root) root.appendChild(bar);
+      bar.style.display = "flex";
+      bar.classList.remove("rl-inline", "rl-anchored");
+      bar.dataset.mode = "fixed";
+      bar.style.position = "fixed";
+      bar.style.top = "48px"; bar.style.left = "50%"; bar.style.transform = "translateX(-50%)";
+      bar.style.width = "auto"; bar.style.maxWidth = "min(90vw, 720px)";
+      bar.style.margin = "0";
+    }
   }
   window.addEventListener("resize", placeBar);
   setInterval(placeBar, 1500);
