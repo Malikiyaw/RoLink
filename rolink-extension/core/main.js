@@ -319,7 +319,8 @@
   `;
   root.appendChild(toolsPanel);
 
-  // Activity feed    const feed = el("div", "rl-feed");
+  // Activity feed
+  const feed = el("div", "rl-feed");
     feed.innerHTML = `
     <div class="rl-feed-head"><span class="rl-feed-title">Activity</span><button class="rl-feed-clear" id="rl-feed-clear" title="Clear log">⌫</button></div>
 
@@ -658,7 +659,7 @@
       bar.style.width = "auto"; bar.style.maxWidth = "min(90vw, 720px)";
       bar.style.margin = "0";
     }
-n  // Final safety: if bar is STILL hidden after try/catch, force it visible
+   // Final safety: if bar is STILL hidden after try/catch, force it visible
   // This catches any edge case where no path inside the try set display:flex
   if(bar.style.display === "none"){
     if(bar.parentElement !== root) root.appendChild(bar);
