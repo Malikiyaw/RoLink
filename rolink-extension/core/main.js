@@ -707,6 +707,11 @@
     live.style.setProperty("--cat", catNeon(cat));
     live.classList.remove("rl-err");
     const nm = live.querySelector(".rl-live-name"); if(nm) nm.textContent = name;
+    // Sprint C: persona tooltip on the running tool name; reset any fade-out
+    // left over from a previous hideLive tick so a back-to-back run never
+    // looks half-transparent.
+    try{ const p = personaFirstLine(name); if(nm && p) nm.title = p; }catch{}
+    live.style.opacity = "1";
     bar.classList.add("rl-tooling");
     live.style.display = "inline-flex";
     updateLiveTime();
@@ -716,10 +721,20 @@
   function hideLive(){
     clearLiveTick();
     const live = document.getElementById("rl-live");
-    if(live){ live.style.display = "none"; live.classList.remove("rl-err"); }
+    if(live){ live.classList.remove("rl-err"); }
     bar.classList.remove("rl-tooling");
     A.toolRunning = "";
     if(!A.parked && lastConnStatus) setStatus(lastConnStatus);
+    // Sprint C: brief fade-out instead of an abrupt display:none snap. If a
+    // new tool starts inside the 200ms window, setToolLive's opacity reset
+    // wins and this timeout no-ops (bar is no longer tooling).
+    if(live){
+      try{ live.style.transition = "opacity .2s ease"; }catch{}
+      live.style.opacity = "0";
+      setTimeout(()=>{
+        if(live && !bar.classList.contains("rl-tooling")){ live.style.display = "none"; live.style.opacity = "1"; }
+      }, 200);
+    }
   }
   // End of a tool's run in the bar pill: ok -> straight back to the
   // connection state. error -> 1.5s red flash with the tool name still shown.
@@ -751,6 +766,31 @@
     if(oldEl) oldEl.textContent = streamOldCount ? "… " + streamOldCount + " older" : "";
     if(streamFollow) list.scrollTop = list.scrollHeight;
   }
+  // First sentence of the tool's expert persona (Sprint A generated prompts).
+  // Returns "" when the lookup is missing — callers must treat empty as safe.
+  function personaFirstLine(name){
+    try{
+      const allP = (typeof window !== "undefined" && window.ROLINK_TOOL_PROMPTS) || null;
+      const mp = allP && allP[name];
+      const first = mp && mp.persona ? String(mp.persona).match(/^.*?[.!?](?=\s|$)/s) : null;
+      return first ? first[0].trim() : (mp && mp.persona ? String(mp.persona).trim() : "");
+    }catch{ return ""; }
+  }
+  // Stream args as a readable key-value grid (max 6 rows, overflow collapsed).
+  function formatArgsLines(args){
+    if(!args || typeof args !== "object" || !Object.keys(args).length) return "";
+    const keys = Object.keys(args).slice(0, 6);
+    const extra = Object.keys(args).length - keys.length;
+    const rows = [];
+    for(const k of keys){
+      let v = args[k];
+      try{ v = (v && typeof v === "object") ? JSON.stringify(v) : String(v); }catch{ v = String(v); }
+      if(v.length > 80) v = v.slice(0, 77) + "…";
+      rows.push(`<span class="rl-ak">${escapeHtml(String(k))}</span><span class="rl-av">${escapeHtml(String(v))}</span>`);
+    }
+    if(extra > 0) rows.push(`<span class="rl-more">+ ${extra} more arg${extra > 1 ? "s" : ""}</span>`);
+    return `<div class="rl-stream-args">${rows.join("")}</div>`;
+  }
   function makeStreamCard(name, args, pinned){
     const card = el("div", "rl-stream-card rl-pending");
     const cat = getToolCategory(name) || "tool";
@@ -759,15 +799,23 @@
     card.style.setProperty("--cat", catNeon(cat));
     const detail = shortArgSummary(name, args);
     const tag = pinned ? `<span class="rl-stream-tag">pinned from chat</span>` : "";
+    // Sprint C: persona first line rides under the head; formatted args live in
+    // the collapsible body above the result pre.
+    const personaLine = personaFirstLine(name);
+    const personaHtml = personaLine
+      ? `<div class="rl-stream-persona" title="${escapeHtml(personaLine)}">${escapeHtml(personaLine)}</div>`
+      : "";
+    const argsHtml = formatArgsLines(args);
     card.innerHTML =
       `<div class="rl-stream-card-head"><span class="rl-spinner"></span><span class="rl-ico">⚙</span>` +
       `<span class="rl-name">${escapeHtml(name)}</span><span class="rl-detail">${escapeHtml(detail)}</span>` +
       `<span class="rl-time">0s</span>${tag}<span class="rl-chevron">▼</span></div>` +
-      `<div class="rl-stream-card-body"><pre></pre><div class="rl-stream-card-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur"></span></div></div>`;
+      personaHtml +
+      `<div class="rl-stream-card-body">${argsHtml}<pre></pre><div class="rl-stream-card-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur"></span></div></div>`;
     try{
       card.querySelector(".rl-stream-card-head").onclick = (e)=>{ e.stopPropagation(); card.classList.toggle("open"); };
       const btn = card.querySelector(".rl-copy");
-      if(btn) btn.onclick = (e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(String((card.querySelector("pre") || {}).textContent || "")); btn.textContent = "Copied"; setTimeout(()=>{ btn.textContent = "Copy"; }, 1200); }catch{} };
+      if(btn) btn.onclick = (e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(String((card.querySelector("pre") || {}).textContent || "")); btn.textContent = "Copied"; btn.classList.add("copied"); setTimeout(()=>{ btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1200); }catch{} };
       const tEl = card.querySelector(".rl-time");
       const iv = setInterval(()=>{
         if(!card.isConnected){ clearInterval(iv); return; }
@@ -798,9 +846,18 @@
       const tEl = head.querySelector(".rl-time"); if(tEl) tEl.textContent = dur;
       const dEl = head.querySelector(".rl-detail");
       if(dEl && !dEl.textContent) dEl.textContent = shorten(String(full).replace(/\n/g, " "), 100);
+      // Sprint C: outcome badge (OK / ERROR / STALE) — always visible once settled.
+      const chev = head.querySelector(".rl-chevron");
+      // Dedupe: settle may legitimately run more than once per card.
+      // (Scope to badge + warn tag so the pinned-from-chat tag survives.)
+      head.querySelectorAll(".rl-stream-badge").forEach(x => x.remove());
+      head.querySelectorAll(".rl-stream-tag-warn").forEach(x => x.remove());
+      const badgeCls = meta.stale ? "stale" : (ok ? "ok" : "err");
+      const badge = el("span", "rl-stream-badge " + badgeCls);
+      badge.textContent = meta.stale ? "STALE" : (ok ? "OK" : "ERROR");
+      if(chev) head.insertBefore(badge, chev);
       if(meta.stale){
-        const chev = head.querySelector(".rl-chevron");
-        const tag = el("span", "rl-stream-tag rl-stream-tag-warn"); tag.textContent = "stale — not injected";
+        const tag = el("span", "rl-stream-tag rl-stream-tag-warn"); tag.textContent = "not injected";
         if(chev) head.insertBefore(tag, chev);
       }
     }
@@ -851,7 +908,7 @@
     try{
       const pre=chip.querySelector(".rl-chip-body pre");
       const btn=chip.querySelector(".rl-copy");
-      if(btn) btn.onclick=(e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(pre?pre.textContent:""); btn.textContent="Copied"; setTimeout(()=>{btn.textContent="Copy";},1200); }catch{} };
+      if(btn) btn.onclick=(e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(pre?pre.textContent:""); btn.textContent="Copied"; btn.classList.add("copied"); setTimeout(()=>{btn.textContent="Copy"; btn.classList.remove("copied");},1200); }catch{} };
     }catch{}
     // Live elapsed timer (ZeroScript parity: chip timer keeps ticking while running)
     try{
@@ -915,7 +972,7 @@
     if(pre) pre.textContent = body;
     try{
       const btn = rc.querySelector(".rl-copy");
-      if(btn) btn.onclick = (e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(String(full)); btn.textContent = "Copied"; setTimeout(()=>{ btn.textContent = "Copy"; }, 1200); }catch{} };
+      if(btn) btn.onclick = (e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(String(full)); btn.textContent = "Copied"; btn.classList.add("copied"); setTimeout(()=>{ btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1200); }catch{} };
     }catch{}
     return rc;
   }

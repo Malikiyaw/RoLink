@@ -128,7 +128,8 @@ function placeChip(chip, parent){
       dur: dur,
       body: String(full).slice(0, 4000),
       staleTag: !!(meta.stale),
-      pinnedTag: !!(meta.pinned)
+      pinnedTag: !!(meta.pinned),
+      badge: meta.stale ? "STALE" : (ok ? "OK" : "ERROR")
     };
   }
 
@@ -164,10 +165,70 @@ function placeChip(chip, parent){
         assert(s.ico === (ep.res.ok ? "✓" : "✗"), `${name}/${ep.name}: settle icon`);
         if(ep.name === "stale") assert(s.staleTag, `${name}/stale: stale tag present`);
         else assert(!s.staleTag, `${name}/${ep.name}: no stale tag`);
+        const wantBadge = ep.name === "stale" ? "STALE" : (ep.res.ok ? "OK" : "ERROR");
+        assert(s.badge === wantBadge, `${name}/${ep.name}: badge ${s.badge} (want ${wantBadge})`);
       }
       const pinned = streamCardMeta(name, {}, true);
       assert(pinned.pinnedTag, `${name}: pinned-from-chat tag at creation`);
     }
+  });
+
+  // Sprint C: persona first-sentence + formatted-args mirrors (repo convention).
+  function personaFirstLineOf(p){
+    if(!p) return "";
+    const m = String(p).match(/^.*?[.!?](?=\s|$)/s);
+    return (m ? m[0] : String(p)).trim();
+  }
+  function fmtArgs(args){
+    if(!args || typeof args !== "object" || !Object.keys(args).length) return { rows: 0, total: 0, collapsed: false, hasGrid: false };
+    const keys = Object.keys(args);
+    const shown = keys.slice(0, 6);
+    return { rows: shown.length, total: keys.length, collapsed: keys.length > shown.length, hasGrid: true };
+  }
+
+  await run("persona first-sentence extraction: dot stop, empty safe, no-dot safe", async () => {
+    const p1 = personaFirstLineOf("You are an elite Luau engineer who writes code that runs first try in a live Studio session. You think in services.");
+    assert(p1.startsWith("You are an elite Luau engineer"), "first sentence extracted");
+    assert(!p1.includes("You think"), "stops at first sentence boundary");
+    assert(p1.endsWith("."), "keeps terminating punctuation");
+    assert(personaFirstLineOf("") === "", "empty persona safe");
+    assert(personaFirstLineOf(null) === "", "null persona safe");
+    const noDot = personaFirstLineOf("no punctuation here");
+    assert(noDot === "no punctuation here", "no-dot persona falls back to whole string");
+  });
+
+  await run("111-tool args grid: keys formatted, 6-row cap, overflow collapsed", async () => {
+    for(const name of TOOLS){
+      const a = fmtArgs({ path: "Workspace/" + name, mode: "edit", flag: true, code: "x" });
+      assert(a.hasGrid && a.rows === 4, `${name}: 4 rows shown`);
+      assert(!a.collapsed, `${name}: not collapsed under 6`);
+      const big = {};
+      for(let i = 0; i < 9; i++) big["k" + i] = i;
+      const b = fmtArgs(big);
+      assert(b.rows === 6 && b.collapsed && b.total === 9, `${name}: 6 shown + collapse note for 9`);
+      assert(!fmtArgs({}).hasGrid && !fmtArgs(null).hasGrid, `${name}: empty args no grid`);
+    }
+  });
+
+  await run("Sprint C source contract: persona/args/badge wiring + CSS classes present", async () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "core", "main.js"), "utf8");
+    assert(/function personaFirstLine/.test(main), "personaFirstLine helper in main.js");
+    assert(/function formatArgsLines/.test(main), "formatArgsLines helper in main.js");
+    assert(main.includes("rl-stream-persona"), "stream persona row markup");
+    assert(main.includes("rl-stream-badge"), "outcome badge markup");
+    assert(main.includes("rl-stream-args"), "stream args grid markup");
+    assert(main.includes('nm.title = p'), "live pill persona tooltip wired");
+    assert(/classList\.add\("copied"\)/.test(main), "copy success flash class");
+    const css = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "overlay.css"), "utf8");
+    assert(css.includes(".rl-stream-persona"), "CSS: stream persona style");
+    assert(css.includes(".rl-stream-badge.ok"), "CSS: OK badge style");
+    assert(css.includes(".rl-stream-badge.stale"), "CSS: STALE badge style");
+    assert(css.includes("@keyframes rl-march"), "CSS: marching-ants keyframes");
+    assert(css.includes("@keyframes rl-live-pulse"), "CSS: live pill error pulse keyframes");
+    assert(css.includes(".rl-copy.copied"), "CSS: copy flash style");
+    assert(/border-left: 3px solid var\(--cat\)/.test(css), "CSS: chip accent stripe");
+    const popup = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "popup.js"), "utf8");
+    assert(/function relTime/.test(popup), "popup relative-time helper present");
   });
 
   await run("Sprint B source contract: body-free anchors, stream markers, live relay", async () => {

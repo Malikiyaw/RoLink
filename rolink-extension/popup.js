@@ -67,6 +67,18 @@ function toast(msg, isErr){
   toast._t=setTimeout(()=>{ toastEl.className="toast"; },1800);
 }
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);}
+// Sprint C: "last used" stamps read as relative time ("just now", "3m ago").
+function relTime(ts){
+  try{
+    const d=(Date.now()-Number(ts))/1000;
+    if(!isFinite(d)||d<0) return "";
+    if(d<45) return "just now";
+    if(d<3600) return Math.floor(d/60)+"m ago";
+    if(d<86400) return Math.floor(d/3600)+"h ago";
+    if(d<86400*30) return Math.floor(d/86400)+"d ago";
+    return new Date(Number(ts)).toLocaleDateString();
+  }catch{ return ""; }
+}
 
 function render(s){
   lastStatus=s;
@@ -130,11 +142,13 @@ function applyLive(){
       ch.classList.toggle("live", !!run && nm===run);
       const ts=lastUsed[nm];
       if(ts){
-        const hhmm=new Date(ts).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
-        if(ch.dataset.lu !== String(ts)){
-          ch.dataset.lu=String(ts);
+        const rel=relTime(ts);
+        // Re-stamp only when the relative label changes (each minute/hour),
+        // so tooltips stay fresh without rewriting them every 2s refresh.
+        if(ch.dataset.lur !== rel){
+          ch.dataset.lur=rel;
           const base=ch.title ? ch.title.split(" — last used")[0] : nm;
-          ch.title=base+" — last used "+hhmm;
+          ch.title=base+" — last used "+rel;
         }
       }
     });

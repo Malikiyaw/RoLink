@@ -1,4 +1,23 @@
 # Changelog
+## 5.6.5 - 1000x Tool Visibility: expert personas + args on every stream card, chips rebuilt to glow
+
+**Sprint C — the chips, stream, and pill get their full visual treatment** (builds on 5.6.0's visibility plumbing, plus the 5.6.1–5.6.4 boot fixes: bar-always-visible fallback, pill inline click, and the `feed is not defined` merged-comment crash that killed every release since 5.6.0).
+
+**Inline chips.**
+- Category-neon 3px accent stripe replaces the uniform blue border; the chip glows with its category color (magenta for animation, blue for scripting, gold for assets) while a tool runs, then settles to a calm green/red shadow.
+- Roomier head (9x12 padding, 12px type), letter-spaced tool names, hover tint, result body capped at 260px of scroll, Copy buttons gain a green "copied" flash.
+
+**Tool Stream panel.**
+- Every card shows the tool's expert persona first sentence in an accent-tinted row under the head (sourced from the generated `window.ROLINK_TOOL_PROMPTS` — additive, empty-safe).
+- Args render as a readable key-value grid (6 rows max, `+ N more` collapse) instead of raw JSON, above the result.
+- Running cards carry a marching-ants progress line; settled cards show an always-visible outcome badge — **OK** / **ERROR** / **STALE** (deduped on re-settle; the pinned-from-chat tag survives). Smooth-scroll list, light-mode styles for persona/args/copy.
+
+**Live pill + popup.**
+- The running tool name carries its persona as a hover tooltip; the pill pulses three times on error, then fades out over 200ms instead of snapping away (back-to-back tools can't leave it half-transparent).
+- Popup "last used" stamps are now relative time ("just now", "3m ago", "2h ago"), re-stamped only when the label changes.
+
+**Tests**: chip-render extended to 11 contracts — persona first-sentence extraction (dot-stop / empty / no-dot safe), 111-tool args-grid cap, outcome badge across all 5 exit paths x 111 tools, and a Sprint C source contract proving persona/args/badge/relTime wiring plus the CSS classes exist in the shipped files. Full suites green: parser 26, execution 10, providers 10, dispatch 5, agent-loop 7, partial-tools 4, intent-net 24, tool-prompts 14, chip-render 11, vitest 7, `tsc --noEmit` clean, syntax check clean (24/24 JS), deep-boot smoke (stubbed ZSProvider) passes.
+
 ## 5.6.0 - Pro-Max personas + 1000x tool visibility (Sprint A + Sprint B)
 
 **Sprint A — Pro-Max Personas (every tool becomes the specialist).**

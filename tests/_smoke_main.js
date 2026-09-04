@@ -60,6 +60,8 @@ globals.document = {
   createEvent: () => ({ initEvent() {} })
 };
 globals.window = globals;
+globals.addEventListener = () => {};
+globals.removeEventListener = () => {};
 globals.location = { pathname: "/", hostname: "chat.deepseek.com", href: "https://chat.deepseek.com/" };
 globals.navigator = { clipboard: { writeText() { return Promise.resolve(); } }, userAgent: "smoke" };
 globals.chrome = {
@@ -73,6 +75,24 @@ globals.chrome = {
   storage: { local: { get(k, cb) { cb && cb({}); }, set() {} }, onChanged: { addListener() {} } },
   tabs: { query(cb) { cb && cb([]); }, sendMessage() {} },
   alarms: { create() {}, onAlarm: { addListener() {} } }
+};
+// Deep-boot provider: without window.ZSProvider, main.js early-returns at the
+// top (`no ZSProvider found`) and never exercises the UI shell below. Give it
+// a DeepSeek-like stub so the whole init path (bar, panels, wireUi, placeBar)
+// runs.
+globals.ZSProvider = {
+  id: "deepseek",
+  displayName: "DeepSeek",
+  provClass: "rl-prov-deepseek",
+  conversationKey: () => "/",
+  barMount: () => ({ parent: globals.document.body, before: null }),
+  composerFrame: () => null,
+  overlayBlocking: () => false,
+  findToolBlockSpot: () => null,
+  assistantCount: () => 0,
+  sendText() {},
+  stopGeneration() {},
+  onNative: () => {}
 };
 globals.MutationObserver = class { constructor() {} observe() {} disconnect() {} takeRecords() { return []; } };
 globals.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
