@@ -290,6 +290,9 @@
   launcher.innerHTML = `<span class="rl-logo">R</span><span class="rl-label">Start RoLink agent</span>`;
   launcher.setAttribute("aria-label", "Start RoLink agent");
   root.appendChild(launcher);
+n  // Sprint B2: defensive click handler — binds immediately at creation time
+  // so the pill works even if init crashes before the real listener at ~1974.
+  launcher.onclick = function(){ if(typeof startSession === "function") startSession(); };
 
   // Status bar (mounted inside the composer via provider.barMount): brand +
   // flexing status + demoted tool count + primary Start / solid Stop + icon
@@ -659,6 +662,18 @@
       bar.style.width = "auto"; bar.style.maxWidth = "min(90vw, 720px)";
       bar.style.margin = "0";
     }
+n  // Final safety: if bar is STILL hidden after try/catch, force it visible
+  // This catches any edge case where no path inside the try set display:flex
+  if(bar.style.display === "none"){
+    if(bar.parentElement !== root) root.appendChild(bar);
+    bar.style.display = "flex";
+    bar.classList.remove("rl-inline", "rl-anchored");
+    bar.dataset.mode = "fixed";
+    bar.style.position = "fixed";
+    bar.style.top = "48px"; bar.style.left = "50%"; bar.style.transform = "translateX(-50%)";
+    bar.style.width = "auto"; bar.style.maxWidth = "min(90vw, 720px)";
+    bar.style.margin = "0";
+  }
   }
   window.addEventListener("resize", placeBar);
   setInterval(placeBar, 1500);
