@@ -58,6 +58,13 @@
     .ghost.warn{background:rgba(248,81,73,.12);color:#fca5a5;border-color:rgba(248,81,73,.4)}
     .ghost.accent{background:rgba(47,129,247,.14);color:#79c0ff;border-color:rgba(47,129,247,.4)}
     .ghost-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+    .mcp-srv-list{margin:6px 0 2px;display:flex;flex-direction:column;gap:3px}
+    .mcp-srv{display:flex;align-items:center;gap:6px;font:11px ui-monospace,Menlo,Consolas,monospace;color:var(--text)}
+    .mcp-srv .mcp-dot{font-size:10px;width:12px;text-align:center}
+    .mcp-srv.on .mcp-dot{color:var(--green)}
+    .mcp-srv.off .mcp-dot{color:var(--red)}
+    .mcp-srv .mcp-tools{color:var(--muted);font-size:10px}
+    .mcp-srv.roblox{font-weight:700}
     .ghost-grid .ghost{margin-top:0;font-size:11px;padding:7px}
     .tools-box{
       max-height:220px;overflow-y:auto;
@@ -155,6 +162,7 @@
       </div>
       <div class="health-card" style="margin-bottom:6px"><b>MCP servers</b>
         <span class="val" id="mcp-servers-val">—</span>
+        <div class="mcp-srv-list" id="mcp-servers-list"></div>
         <button class="ghost" id="openMcpConfig" style="margin-left:auto;padding:3px 6px;font-size:10px">Configure</button>
       </div>
       <div class="logs-box" id="logsList">No logs yet</div>

@@ -478,9 +478,22 @@ const ZSProvider = (() => {
   const conversationKey = () => (location.pathname === "/" ? "" : location.pathname);
 
   // Core uniformity hooks (same surface as the generic factory):
-  //  - capResult: DeepSeek's composer takes ~160k chars and typeAndSend
-  //    truncates head+tail there, so the core's default feed cap applies.
-  const capResult = (t) => t;
+  //  - capResult/feedCap: DeepSeek's composer takes ~160k chars (truncateForSend
+  //    head+tails there), so the core may feed up to 60k shaped head+tail here
+  //    instead of the default 12k context cap. 60k stays well under the composer
+  //    limit, so the send-side truncation never fires on our own feeds.
+  const DS_FEED_MAX = 60000, DS_FEED_LINES = 600;
+  const capResult = (t) => {
+    if (!t) return t;
+    const lines = String(t).split("\n");
+    if (t.length <= DS_FEED_MAX && lines.length <= DS_FEED_LINES) return t;
+    const what = t.length > DS_FEED_MAX ? (t.length + " chars") : (lines.length + " lines");
+    const marker = `\n\n[…RoLink: result truncated (${what}) to fit the feed budget — head + tail shown, do NOT re-run the command…]\n\n`;
+    const budget = DS_FEED_MAX - marker.length;
+    const headLen = Math.floor(budget * 0.7), tailLen = budget - headLen;
+    return t.slice(0, headLen) + marker + t.slice(t.length - tailLen);
+  };
+  const feedCap = DS_FEED_MAX;
   //  - overlayBlocking: DeepSeek has no login/modal mask over the composer.
   const overlayBlocking = () => false;
   //  - replyUnsettled: still-streaming reasoning/answer means a tool-shaped
@@ -608,7 +621,7 @@ const ZSProvider = (() => {
     scanError, isTooLongMsg,
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
-    capResult, overlayBlocking, replyUnsettled, hasStreamingLabel,
+    capResult, feedCap, overlayBlocking, replyUnsettled, hasStreamingLabel,
   };
 })();
 

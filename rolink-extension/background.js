@@ -149,6 +149,7 @@ function handleBridgeMessage(msg){
   if(msg.type==="tools"){
     if(Array.isArray(msg.tools)) toolsCache=msg.tools;
     if(Array.isArray(msg.servers)) serversCache=msg.servers;
+    if(Array.isArray(msg.mcp_servers)) mcpServers = msg.mcp_servers;
     mcpAlive=!!msg.mcp_alive;
     resolvePending(msg.id, {ok:true, tools:toolsCache});
     broadcastStatus(); return;
@@ -301,7 +302,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse)=>{
       case "list_mcp_servers": {
         // Refresh from bridge, then return the cached list (so the UI
         // shows what the bridge actually has, not what it last sent).
-        const r=await send({type:"list_tools"}, 10000);
+        // Optional msg.server scopes the tools array to one server.
+        const q = {type:"list_tools"};
+        if(msg.server) q.server = msg.server;
+        const r=await send(q, 10000);
         if(r && Array.isArray(r.servers)) serversCache=r.servers;
         if(r && Array.isArray(r.mcp_servers)) mcpServers=r.mcp_servers;
         sendResponse({ok:true, mcp_servers: mcpServers, servers: serversCache});

@@ -1411,6 +1411,27 @@ class MCPManager:
         return [{"id": sid, "alive": c.is_alive(), "tools": len(c.tools_cache)}
                 for sid, c in self.clients.items()]
 
+    def server_list(self):
+        """Merged config + liveness row per MCP server, for the extension UI.
+
+        health() only carries id/alive/tools; the options page also needs
+        the launch spec (command/args) to render each row, so the matching
+        config.json entry is merged in. Never throws: a broken config
+        degrades to health-only rows instead of breaking list_tools."""
+        try:
+            specs = (_read_config().get("mcpServers", {}) or {})
+        except Exception:
+            specs = {}
+        out = []
+        for row in self.health():
+            spec = specs.get(row["id"], {}) or {}
+            out.append({
+                "id": row["id"], "server_id": row["id"],
+                "command": spec.get("command", ""), "args": spec.get("args", []),
+                "alive": row["alive"], "tools": row["tools"],
+            })
+        return out
+
     def any_alive(self):
         return any(c.is_alive() for c in self.clients.values())
 
@@ -1656,6 +1677,7 @@ async def broadcast_status():
             # panel in your already-open Studio" vs "launch Studio").
             "studio_proc": _proc,
             "servers": mgr.health(),
+            "mcp_servers": mgr.server_list(),
             "tools": mgr.list_tools(),
             "port": PORT,
         })
@@ -1680,6 +1702,7 @@ async def handler(ws):
             "studio": _st["place"], "studio_app": _st["app"],
             "studio_proc": await asyncio.to_thread(_roblox_studio_app_running),
             "servers": mgr.health(),
+            "mcp_servers": mgr.server_list(),
             "tools": mgr.list_tools(),
             "port": PORT,
         }))
@@ -1719,6 +1742,11 @@ async def handler(ws):
                 except Exception as e:
                     tools = mgr.list_tools()
                     log(f"list_tools error: {e}", "yl")
+                # Optional per-server scope: {"type":"list_tools","server":"blender"}
+                # returns only that server's tools (health still covers all).
+                _only = (msg.get("server") or "").strip() if isinstance(msg.get("server"), str) else ""
+                if _only:
+                    tools = [t for t in tools if t.get("server") == _only]
                 _st = await asyncio.to_thread(probe_studio)
                 await ws.send(json.dumps({
                     "type": "tools", "id": rid,
@@ -1726,6 +1754,7 @@ async def handler(ws):
                     "studio": _st["place"], "studio_app": _st["app"],
                     "studio_proc": await asyncio.to_thread(_roblox_studio_app_running),
                     "servers": mgr.health(),
+                    "mcp_servers": mgr.server_list(),
                 }))
 
             elif mtype == "call_tool":
@@ -1813,7 +1842,7 @@ async def handler(ws):
                 await ws.send(json.dumps({
                     "type": "mcp_status", "id": rid,
                     "alive": mgr.any_alive(), "ok": ok, "error": err,
-                    "servers": mgr.health(), "tools": mgr.list_tools(),
+                    "servers": mgr.health(), "mcp_servers": mgr.server_list(), "tools": mgr.list_tools(),
                 }))
 
             else:

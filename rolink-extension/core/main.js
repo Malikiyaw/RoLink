@@ -187,15 +187,28 @@
   async function loadCustomPrompt(){
     if(!bgAvailable) return "";
     try{
-      const r = await bg({type:"setting_get", key: "customPrompt"});
-      return (r && r.ok && r.value) || "";
+      const perKey = customPromptKey();
+      const r = await bg({type:"setting_get", key: perKey});
+      if(r && r.ok && r.value) return r.value;
+      // Legacy global fallback (pre-Sprint-3 installs) — migrate forward.
+      const g = await bg({type:"setting_get", key: "customPrompt"});
+      if(g && g.ok && g.value){
+        try{ await bg({type:"setting_set", key: perKey, value: g.value}); }catch{}
+        return g.value;
+      }
+      return "";
     }catch{ return ""; }
   }
   async function saveCustomPrompt(s){
     A.customPrompt = s || "";
     if(!bgAvailable) return;
-    try{ await bg({type:"setting_set", key: "customPrompt", value: A.customPrompt}); }catch{}
+    try{ await bg({type:"setting_set", key: customPromptKey(), value: A.customPrompt}); }catch{}
   }
+  function convKey(){
+    try{ return (P.conversationKey && P.conversationKey()) || location.pathname; }
+    catch{ return location.pathname; }
+  }
+  function customPromptKey(){ return "customPrompt:" + convKey(); }
 
   // ── Per-conversation system-prompt re-injection (sysResendDue) ────────────
   const SYS_RESEND_EVERY = 12;
@@ -323,6 +336,11 @@
         <button class="rl-btn primary" id="rl-save-prompt">💾 Save custom instructions</button>
         <button class="rl-btn warn" id="rl-clear-session">🗑 Clear session</button>
       </div>
+      <div class="rl-row">
+        <button class="rl-btn" id="rl-export-session">⤓ Export session</button>
+        <button class="rl-btn" id="rl-import-session">⤒ Import session</button>
+        <input type="file" id="rl-import-file" accept="application/json,.json" style="display:none">
+      </div>
     </div>
   `;
   root.appendChild(wsPanel);
@@ -422,6 +440,48 @@
       await saveSession();
       pushFeed("info", "🗑", "Session cleared");
       updateWorkspaceView();
+    };
+    document.getElementById("rl-export-session").onclick = e => {
+      e.stopPropagation();
+      try{
+        const payload = {
+          version: 1, app: "RoLink",
+          sessionId: A.sessionId || sessionIdFromUrl(),
+          exportedAt: new Date().toISOString(),
+          customPrompt: A.customPrompt || "",
+          history: A.history || [],
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], {type: "application/json"});
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `rolink-session-${payload.sessionId}.json`;
+        document.body.appendChild(a); a.click();
+        setTimeout(()=>{ try{ URL.revokeObjectURL(a.href); a.remove(); }catch{} }, 500);
+        pushFeed("ok", "⤓", `Session exported (${(A.history || []).length} events)`);
+      }catch(err){ pushFeed("err", "✗", "Export failed: " + (err && err.message || err)); }
+    };
+    document.getElementById("rl-import-session").onclick = e => {
+      e.stopPropagation();
+      document.getElementById("rl-import-file").click();
+    };
+    document.getElementById("rl-import-file").onchange = async e => {
+      e.stopPropagation();
+      const f = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if(!f) return;
+      try{
+        const payload = JSON.parse(await f.text());
+        if(!payload || !Array.isArray(payload.history)) throw new Error("not a RoLink session file (missing history[])");
+        A.history = payload.history.slice(-200);
+        if(typeof payload.customPrompt === "string"){
+          document.getElementById("rl-custom-prompt").value = payload.customPrompt;
+          await saveCustomPrompt(payload.customPrompt);
+        }
+        await saveSession();
+        updateWorkspaceView();
+        pushFeed("ok", "⤒", `Session imported (${A.history.length} events)`);
+        showBanner("Session imported", "ok", 1800);
+      }catch(err){ pushFeed("err", "✗", "Import failed: " + (err && err.message || err)); showBanner("Import failed — not a RoLink session file", "err", 4000); }
     };
     document.addEventListener("click", e => {
       if(!wsPanel.contains(e.target) && e.target.id !== "rl-workspace-btn" && e.target.id !== "rl-settings-btn"){
@@ -723,14 +783,14 @@ ${customBlock}
     try{ inputCover(true); }catch{}
     if(fsm) try{ fsm.transition("FEEDING_RESULT", "feed"); }catch{}
     if(__trace) __trace.push({ ts: Date.now(), level:"info", msg:`FEEDING_RESULT ${String(text).slice(0,80)}` });
-    await P.typeAndSend(text, images || []);
+    await sendParked(text, images || []);
     // Wait for AI to actually start generating
     const started = await waitForGenerationStart(3500);
     if(!started){
       diag("feed.no_generation", { text: String(text).slice(0,80) });
       if(__trace) __trace.push({ ts: Date.now(), level:"warn", msg:"AI did not resume after feed — retrying once" });
       await sleep(800);
-      try{ await P.typeAndSend(text, images || []); }catch{}
+      try{ await sendParked(text, images || []); }catch{}
       const started2 = await waitForGenerationStart(3000);
       if(!started2){
         pushFeed("warn", "⚠", "AI did not resume after tool result — type a short message to nudge it.");
@@ -1124,16 +1184,16 @@ ${customBlock}
     });
   }
 
-  // ── visibility gate (pause while the AI tab is hidden) ──────────────────
-  function waitForVisible_old(){
-    if(!document.hidden || A.stopping) return Promise.resolve(!A.stopping);
-    A.parked = true; pushFeed("info", "⏸", "Tab hidden — paused");
-    return new Promise(resolve=>{
-      const done = () => { document.removeEventListener("visibilitychange", onVis); clearInterval(iv); A.parked = false; resolve(!A.stopping); };
-      const onVis = () => { if(!document.hidden) done(); };
-      document.addEventListener("visibilitychange", onVis);
-      const iv = setInterval(()=>{ if(A.stopping || !document.hidden) done(); }, 1000);
-    });
+  // Sends still park while the tab is hidden — typing into a backgrounded
+  // tab is unreliable even in bgRun mode. Bridge call_tool is
+  // tab-independent so execution continues; only message SENDS wait here.
+  async function sendParked(text, images){
+    if(document.hidden){
+      const ok = await waitForVisible();
+      if(!ok || A.stopping) return false;
+    }
+    try{ await P.typeAndSend(text, images || []); return true; }
+    catch{ return false; }
   }
 
   // ── the main agent loop ───────────────────────────────────────────────────
@@ -1185,7 +1245,7 @@ ${customBlock}
             pushFeed("warn", "↻", `AI claimed it can't run tools (${1 - A.nudgesLeft}/1) — re-grounding (self-heal)`);
             A.injecting = true;
             try{ inputCover(true); }catch{}
-            await P.typeAndSend(`You DO have tools. They are listed in your system prompt and have been used successfully in this session. Re-read your system prompt. The valid tool names are: ${(A.tools||[]).map(t=>(typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Emit a ###MCP_TOOL### block now using one of these exact names.`, []);
+            await sendParked(`You DO have tools. They are listed in your system prompt and have been used successfully in this session. Re-read your system prompt. The valid tool names are: ${(A.tools||[]).map(t=>(typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Emit a ###MCP_TOOL### block now using one of these exact names.`, []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
             continue;
@@ -1199,7 +1259,7 @@ ${customBlock}
             pushFeed("warn", "↻", `AI narrated "${intentTool}" without emitting it (${2 - A.intentNudgesLeft}/2) — re-grounding`);
             A.injecting = true;
             try{ inputCover(true); }catch{}
-            await P.typeAndSend(`You named "${intentTool}" in prose but emitted no tool block — that runs nothing. Emit the ###MCP_TOOL### block for "${intentTool}" NOW with your best-guess args (e.g. {"tool":"${intentTool}","args":{}}), don't narrate it.`, []);
+            await sendParked(`You named "${intentTool}" in prose but emitted no tool block — that runs nothing. Emit the ###MCP_TOOL### block for "${intentTool}" NOW with your best-guess args (e.g. {"tool":"${intentTool}","args":{}}), don't narrate it.`, []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
             continue;
@@ -1214,7 +1274,7 @@ ${customBlock}
           if(P.clickContinueBtn && P.clickContinueBtn()){ pushFeed("info", "↻", "Clicked Continue (truncated reply)"); continue; }
           A.injecting = true;
           try{ inputCover(true); }catch{}
-          await P.typeAndSend("Your last reply was truncated. Please redo the tool call (or final answer) in full. Do not include ###END markers or closing fences you don't need.", []);
+          await sendParked("Your last reply was truncated. Please redo the tool call (or final answer) in full. Do not include ###END markers or closing fences you don't need.", []);
           try{ inputCover(false); }catch{}
           A.injecting = false;
         } else if(reply.kind === "empty"){
@@ -1244,13 +1304,13 @@ ${customBlock}
             pushFeed("info", "↻", `Empty reply — re-feeding last result (${A.feedStreak}/${A.maxFeedStreak})`);
             A.injecting = true;
             try{ inputCover(true); }catch{}
-            await P.typeAndSend(`[No reply received. Reminder: the last tool result was]\n${A.lastFeedText}\n\nPlease continue. Either call another tool via ###MCP_TOOL### or give a final answer ending with DONE.`, []);
+            await sendParked(`[No reply received. Reminder: the last tool result was]\n${A.lastFeedText}\n\nPlease continue. Either call another tool via ###MCP_TOOL### or give a final answer ending with DONE.`, []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
           } else {
             A.injecting = true;
             try{ inputCover(true); }catch{}
-            await P.typeAndSend("Please continue. Use ###MCP_TOOL### {json} to call a tool, or end with DONE when finished.", []);
+            await sendParked("Please continue. Use ###MCP_TOOL### {json} to call a tool, or end with DONE when finished.", []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
           }
@@ -1264,18 +1324,21 @@ ${customBlock}
           const targetTool = (reply.raw && ZSParse.toolNameFromText(reply.raw)) || "execute_luau";
           // SUPER-POWERFUL: tool-specific nudge with visible example for the failing tool
           let toolNudge = "";
-          if(["multi_edit"].includes(targetTool)){
-            // Q1 stay if needed — powerful for edits[].new_text AND edits[].new_string/old_string (your double-check)
-            toolNudge = `For multi_edit, every new_text / new_string / old_string MUST escape " as \\" and newline as \\n. Example (one line):
+          if(targetTool === "multi_edit"){
+            // multi_edit is not one of the 111 RoLink tools (it appears in
+            // older guides) — the same rewrite goes through set_script_content
+            // with the RAW hatch, which needs zero JSON escaping. The escaping
+            // lesson still applies to any JSON code string: escape " as \"
+            // and newline as \n, or sidestep it entirely with ###LUA###.
+            toolNudge = `There is no "multi_edit" tool — rewrite the edit as set_script_content with ###RAW:content### (no escaping):
 
 ###MCP_TOOL###
-{"tool":"multi_edit","args":{"file_path":"Workspace.Zombie.ZombieCore","edits":[{"action":"replace_lines","start_line":26,"end_line":33,"new_text":"local Players = game:GetService(\\"Players\\")\\nlocal function getNearestPlayer()\\n\\treturn nearest\\nend"}]}}
+{"tool":"set_script_content","args":{"path":"Workspace.Zombie.ZombieCore"}}
+###RAW:content###
+-- full fixed source here (quotes and newlines verbatim)
+###END_RAW###
 
-Example with old_string/new_string (your double-check, stay if needed):
-###MCP_TOOL###
-{"tool":"multi_edit","args":{"file_path":"Workspace.Zombie.ZombieCore","edits":[{"old_string":"local holder = Instance.new(\\"BodyPosition\\")","new_string":"humanoid.WalkSpeed = 6\\nlocal Players = game:GetService(\\"Players\\")"}]}}
-
-Super powerful: you can also do multiple single-line execute_luau via ###LUA### instead of one huge multi_edit (Q2 if needed).`;
+For live one-liners you can also use multiple ###LUA### blocks instead of one huge edit.`;
           } else if(["execute_luau","run_in_sandbox","review_code","refactor_code","generate_test","analyze_performance","predict_bug"].includes(targetTool)){
             toolNudge = `For ${targetTool} code strings you MUST either escaped JSON OR ###LUA### (super powerful, no escaping):
 
@@ -1297,7 +1360,7 @@ print("hi")
           const dialectMsg = reply.reason === "dsml"
             ? `You replied with DeepSeek's native <|DSML|> tool-call markup instead of a RoLink tool block — that dialect never executes here. Rewrite the SAME call now as:\n\n###MCP_TOOL###\n{"tool":"<exact tool name from the list>","args":{...}}\n\n(For Luau code you can use ###LUA### ... ###END_LUA### with no JSON escaping.)\n\nRetry the call immediately.`
             : `Your last turn used a non-canonical key ("toolName" / "tool_name" / "action" / bare "name") for the tool name — RoLink only accepts the "tool" (or "command") key. Rewrite the SAME call now as:\n\n###MCP_TOOL###\n{"tool":"${targetTool}","args":{...}}\n\nRetry the call immediately.`;
-          await P.typeAndSend(isDialectNudge ? dialectMsg : `Your last tool call was malformed JSON (${reply.reason}) for tool ${targetTool}.
+          await sendParked(isDialectNudge ? dialectMsg : `Your last tool call was malformed JSON (${reply.reason}) for tool ${targetTool}.
 
 ${toolNudge}
 
@@ -1315,7 +1378,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         } else if(reply.kind === "too_long"){
           A.injecting = true;
           try{ inputCover(true); }catch{}
-          await P.typeAndSend("Your reply exceeded the model's context window. Please start a new chat (click the '+' / new chat button) and re-send your last request. I'll resume from there.", []);
+          await sendParked("Your reply exceeded the model's context window. Please start a new chat (click the '+' / new chat button) and re-send your last request. I'll resume from there.", []);
           try{ inputCover(false); }catch{}
           A.injecting = false;
         } else if(reply.kind === "stopped" || reply.kind === "timeout"){
@@ -1586,6 +1649,9 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         }
       }catch{}
     }
+    // Kimi native-agent guard: the provider steers the picker at startup,
+    // but a lingering Swarm/Agent pick still breaks the loop — banner it.
+    try{ if(P.modeWarning){ const w = P.modeWarning(); if(w){ pushFeed("warn", "⚠", w); showBanner(w, "warn"); } } }catch{}
     if(myGen !== A.startGen) return; // user opened a new chat mid-bootstrap
     A.sessionId = sessionIdFromUrl();
     await loadSession();
@@ -1930,6 +1996,13 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       else if(s.mcpAlive && s.studio === false) setStatus("studioOff");
       else setStatus("bridge");
     });
+    // Latched native-agent guard (Kimi Swarm): banner once per activation,
+    // not on every poll.
+    try{
+      const w = (P.modeWarning) ? (P.modeWarning() || "") : "";
+      if(w && w !== A.lastModeWarn){ pushFeed("warn", "⚠", w); showBanner(w, "warn"); }
+      A.lastModeWarn = w;
+    }catch{}
     refreshTools();
   }, 3000);
   bg({type:"status"}).then(s=>{ if(s){ if(!s.connected) setStatus("offline"); else setStatus("bridge"); } });

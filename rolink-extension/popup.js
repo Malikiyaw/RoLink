@@ -90,8 +90,30 @@ function render(s){
   if(healthUptimeEl) healthUptimeEl.textContent = Math.floor((Date.now()-startTime)/1000)+"s";
   const mcpCard=document.getElementById("h-mcp"); if(mcpCard) mcpCard.className="health-card "+(mcpOk?"ok":"err");
   const studioCard=document.getElementById("h-studio"); if(studioCard) studioCard.className="health-card "+(studio===true?"ok":studio===false?"warn":"err");
+  renderMcpServers(s);
   allTools = tools;
   renderTools(tools);
+}
+
+// Per-server dots, scoped per server. The header dot above only reflects
+// bridge+Roblox aggregate (any_alive + studio), so an addon outage here
+// never reddens the Roblox row or the main dot.
+function renderMcpServers(s){
+  const mv = document.getElementById("mcp-servers-val");
+  const ml = document.getElementById("mcp-servers-list");
+  if(!mv) return;
+  const list = s?.mcp_servers || lastStatus?.mcp_servers || [];
+  const active = list.filter(x => x && x.alive !== false).length;
+  mv.textContent = list.length ? `● ${active}/${list.length} active` : "○ none";
+  mv.style.color = list.length ? "var(--text)" : "var(--muted)";
+  if(ml){
+    ml.innerHTML = list.map(x=>{
+      const id = escapeHtml(x.id || x.server_id || "?");
+      const on = x && x.alive !== false;
+      const n = (x && typeof x.tools === "number") ? `<span class="mcp-tools">· ${x.tools} tools</span>` : "";
+      return `<div class="mcp-srv ${(id==="roblox")?"roblox":"addon"} ${on?"on":"off"}"><span class="mcp-dot">${on?"●":"○"}</span><span>${id}</span>${n}</div>`;
+    }).join("");
+  }
 }
 
 function renderTools(tools){
@@ -178,7 +200,7 @@ function renderLogs(){
       nv.textContent = `● ${total} nudges · ${rep} repairs`;
       nv.style.color = total>0 ? (total>5?"#fca5a5":"#e3b341") : "var(--green)";
     }
-    // MCP servers
+    // MCP servers summary (per-server rows render in renderMcpServers)
     const mv = document.getElementById("mcp-servers-val");
     if(mv){
       const list = s?.mcp_servers || lastStatus?.mcp_servers || [];

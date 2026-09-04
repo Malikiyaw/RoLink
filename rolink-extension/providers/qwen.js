@@ -94,8 +94,10 @@
     },
     augment: function(P){
       ensureCodeObserver();
-      // Per-model vision gate: scan the open model description for vision
-      // capability text; latch per model name so a closed picker keeps it.
+      // Per-model vision gate: description scan first (most reliable), then
+      // the model NAME as fallback — Qwen-VL / vision-named models see
+      // images even when the picker is closed and the scan finds nothing.
+      // Latches per model name so a closed picker keeps its verdict.
       var visCache = { model: null, vision: false, at: 0 };
       function currentModelName(){
         try{
@@ -112,7 +114,16 @@
             var txt = (document.body && document.body.textContent) || "";
             var vis = /supporting text and (image|vision)|vision capabilit|multimodal|多模态|视觉|图像理解/i.test(txt.slice(0, 20000));
             var textOnly = /text-only \(no vision\)|仅文本|不支持视觉|不支持图像/i.test(txt.slice(0, 20000));
-            var v = textOnly ? false : vis;
+            // Extra capability phrasings the base scan misses (kept strict —
+            // the scan covers the whole body text, so generic words would
+            // false-positive on chat content).
+            var vis2 = /image understanding|visual understanding|understands (images|pictures)|can (see|view|read|process) images/i.test(txt.slice(0, 20000));
+            var textOnly2 = /does not support (images|vision)|cannot process images|doesn'?t support vision/i.test(txt.slice(0, 20000));
+            var visAll = vis || vis2, textOnlyAll = textOnly || textOnly2;
+            var nm = String(name || "").toLowerCase();
+            var nameVis = /(^|[^a-z])(vl|qvq|vision|visual|multimodal)([^a-z]|$)/.test(nm);
+            var nameText = /text-only|text_only/.test(nm);
+            var v = (nameText || textOnlyAll) ? false : (visAll || nameVis);
             if(name){ visCache = { model: name, vision: v, at: now }; }
             return v;
           }catch(e){ return false; }
