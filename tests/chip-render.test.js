@@ -429,6 +429,70 @@ function placeChip(chip, parent){
     assert(!baseBlock.includes("top: 60px") && !baseBlock.includes("right: 16px"), "base .rl-stream no longer owns top-right geometry (dock-right does)");
   });
 
+  // ── Sprint F — pill chip mirrors ──
+  function shortArgSummary(args){
+    if(!args || !Object.keys(args).length) return "";
+    const k = Object.keys(args).slice(0, 3).join(", ");
+    const v = JSON.stringify(args).slice(0, 80);
+    return k ? `${k}: ${v}` : v;
+  }
+  function smartArgPreview(args){
+    try{
+      if(!args || typeof args !== "object") return "";
+      const pairs = [];
+      for(const k of Object.keys(args)){
+        let v = args[k];
+        if(v == null) continue;
+        if(typeof v === "string"){ if(!v.trim()) continue; }
+        else if(Array.isArray(v)){ if(!v.length) continue; try{ v = JSON.stringify(v); }catch{ v = String(v); } }
+        else if(typeof v === "object"){ try{ v = JSON.stringify(v); }catch{ v = String(v); } }
+        else v = String(v);
+        v = String(v);
+        if(v.length > 42) v = v.slice(0, 30) + "…" + v.slice(-9);
+        pairs.push(`${k}: ${v}`);
+        if(pairs.length >= 2) break;
+      }
+      if(pairs.length) return pairs.join(" · ");
+      return shortArgSummary(args);
+    }catch{ return ""; }
+  }
+
+  await run("Sprint F smartArgPreview: screenshot parity, skips noise, caps at 42 chars, safe on garbage", async () => {
+    const p = smartArgPreview({ tag: "Assistant:Mesh-6b079d3f-09ba-4ca8", textPrompt: "beautiful medieval tower" });
+    assert(p.startsWith("tag: Assistant:Mesh-6b079d3f"), "first pair kept verbatim when short");
+    assert(!p.includes("{"), "no raw JSON braces");
+    assert(smartArgPreview({ code: "x".repeat(200) }).length <= 64, "long value mid-ellipsized");
+    const noisy = smartArgPreview({ a: null, b: "", c: [], d: [], e: "real" });
+    assert(noisy === "e: real", `null/empty-string/empty-array skipped (got ${JSON.stringify(noisy)})`);
+    assert(smartArgPreview({ a: null, b: "" }).length > 0, "all-noise args fall back to JSON slice");
+    assert(smartArgPreview(null) === "" && smartArgPreview("str") === "" && smartArgPreview({}) === "", "null/scalar/empty → empty");
+    const two = smartArgPreview({ path: "Workspace/Map", mode: "edit", code: "zzz" });
+    assert(two === "path: Workspace/Map · mode: edit", "caps at 2 pairs joined with ·");
+    for(const name of TOOLS){
+      const s = require("./tool-samples.json")[name];
+      const out = smartArgPreview(s != null ? s : {});
+      assert(typeof out === "string", `${name}: string preview`);
+      if(out) assert(!out.includes("\\\""), `${name}: no escaped-quote noise`);
+    }
+  });
+
+  await run("Sprint F source contract: pill classes, motion, reduced-motion, stream untouched", async () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "core", "main.js"), "utf8");
+    assert(/function smartArgPreview/.test(main), "smartArgPreview helper present");
+    assert(/el\("div", "rl-chip rl-call"\)/.test(main), "Row 1 pill class applied at creation");
+    assert(/el\("div", "rl-chip rl-result rl-result-bar"\)/.test(main), "Row 2 result-bar class applied at creation");
+    assert(/smartArgPreview\(args\) \|\| shortArgSummary/.test(main), "smart preview leads, JSON slice falls back");
+    const css = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "overlay.css"), "utf8");
+    for(const sel of [".rl-chip.rl-call {", "width: fit-content", ".rl-chip.rl-result-bar {", "@keyframes rl-chip-in", "@keyframes rl-runpulse", "@keyframes rl-pop", "prefers-reduced-motion", "html.rl-light .rl-chip.rl-call", ".rl-chip.rl-call.open"]){
+      assert(css.includes(sel), `CSS: ${sel} present`);
+    }
+    // Stream cards keep their own look — the pill restyle must not leak.
+    assert(css.includes(".rl-stream-card {") && css.includes(".rl-stream-card-head"), "stream card styling untouched");
+    assert(!/\.rl-stream-card[^\n]*border-radius: 999px/.test(css), "stream cards are not pills");
+    // Placement safety: no body anchoring slipped in with the restyle.
+    assert(!/document\.body\.appendChild\(chip\)/.test(main), "no body-anchored chips");
+  });
+
   console.log(`\nPhase C (chip-render) tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 

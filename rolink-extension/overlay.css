@@ -235,6 +235,78 @@
 }
 @keyframes rl-spin { to { transform: rotate(360deg); } }
 
+/* ── 5.9.0 — Sprint F: chat chips as pills (screenshot shape, 1000x) ── */
+/* Row 1 call chip: content-hugging pill, neon ring, no card slab. */
+.rl-chip.rl-call {
+  display: inline-flex;
+  flex-direction: column;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  margin: 6px 0;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--cat) 45%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--cat) 45%, transparent);
+  box-shadow: 0 1px 8px rgba(0,0,0,0.25);
+  background: rgba(22,27,34,0.96);
+  animation: rl-chip-in .12s ease-out;
+}
+.rl-chip.rl-call > .rl-chip-head { border-radius: 999px; padding: 5px 10px; gap: 7px; border-bottom: none; background: transparent; }
+.rl-chip.rl-call > .rl-chip-head:hover { background: color-mix(in srgb, var(--cat) 10%, transparent); }
+/* Expanded pill becomes a soft rounded card (999px corners would clip the body). */
+.rl-chip.rl-call.open, .rl-chip.rl-result-bar.open { border-radius: 16px; }
+.rl-chip.rl-call.rl-ok { border-color: rgba(63,185,80,0.5); }
+.rl-chip.rl-call.rl-err { border-color: rgba(248,81,73,0.55); }
+.rl-chip.rl-call > .rl-chip-body {
+  border-radius: 14px;
+  margin-top: 2px;
+  border: 1px solid rgba(139,148,158,0.18);
+  background: rgba(14,17,22,0.97);
+}
+.rl-chip.rl-call > .rl-chip-body .rl-args-grid { padding: 8px 12px 2px; }
+.rl-chip.rl-call:not(.rl-ok):not(.rl-err) {
+  animation: rl-chip-in .12s ease-out, rl-runpulse 1.6s ease-in-out infinite;
+}
+@keyframes rl-runpulse {
+  0%, 100% { box-shadow: 0 0 6px color-mix(in srgb, var(--cat) 30%, transparent); }
+  50% { box-shadow: 0 0 14px color-mix(in srgb, var(--cat) 55%, transparent); }
+}
+/* Row 2 result bar: full-width centered pill-bar like the screenshot. */
+.rl-chip.rl-result-bar {
+  width: 100%;
+  border-radius: 999px;
+  border: 1px solid rgba(139,139,147,0.35);
+  background: rgba(22,27,34,0.9);
+  animation: rl-chip-in .12s ease-out;
+}
+.rl-chip.rl-result-bar > .rl-chip-head { border-radius: 999px; padding: 6px 12px; border-bottom: none; background: transparent; }
+.rl-chip.rl-result-bar > .rl-chip-body {
+  border-radius: 14px;
+  margin-top: 2px;
+  border: 1px solid rgba(139,148,158,0.18);
+  background: rgba(14,17,22,0.97);
+}
+.rl-chip.rl-result-bar.rl-err { border-color: rgba(248,81,73,0.5); }
+/* Insert + settle micro-motion. */
+@keyframes rl-chip-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.rl-chip .rl-ico { transition: transform .18s cubic-bezier(.2,1.6,.4,1); }
+.rl-chip.rl-ok .rl-ico, .rl-chip.rl-err .rl-ico { animation: rl-pop .3s cubic-bezier(.2,1.6,.4,1); }
+@keyframes rl-pop { 0% { transform: scale(0.4); } 100% { transform: scale(1); } }
+.rl-chip.rl-call:hover, .rl-chip.rl-result-bar:hover { transform: translateY(-1px); transition: transform .15s ease, box-shadow .15s ease; }
+.rl-chip.rl-call.rl-ok:hover { box-shadow: 0 2px 12px rgba(63,185,80,0.22); }
+.rl-chip.rl-call.rl-err:hover { box-shadow: 0 2px 12px rgba(248,81,73,0.24); }
+@media (prefers-reduced-motion: reduce) {
+  .rl-chip, .rl-chip .rl-ico { animation: none !important; transition: none !important; }
+  .rl-chip.rl-call:hover, .rl-chip.rl-result-bar:hover { transform: none; }
+}
+/* Light mode for the pill set. */
+html.rl-light .rl-chip.rl-call { background: rgba(255,255,255,0.98); box-shadow: 0 1px 6px rgba(0,0,0,0.10); }
+html.rl-light .rl-chip.rl-call > .rl-chip-body, html.rl-light .rl-chip.rl-result-bar > .rl-chip-body { background: rgba(250,251,252,0.98); border-color: rgba(27,31,36,0.12); }
+html.rl-light .rl-chip.rl-result-bar { background: rgba(240,242,245,0.95); }
+
 /* ── Tools panel (floating, lists all available MCP tools) ───────────────── */
 .rl-tools {
   position: fixed;

@@ -1,4 +1,20 @@
 # Changelog
+## 5.9.0 - Chat chips as pills: screenshot shape, smart arg preview, neon run pulse, micro-motion
+
+**Sprint F — the inline chat chips are rebuilt in the compact pill language** (ZeroScript-screenshot shape; RoLink design language, no copied markup). Data plumbing (args grid, token meta, pretty results, session totals) is untouched from 5.7.0 — this is the presentation rebuild.
+
+**Row 1 call chip → content-hugging pill.**
+- `inline-flex` + `width: fit-content`, 999px ring in the tool's category neon (green/red on settle), tight 5px padding — one line reads `✓ name · key: value… · ~tok · 6.2s` exactly like the screenshot's read. Expanding morphs to a soft 16px card so the body is never clipped by pill corners.
+- **`smartArgPreview`**: the head shows the first 1–2 meaningful arg pairs as `key: value…` (skips null/empty-string/empty-array noise, mid-ellipsizes values >42 chars, falls back to the JSON slice when nothing is clean) — `tag: Assistant:Mesh-6b079d3f…4ca8` instead of raw JSON.
+
+**Row 2 result → wide centered bar.** Same full-message-width bar as the screenshot (`⇩ name · result`), grey on success / red on error, still expandable into the 5.7.0 pretty body.
+
+**Running state → neon pulse.** The pill breathes its category glow (`rl-runpulse`) with the spinner + `~tok · live Ns` ticking; settles green/red with the existing one-shot glow.
+
+**Micro-motion (accessibility-safe).** 120ms slide-up insert, springy ✓/✗ pop at finalize, 1px hover lift with soft glow — all disabled under `prefers-reduced-motion: reduce`. Full light-mode set for every new style. Stream cards, popup, live pill, and chip placement logic are explicitly untouched (contract-tested).
+
+**Tests**: chip-render extended 18 → 20 — new mirror contract for `smartArgPreview` (screenshot-parity example, noise skipping, 42-char cap, 2-pair cap, fallback, garbage-safe, 111 Zod samples) and a source contract proving pill classes at creation, `fit-content`, all three keyframes, the reduced-motion guard, light-mode, and that stream cards did not become pills. Full battery green: parser 26, execution 10, providers 10, dispatch 5, agent-loop 7, partial 4, intent-net 24, tool-prompts 14, chip-render 20, vitest 7, deep-boot smoke, `tsc --noEmit` clean.
+
 ## 5.8.0 - Tool Stream as a bottom console: composer-docked, coiling, running pill, jump chip
 
 **Sprint E — the Tool Stream is now a bottom-docked console** (screenshot parity: the record of what the AI is using sits under the chat input, not floating top-right).

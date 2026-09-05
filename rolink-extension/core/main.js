@@ -1088,12 +1088,38 @@
     const v=JSON.stringify(args).slice(0,80);
     return k ? `${k}: ${v}` : v;
   }
+  // Sprint F: human arg preview for the pill head — first 1–2 meaningful
+  // pairs as `key: value…` (skips null/empty-string/empty-array; mid-ellipsis
+  // for long values; falls back to the JSON slice when nothing clean). Same
+  // shape language as the ZeroScript screenshot, RoLink implementation.
+  function smartArgPreview(args){
+    try{
+      if(!args || typeof args !== "object") return "";
+      const pairs = [];
+      for(const k of Object.keys(args)){
+        let v = args[k];
+        if(v == null) continue;
+        if(typeof v === "string"){ if(!v.trim()) continue; }
+        else if(Array.isArray(v)){ if(!v.length) continue; try{ v = JSON.stringify(v); }catch{ v = String(v); } }
+        else if(typeof v === "object"){ try{ v = JSON.stringify(v); }catch{ v = String(v); } }
+        else v = String(v);
+        v = String(v);
+        if(v.length > 42) v = v.slice(0, 30) + "…" + v.slice(-9);
+        pairs.push(`${k}: ${v}`);
+        if(pairs.length >= 2) break;
+      }
+      if(pairs.length) return pairs.join(" · ");
+      return shortArgSummary("", args);
+    }catch{ return ""; }
+  }
   function makeChip(name, args){
-    const chip = el("div", "rl-chip");
+    // Sprint F: pill shape — rl-call opts into the content-hugging pill look
+    // (the old card style remains for any future caller that omits it).
+    const chip = el("div", "rl-chip rl-call");
     const cat=getToolCategory(name);
     chip.dataset.cat=cat;
     chip.dataset.t0=String(Date.now());
-    const detail=shortArgSummary(name, args);
+    const detail=smartArgPreview(args) || shortArgSummary(name, args);
     // generationId link hint (e.g. generate_mesh -> wait_job_finished flow)
     let genHint="";
     try{
@@ -1177,7 +1203,8 @@
   // error. Owns the final duration + result Copy. The injected model-facing
   // turn stays hidden — this row IS the visible result.
   function makeResultChip(name, res, callChip){
-    const rc = el("div", "rl-chip rl-result");
+    // Sprint F: wide centered result bar (screenshot parity), grey/red kept.
+    const rc = el("div", "rl-chip rl-result rl-result-bar");
     let dur = "";
     try{
       const t0 = callChip && callChip.dataset.t0 ? Number(callChip.dataset.t0) : Date.now();
