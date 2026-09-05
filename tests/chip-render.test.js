@@ -393,6 +393,42 @@ function placeChip(chip, parent){
     }
   });
 
+  await run("Sprint E source contract: bottom console — geometry, dock cycle, coil, jump chip, run pill", async () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "core", "main.js"), "utf8");
+    for(const fn of ["positionStream", "setDock", "setCoiled", "updateJumpChip", "updateRunPill"]){
+      assert(new RegExp("function " + fn).test(main), `main.js: ${fn} helper present`);
+    }
+    // Geometry: bottom dock rides the composer frame, clamps width/height,
+    // and has a centered fallback that never document.body-anchors.
+    assert(/positionStream\(\);/.test(main), "positionStream wired into placeBar cadence");
+    assert(/P\.composerFrame \? P\.composerFrame\(\) : null/.test(main.split("function positionStream")[1]?.split("function ")[0] || ""), "positionStream probes the composer frame");
+    assert(/window\.innerHeight \* 0\.46/.test(main), "bottom console capped at 46vh — never covers the input");
+    assert(/window\.innerWidth < 560/.test(main), "narrow-screen full-width fallback");
+    assert(/A\.streamDock = A\.streamDock \|\| "bottom"/.test(main), "bottom is the default dock (screenshot parity)");
+    assert(/A\.streamCoiled = A\.streamCoiled \|\| false/.test(main), "coil state persisted per session");
+    // Head wiring: dock-cycle, coil (both button and title), jump chip.
+    assert(/getElementById\("rl-stream-dock"\)/.test(main) && /setDock\(streamDock === "/.test(main), "dock-cycle button wired");
+    assert(/getElementById\("rl-stream-coil"\)/.test(main), "coil button wired");
+    assert(/getElementById\("rl-stream-title"\)/.test(main) && /setCoiled\(!A\.streamCoiled\)/.test(main), "title click toggles coil");
+    assert(/rl-stream-jump-n/.test(main), "jump chip shows unseen count");
+    assert(/streamUnseen\+\+/.test(main), "unseen counter increments when follow off");
+    assert(/streamUnseen = 0; updateJumpChip\(\)/.test(main), "follow resumption clears the jump chip");
+    // Run pill ticks with the live pill cadence and dies with the tool.
+    assert(/updateRunPill\(\);/.test(main.split("function updateLiveTime")[1]?.split("function hideLive")[0] || ""), "run pill ticks on updateLiveTime cadence");
+    assert((main.match(/updateRunPill\(\);/g) || []).length >= 3, "run pill wired at set/hide/live-tick (outcome flash is the accent's job)");
+    assert(/streamPanel\.classList\.add\("rl-tooling"\)/.test(main), "console top accent class while a tool runs");
+    assert(/streamPanel\.classList\.add\("rl-tooling-err"\)/.test(main), "error flash accent on failed tools");
+    // Console list scroll disengages follow (console UX) without breaking anything.
+    assert(/addEventListener\("scroll"/.test(main), "list scroll listener disengages follow-live");
+    const css = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "overlay.css"), "utf8");
+    for(const cls of [".rl-stream.dock-right", ".rl-stream.coiled", ".rl-stream-runpill", ".rl-stream-jump", ".rl-stream.rl-tooling::before", ".rl-stream.rl-tooling-err::before", "@keyframes rl-stream-sweep", "html.rl-light .rl-stream-runpill", "html.rl-light .rl-stream-jump"]){
+      assert(css.includes(cls), `CSS: ${cls} present`);
+    }
+    const streamBlock = css.slice(css.indexOf(".rl-stream {"));
+    const baseBlock = streamBlock.slice(0, streamBlock.indexOf("}") + 1);
+    assert(!baseBlock.includes("top: 60px") && !baseBlock.includes("right: 16px"), "base .rl-stream no longer owns top-right geometry (dock-right does)");
+  });
+
   console.log(`\nPhase C (chip-render) tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 

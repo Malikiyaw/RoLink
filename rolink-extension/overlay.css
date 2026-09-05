@@ -648,11 +648,9 @@ html.rl-light #rl-bar .rl-live .rl-live-name { color: #1f2430; }
 
 /* ── Sprint B: Tool Stream panel (right-docked chronological tool record) ── */
 .rl-stream {
+  /* Sprint E: shell only — geometry comes from .dock-right (classic panel)
+     or the inline styles positionStream() writes for the bottom console. */
   position: fixed;
-  top: 60px;
-  right: 16px;
-  width: 340px;
-  max-height: 74vh;
   background: rgba(14,17,22,0.97);
   border: 1px solid rgba(47,129,247,0.30);
   border-radius: 12px;
@@ -662,6 +660,17 @@ html.rl-light #rl-bar .rl-live .rl-live-name { color: #1f2430; }
   font-size: 12px;
   pointer-events: auto;
   z-index: 2147483600;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  transition: max-height .25s ease;
+}
+/* Classic right panel (opt-in via the ⇄ head button). */
+.rl-stream.dock-right {
+  top: 60px;
+  right: 16px;
+  width: 340px;
+  max-height: 74vh;
   display: none;
   flex-direction: column;
   overflow: hidden;
@@ -675,14 +684,67 @@ html.rl-light #rl-bar .rl-live .rl-live-name { color: #1f2430; }
   border-bottom: 1px solid rgba(255,255,255,0.08);
   font-weight: 600;
 }
-.rl-stream-title { font-size: 12.5px; letter-spacing: 0.3px; white-space: nowrap; }
-.rl-stream-old {
-  color: #8b949e;
-  font-size: 10px;
-  font-weight: 400;
-  margin-left: auto;
-  white-space: nowrap;
+.rl-stream-title { font-size: 12.5px; letter-spacing: 0.3px; white-space: nowrap; cursor: pointer; user-select: none; }
+/* Sprint E — console chrome: category-neon top accent while a tool runs. */
+.rl-stream::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, rgba(121,192,255,0.55), transparent);
+  opacity: 0;
+  transition: opacity .25s ease;
+  pointer-events: none;
+  z-index: 1;
 }
+.rl-stream.rl-tooling::before { opacity: 1; animation: rl-stream-sweep 1.6s linear infinite; }
+.rl-stream.rl-tooling-err::before { opacity: 1; background: linear-gradient(90deg, transparent, rgba(248,81,73,0.7), transparent); animation: none; }
+@keyframes rl-stream-sweep { from { background-position: -340px 0; } to { background-position: 340px 0; } }
+/* Running-tool pill in the console head (both docks, coiled or not). */
+.rl-stream-runpill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: #fff;
+  background: color-mix(in srgb, var(--cat, #79c0ff) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cat, #79c0ff) 40%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  max-width: 190px;
+  flex-shrink: 1;
+}
+.rl-stream-runpill .rl-run-name { overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.rl-stream-runpill .rl-run-time { color: #8b949e; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.rl-stream-runpill .rl-spinner { width: 9px; height: 9px; border-width: 1.5px; border-top-color: var(--cat, #79c0ff); flex-shrink: 0; }
+/* Coiled taskbar mode: head only, list hidden, width capped. */
+.rl-stream.coiled { max-height: 38px !important; }
+.rl-stream.coiled .rl-stream-list { display: none; }
+.rl-stream.coiled .rl-stream-head { border-bottom: none; padding: 7px 12px; }
+.rl-stream.coiled .rl-stream-old { display: none; }
+/* "↓ N new" jump chip (follow-live disengaged + unseen cards). */
+.rl-stream-jump {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(121,192,255,0.45);
+  background: rgba(14,17,22,0.95);
+  color: #79c0ff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+  z-index: 2;
+}
+.rl-stream-jump:hover { background: rgba(121,192,255,0.12); }
 .rl-stream-head .rl-feed-clear { margin: 0; }
 .rl-stream-follow { opacity: 1; transition: opacity .2s ease; }
 .rl-stream-follow.off { opacity: 0.35; }
@@ -876,6 +938,13 @@ html.rl-light .rl-stream-args { color: #24292f; }
 html.rl-light .rl-stream-args .rl-more { color: #6e7781; }
 html.rl-light .rl-stream-card-foot .rl-copy { background: rgba(0,0,0,0.05); color: #1f2430; border-color: rgba(0,0,0,0.12); }
 html.rl-light .rl-stream-card-foot .rl-copy:hover { background: rgba(0,0,0,0.10); }
+/* Sprint E — light mode for the bottom console chrome. */
+html.rl-light .rl-stream-runpill { background: rgba(11,87,208,0.08); border-color: rgba(11,87,208,0.35); color: #0b57d0; }
+html.rl-light .rl-stream-runpill .rl-run-time { color: #57606a; }
+html.rl-light .rl-stream-jump { background: rgba(255,255,255,0.97); border-color: rgba(11,87,208,0.45); color: #0b57d0; }
+html.rl-light .rl-stream-jump:hover { background: rgba(11,87,208,0.08); }
+html.rl-light .rl-stream::before { background: linear-gradient(90deg, transparent, rgba(11,87,208,0.5), transparent); }
+html.rl-light .rl-stream.rl-tooling-err::before { background: linear-gradient(90deg, transparent, rgba(207,34,46,0.6), transparent); }
 
 /* ── 5.7.0 — 1000x chip meta: token pills, args grid on chat chips, pretty results ── */
 /* Token pill (chat chip head + Row 2 + stream card head). `~` = local estimate. */

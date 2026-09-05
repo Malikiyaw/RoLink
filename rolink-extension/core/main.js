@@ -357,16 +357,38 @@
   // Tool Stream panel (Sprint B): chronological per-tool cards — the
   // never-miss record of what the AI is using. Auto-opens on the first
   // dispatch of a session; once the user closes it, it stays closed.
+  // Sprint E: the panel is a bottom-docked console under the composer by
+  // default (dock-cycle button keeps the classic right panel), coils to a
+  // taskbar strip, carries a running-tool pill in the head, and shows a
+  // "↓ N new" jump chip when follow-live is disengaged.
   const streamPanel = el("div", "rl-stream");
   streamPanel.innerHTML = `
-    <div class="rl-stream-head"><span class="rl-stream-title">📺 Tool Stream</span><span class="rl-stream-totals" id="rl-stream-totals"></span><span class="rl-stream-old" id="rl-stream-old"></span><button class="rl-feed-clear rl-stream-follow" id="rl-stream-follow" title="Follow live — auto-scroll (on)">⬇</button><button class="rl-feed-clear" id="rl-stream-clear" title="Clear stream">⌫</button></div>
+    <div class="rl-stream-head"><span class="rl-stream-title" id="rl-stream-title">📺 Tool Stream</span><span class="rl-stream-runpill" id="rl-stream-runpill" style="display:none"><span class="rl-spinner"></span><span class="rl-run-name"></span><span class="rl-run-time">0s</span></span><span class="rl-stream-totals" id="rl-stream-totals"></span><span class="rl-stream-old" id="rl-stream-old"></span><button class="rl-feed-clear rl-stream-follow" id="rl-stream-follow" title="Follow live — auto-scroll (on)">⬇</button><button class="rl-feed-clear" id="rl-stream-dock" title="Dock: bottom console — click for right panel">⇄</button><button class="rl-feed-clear" id="rl-stream-coil" title="Coil to taskbar">▁</button><button class="rl-feed-clear" id="rl-stream-clear" title="Clear stream">⌫</button></div>
     <div class="rl-stream-list" id="rl-stream-list"></div>
+    <button class="rl-stream-jump" id="rl-stream-jump" style="display:none" type="button">↓ <span id="rl-stream-jump-n">0</span> new</button>
   `;
   root.appendChild(streamPanel);
   setTimeout(()=>{
     const fb = document.getElementById("rl-stream-follow"), cb = document.getElementById("rl-stream-clear");
-    if(fb) fb.onclick = e => { e.stopPropagation(); streamFollow = !streamFollow; fb.classList.toggle("off", !streamFollow); fb.title = streamFollow ? "Follow live — auto-scroll (on)" : "Follow live — paused (off)"; if(streamFollow){ const l = document.getElementById("rl-stream-list"); if(l) l.scrollTop = l.scrollHeight; } };
+    if(fb) fb.onclick = e => { e.stopPropagation(); streamFollow = !streamFollow; fb.classList.toggle("off", !streamFollow); fb.title = streamFollow ? "Follow live — auto-scroll (on)" : "Follow live — paused (off)"; if(streamFollow){ streamUnseen = 0; updateJumpChip(); const l = document.getElementById("rl-stream-list"); if(l) l.scrollTop = l.scrollHeight; } };
     if(cb) cb.onclick = e => { e.stopPropagation(); const l = document.getElementById("rl-stream-list"); if(l) l.innerHTML = ""; streamOldCount = 0; const o = document.getElementById("rl-stream-old"); if(o) o.textContent = ""; };
+    const db = document.getElementById("rl-stream-dock");
+    if(db) db.onclick = e => { e.stopPropagation(); setDock(streamDock === "right" ? "bottom" : "right"); };
+    const coil = document.getElementById("rl-stream-coil");
+    if(coil) coil.onclick = e => { e.stopPropagation(); setCoiled(!A.streamCoiled); };
+    const title = document.getElementById("rl-stream-title");
+    if(title) title.onclick = e => { e.stopPropagation(); setCoiled(!A.streamCoiled); };
+    const jump = document.getElementById("rl-stream-jump");
+    if(jump) jump.onclick = e => { e.stopPropagation(); streamFollow = true; streamUnseen = 0; updateJumpChip(); const f = document.getElementById("rl-stream-follow"); if(f){ f.classList.remove("off"); f.title = "Follow live — auto-scroll (on)"; } const l = document.getElementById("rl-stream-list"); if(l) l.scrollTop = l.scrollHeight; };
+    const listEl = document.getElementById("rl-stream-list");
+    if(listEl) listEl.addEventListener("scroll", ()=>{
+      try{
+        const far = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight > 60;
+        if(far && streamFollow){ streamFollow = false; if(fb){ fb.classList.add("off"); fb.title = "Follow live — paused (off)"; } }
+      }catch{}
+    });
+    setDock(A.streamDock === "right" ? "right" : "bottom");
+    if(A.streamCoiled) setCoiled(true);
   }, 300);
 
   // Workspace / memory panel
@@ -595,6 +617,8 @@
   // over the composer. Mode is tracked on bar.dataset.mode.
   function placeBar(){
     try{
+      // Sprint E: the bottom console tracks the composer on the same cadence.
+      positionStream();
       if(P.overlayBlocking && P.overlayBlocking()){
         bar.style.display = "none";
         bar.dataset.mode = "parked";
@@ -688,18 +712,107 @@
     asset: "#ffb454", visual: "#ff6ec7", test: "#3fb950", tool: "#79c0ff"
   };
   function catNeon(cat){ return CAT_NEON[cat] || CAT_NEON.tool; }
-  let liveTick = null, lastConnStatus = "", streamFollow = true, streamOldCount = 0;
+  let liveTick = null, lastConnStatus = "", streamFollow = true, streamOldCount = 0, streamUnseen = 0;
+  // Sprint E: console geometry — bottom dock by default (under the composer,
+  // sized to it), right dock as the classic fallback. Persisted per session.
+  A.streamDock = A.streamDock || "bottom";
+  A.streamCoiled = A.streamCoiled || false;
+  function setDock(mode){
+    A.streamDock = mode === "right" ? "right" : "bottom";
+    try{
+      streamPanel.classList.toggle("dock-right", A.streamDock === "right");
+      streamPanel.classList.toggle("dock-bottom", A.streamDock === "bottom");
+      const db = document.getElementById("rl-stream-dock");
+      if(db) db.title = A.streamDock === "bottom" ? "Dock: bottom console — click for right panel" : "Dock: right panel — click for bottom console";
+      // Inline styles only apply to the bottom dock; clear them for right dock.
+      if(A.streamDock === "right"){ streamPanel.style.left = ""; streamPanel.style.right = ""; streamPanel.style.width = ""; streamPanel.style.bottom = ""; streamPanel.style.maxHeight = ""; }
+      positionStream();
+    }catch{}
+  }
+  function setCoiled(on){
+    A.streamCoiled = !!on;
+    try{
+      streamPanel.classList.toggle("coiled", A.streamCoiled);
+      const c = document.getElementById("rl-stream-coil");
+      if(c){ c.textContent = A.streamCoiled ? "▢" : "▁"; c.title = A.streamCoiled ? "Uncoil console" : "Coil to taskbar"; }
+      positionStream();
+    }catch{}
+  }
+  function positionStream(){
+    try{
+      if(A.streamDock === "right") return; // right dock is pure CSS (Sprint B layout)
+      const coiled = A.streamCoiled;
+      const frame = P.composerFrame ? P.composerFrame() : null;
+      let left = null, width = null, bottom = 12, maxH;
+      if(frame && frame.getBoundingClientRect){
+        const r = frame.getBoundingClientRect();
+        if(r && r.width > 200){
+          left = Math.max(8, r.left);
+          width = Math.min(r.width, window.innerWidth - 16);
+          bottom = Math.max(12, window.innerHeight - r.bottom + 8);
+        }
+      }
+      if(left == null){
+        width = Math.min(720, window.innerWidth * 0.92);
+        left = (window.innerWidth - width) / 2;
+      }
+      if(window.innerWidth < 560){ left = 8; width = window.innerWidth - 16; }
+      const below = Math.max(120, window.innerHeight - ((frame && frame.getBoundingClientRect ? frame.getBoundingClientRect().bottom : 0) || 0));
+      maxH = coiled ? 38 : Math.min(window.innerHeight * 0.46, Math.max(160, below - 12));
+      streamPanel.style.position = "fixed";
+      streamPanel.style.left = Math.round(left) + "px";
+      streamPanel.style.width = Math.round(width) + "px";
+      streamPanel.style.bottom = Math.round(bottom) + "px";
+      streamPanel.style.top = "auto";
+      streamPanel.style.right = "auto";
+      streamPanel.style.maxHeight = Math.round(maxH) + "px";
+    }catch(e){
+      try{ // last-resort: centered console so the record is never invisible
+        streamPanel.style.position = "fixed";
+        streamPanel.style.left = "50%"; streamPanel.style.transform = "translateX(-50%)";
+        streamPanel.style.bottom = "12px"; streamPanel.style.top = "auto"; streamPanel.style.right = "auto";
+        streamPanel.style.width = "min(720px, 92vw)"; streamPanel.style.maxHeight = "46vh";
+      }catch{}
+    }
+  }
+  function updateJumpChip(){
+    try{
+      const j = document.getElementById("rl-stream-jump");
+      if(!j) return;
+      const show = !streamFollow && streamUnseen > 0;
+      j.style.display = show ? "inline-flex" : "none";
+      if(show) document.getElementById("rl-stream-jump-n").textContent = String(streamUnseen);
+    }catch{}
+  }
+  function updateRunPill(){
+    try{
+      const p = document.getElementById("rl-stream-runpill");
+      if(!p) return;
+      const name = A.toolRunning;
+      if(!name){ p.style.display = "none"; return; }
+      p.style.display = "inline-flex";
+      p.style.setProperty("--cat", catNeon(getToolCategory(name) || "tool"));
+      const nm = p.querySelector(".rl-run-name"); if(nm) nm.textContent = name;
+      const te = p.querySelector(".rl-run-time");
+      if(te){ const s = (Date.now() - (A.toolStart || Date.now())) / 1000; te.textContent = (s < 10 ? s.toFixed(1) + "s" : Math.round(s) + "s"); }
+    }catch{}
+  }
   function clearLiveTick(){ try{ if(liveTick){ clearInterval(liveTick); liveTick = null; } }catch{} }
   function updateLiveTime(){
     const t = document.getElementById("rl-live");
-    if(!t) return;
-    const te = t.querySelector(".rl-live-time");
-    if(!te) return;
-    const s = (Date.now() - (A.toolStart || Date.now())) / 1000;
-    te.textContent = (s < 10 ? s.toFixed(1) + "s" : Math.round(s) + "s");
+    if(t){
+      const te = t.querySelector(".rl-live-time");
+      if(te){
+        const s = (Date.now() - (A.toolStart || Date.now())) / 1000;
+        te.textContent = (s < 10 ? s.toFixed(1) + "s" : Math.round(s) + "s");
+      }
+    }
+    // Sprint E: the console head pill ticks on the same 200ms cadence.
+    updateRunPill();
   }
   function setToolLive(name){
     A.toolRunning = name; A.toolStart = Date.now();
+    updateRunPill();
     const live = document.getElementById("rl-live");
     if(!live) return;
     const cat = getToolCategory(name) || "tool";
@@ -713,6 +826,7 @@
     try{ const p = personaFirstLine(name); if(nm && p) nm.title = p; }catch{}
     live.style.opacity = "1";
     bar.classList.add("rl-tooling");
+    try{ streamPanel.classList.add("rl-tooling"); }catch{}
     live.style.display = "inline-flex";
     updateLiveTime();
     clearLiveTick();
@@ -723,7 +837,9 @@
     const live = document.getElementById("rl-live");
     if(live){ live.classList.remove("rl-err"); }
     bar.classList.remove("rl-tooling");
+    try{ streamPanel.classList.remove("rl-tooling"); }catch{}
     A.toolRunning = "";
+    updateRunPill();
     if(!A.parked && lastConnStatus) setStatus(lastConnStatus);
     // Sprint C: brief fade-out instead of an abrupt display:none snap. If a
     // new tool starts inside the 200ms window, setToolLive's opacity reset
@@ -742,6 +858,7 @@
   function toolEnd(name, res, opts){
     opts = opts || {};
     const ok = !!(res && res.ok !== false);
+    if(!ok && opts.kind !== "stale"){ try{ streamPanel.classList.add("rl-tooling-err"); setTimeout(()=>{ try{ streamPanel.classList.remove("rl-tooling-err"); }catch{} }, 1500); }catch{} }
     const live = document.getElementById("rl-live");
     const shown = live && live.style.display !== "none";
     if(!shown || opts.kind === "stale" || A.stopping || ok){ hideLive(); return; }
@@ -764,7 +881,8 @@
     }
     const oldEl = document.getElementById("rl-stream-old");
     if(oldEl) oldEl.textContent = streamOldCount ? "… " + streamOldCount + " older" : "";
-    if(streamFollow) list.scrollTop = list.scrollHeight;
+    if(streamFollow){ streamUnseen = 0; updateJumpChip(); list.scrollTop = list.scrollHeight; }
+    else { streamUnseen++; updateJumpChip(); }
   }
   // ── 5.7.0 — 1000x chip meta: estTokens / prettyResult / session totals ──
   // estTokens: honest local approximation (chars ÷ 4). Sites never expose

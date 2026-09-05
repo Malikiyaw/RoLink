@@ -1,4 +1,21 @@
 # Changelog
+## 5.8.0 - Tool Stream as a bottom console: composer-docked, coiling, running pill, jump chip
+
+**Sprint E — the Tool Stream is now a bottom-docked console** (screenshot parity: the record of what the AI is using sits under the chat input, not floating top-right).
+
+**Bottom dock (new default).**
+- `positionStream()` rides the composer frame (`P.composerFrame()`, the same probe the anchored bar uses): left/width follow the composer, panel hugs its bottom edge + 8px, height capped at `min(46vh, space below composer − 12px)` so it can never cover the input.
+- Fallbacks: centered `min(720px, 92vw)` console when the composer probe fails; full-width with 8px margins under 560px. Repositions on the existing 1.5s `placeBar` cadence + resize — no new timers.
+- **Right dock kept**: the head's ⇄ button cycles bottom ⇄ right (`.dock-right` restores the classic 340px panel); choice persists per session (`A.streamDock`).
+
+**Console chrome (1000x).**
+- **Coil mode** — the ▁ button (or clicking the title) coils the console to a 38px taskbar strip; coiled head still shows the running tool + live timer + session totals. State persists (`A.streamCoiled`).
+- **Running pill in the head** — mini `⚙ name · Ns` pill with the tool's category neon, ticking on the live pill's 200ms cadence, visible in both docks and coiled mode.
+- **"↓ N new" jump chip** — scrolling up disengages follow-live (console UX); new cards count up on a floating chip; click snaps to bottom and resumes follow.
+- **Category-neon top accent** — 3px sweeping line across the head while a tool runs; red flash on failed tools.
+
+**Tests**: chip-render extended to 18 contracts — new Sprint E source contract proves the composer-probe geometry + 46vh input-safety cap, narrow-screen fallback, bottom-as-default + persisted coil/dock state, dock/coil/title wiring, jump-chip counter + follow resumption, run-pill cadence, tooling/error accent classes, and the dock-right/coiled/jump/pill/light-mode CSS, plus that the base `.rl-stream` block no longer owns top-right geometry. Full battery green: parser 26, execution 10, providers 10, dispatch 5, agent-loop 7, partial 4, intent-net 24, tool-prompts 14, chip-render 18, vitest 7, deep-boot smoke, `tsc --noEmit` clean.
+
 ## 5.7.0 - Universal chip meta: readable args on every chat chip, ~token pills, pretty results, session totals
 
 **Universal by construction** — the enhancement lives in the shared dispatch funnel (`makeChip` / `chipFinalize` / `makeResultChip` / `makeStreamCard` / `settleStreamCard`), so every tool in the registry (111 today; registry-driven tests mean the count can grow and coverage follows) gets it. No per-tool branches.
