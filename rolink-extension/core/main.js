@@ -976,7 +976,8 @@
     card.dataset.cat = cat;
     card.dataset.t0 = String(Date.now());
     card.style.setProperty("--cat", catNeon(cat));
-    const detail = shortArgSummary(name, args);
+    // 5.9.1: clean readable preview while running (was: raw JSON dump).
+    const detail = smartArgPreview(args) || shortArgSummary(name, args);
     const tag = pinned ? `<span class="rl-stream-tag">pinned from chat</span>` : "";
     // Sprint C: persona first line rides under the head; formatted args live in
     // the collapsible body above the result pre.
@@ -1032,7 +1033,10 @@
       const sp = head.querySelector(".rl-spinner"); if(sp) sp.style.display = "none";
       const tEl = head.querySelector(".rl-time"); if(tEl) tEl.textContent = dur;
       const dEl = head.querySelector(".rl-detail");
-      if(dEl && !dEl.textContent) dEl.textContent = shorten(String(full).replace(/\n/g, " "), 100);
+      // 5.9.1: always show the outcome once settled (ZeroScript parity — the
+      // head reads the result, e.g. `wait_job_finished · No job found with
+      // generation ID…`), never the raw args dump left from creation.
+      if(dEl) dEl.textContent = shorten(String(full).replace(/\n/g, " "), 100) || (ok ? "OK" : "ERROR");
       // Sprint C: outcome badge (OK / ERROR / STALE) — always visible once settled.
       const chev = head.querySelector(".rl-chevron");
       // Dedupe: settle may legitimately run more than once per card.
@@ -1212,7 +1216,6 @@
       dur = secs < 10 ? secs.toFixed(1) + "s" : Math.round(secs) + "s";
     }catch{}
     const full = res.ok ? (res.text || "done") : (res.error || "failed");
-    const summary = shorten(String(full).replace(/\n/g, " "), 120) || (res.ok ? "done" : "failed");
     // 5.7.0: same bounded pretty-print + token meta as Row 1 — every result
     // card shows what the tool returned and what it roughly cost.
     const pr = prettyResult(full);
@@ -1220,7 +1223,9 @@
     let tokMeta = "";
     try{ const t = estTokens(String(full)); if(t > 0) tokMeta = `<span class="rl-tok">${fmtTok(t)}</span>`; }catch{}
     const ico = res.ok ? "⇩" : "✗";
-    rc.innerHTML = `<div class="rl-chip-head"><span class="rl-ico">${ico}</span><span class="rl-name">${escapeHtml(name)} · result</span><span class="rl-detail">${escapeHtml(summary)}</span>${tokMeta}<span class="rl-chevron">▼</span></div><div class="rl-chip-body"><pre></pre><div class="rl-chip-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur">${escapeHtml((res.ok ? "done in " : "failed in ") + dur)}</span></div></div>`;
+    // 5.9.1: bare ZeroScript result bar — just `⇩ name · result`, no summary
+    // text crammed into the head. The full result lives in the expandable body.
+    rc.innerHTML = `<div class="rl-chip-head"><span class="rl-ico">${ico}</span><span class="rl-name">${escapeHtml(name)} · result</span>${tokMeta}<span class="rl-chevron">▼</span></div><div class="rl-chip-body"><pre></pre><div class="rl-chip-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur">${escapeHtml((res.ok ? "done in " : "failed in ") + dur)}</span></div></div>`;
     if(pr.pretty) rc.classList.add("rl-pretty");
     if(!res.ok) rc.classList.add("rl-err");
     rc.querySelector(".rl-chip-head").onclick = (e)=>{ e.stopPropagation(); rc.classList.toggle("open"); };

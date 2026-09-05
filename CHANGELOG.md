@@ -1,4 +1,15 @@
 # Changelog
+## 5.9.1 - ZeroScript-clean heads: no raw JSON dumps, settled cards show the outcome, result bars go bare
+
+**Sprint G — clean-head pass.** The Tool Stream card heads were still dumping raw `shortArgSummary` JSON (`inspect_instance path, studio_id, datamodel_type: {"path":…}`) and never refreshing it once the call settled; the Row 2 result bar carried a summary line ZeroScript's bare `name · result` bar doesn't. All three surfaces now read like the reference screenshot.
+
+- **Stream card head** (`makeStreamCard`): running preview now uses `smartArgPreview` (`path: StarterGui.MainMenuGui.Background.PlayButton · studio_id: 39ba…`) instead of the key-list + raw JSON dump.
+- **Settled cards always show the outcome** (`settleStreamCard`): the detail is overwritten at settle with the result text — `wait_job_finished · No job found with generation ID: …` parity — never left holding the stale args preview (the old code only filled the detail when it was empty, so the JSON dump survived settle).
+- **Row 2 result bar is bare** (`makeResultChip`): just `⇩ name · result` + the `~tok` pill + chevron — the summary text is gone from the head; the full result still lives in the expandable pretty body with its Copy.
+- Nothing was removed from the data path: args grid in the expandable body, pretty result bodies, token pills, session totals all intact — the heads just stopped shouting raw JSON.
+
+**Tests**: chip-render 20 → 21 (new Sprint G source contract pins all three behaviors: smart preview in `makeStreamCard`, always-overwrite settle detail, no `rl-detail` in the Row 2 head, finalize still flips the chat chip head to the result). Full battery green: parser 26, execution 10, providers 10, dispatch 5, agent-loop 7, partial 4, intent-net 24, tool-prompts 14, chip-render 21, vitest 7, deep-boot smoke, `tsc --noEmit` clean.
+
 ## 5.9.0 - Chat chips as pills: screenshot shape, smart arg preview, neon run pulse, micro-motion
 
 **Sprint F — the inline chat chips are rebuilt in the compact pill language** (ZeroScript-screenshot shape; RoLink design language, no copied markup). Data plumbing (args grid, token meta, pretty results, session totals) is untouched from 5.7.0 — this is the presentation rebuild.

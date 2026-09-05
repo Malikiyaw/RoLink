@@ -493,6 +493,28 @@ function placeChip(chip, parent){
     assert(!/document\.body\.appendChild\(chip\)/.test(main), "no body-anchored chips");
   });
 
+  await run("Sprint G source contract: ZeroScript-clean heads — no raw JSON dump, settled detail shows outcome, result bars bare", async () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "core", "main.js"), "utf8");
+    // Stream card head previews args cleanly (smartArgPreview), never raw JSON.
+    assert(/smartArgPreview\(args\) \|\| shortArgSummary/.test(main), "stream head uses smart arg preview");
+    const streamDetail = main.split("function makeStreamCard")[1].split("function settleStreamCard")[0];
+    assert(streamDetail.includes("smartArgPreview(args) || shortArgSummary"), "smart preview wired in makeStreamCard");
+    // Settled stream heads always show the outcome, replacing the running preview.
+    const settle = main.split("function settleStreamCard")[1].split("function openStreamOnce")[0];
+    assert(/if\(dEl\) dEl\.textContent = shorten/.test(settle), "settle always overwrites detail with the result");
+    assert(!/if\(dEl && !dEl\.textContent\)/.test(settle), "no empty-only detail fill left behind");
+    // Result bars are bare: `⇩ name · result` head with no summary text span.
+    const row2 = main.split("function makeResultChip")[1].split("function chipFinalize")[0] || main.split("function makeResultChip")[1];
+    assert(!row2.includes("rl-detail"), "Row 2 result bar head has no summary detail");
+    assert(/· result<\/span>/.test(row2), "Row 2 keeps the bare `name · result` label");
+    assert(row2.includes("rl-tok"), "token pill still rides the bare bar");
+    // Chat Row 1 (makeChip) head detail updates to the outcome at finalize.
+    const fin = main.split("function chipFinalize")[1].split("function makeResultChip")[0] || main.split("function chipFinalize")[1];
+    assert(/d\.textContent=shorten\(String\(full\)/.test(fin), "chat chip head detail becomes the result at finalize");
+    // Body renders args/result as before — nothing lost, just moved out of heads.
+    assert(main.includes("rl-args-grid") && main.includes("prettyResult(full)"), "args grid + pretty body intact");
+  });
+
   console.log(`\nPhase C (chip-render) tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 
