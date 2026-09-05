@@ -1,4 +1,20 @@
 # Changelog
+## 5.7.0 - Universal chip meta: readable args on every chat chip, ~token pills, pretty results, session totals
+
+**Universal by construction** — the enhancement lives in the shared dispatch funnel (`makeChip` / `chipFinalize` / `makeResultChip` / `makeStreamCard` / `settleStreamCard`), so every tool in the registry (111 today; registry-driven tests mean the count can grow and coverage follows) gets it. No per-tool branches.
+
+**Chat chips (Row 1 call + Row 2 result).**
+- Args render as a readable key-value grid in the chip body (6-row cap, `+ N more` collapse, mid-ellipsis for long values, full value on hover) — replaces the raw `JSON.stringify` slice.
+- Token meta pill (`~55 tok`, ZeroScript screenshot parity): running chips show an args-only estimate; settled chips show args + result (`≈12.3k tok` past 10k). Honest local math (chars ÷ 4), always labeled `~` — sites never expose real API counts.
+- JSON results pretty-print (2-space, bounded ≤4000 chars) with a numbered gutter; non-JSON results untouched. Copy always yields the raw un-numbered text (chip stores `dataset.full`).
+- One-shot settle glow: green/red pulse when the outcome lands (Result row keeps its neutral grey).
+
+**Tool Stream panel (kept visually in sync).**
+- Stream cards get the same args grid, token pill, and pretty result body as the chat chip — the two surfaces mirror.
+- New header totals: `N calls · N err · ≈12.4k tok · 42s` for the whole session, accumulated in `chipFinalize` (the funnel every settled dispatch passes through), tooltip states the estimate caveat.
+
+**Tests**: chip-render extended 11 → 17 contracts — `estTokens` (integer/deterministic/monotonic/empty=0), `fmtTok` (≈k form, garbage-safe), args-grid over all 111 Zod samples (`tests/tool-samples.json`), (111 tools × 5 exit paths) settled-meta construction, `prettyResult` (pretty/bounded/XSS-escaped/malformed-fallback), and a source contract proving both surfaces wire the same helpers + CSS. Full battery green: parser 26, execution 10, providers 10, dispatch 5, agent-loop 7, partial 4, intent-net 24, tool-prompts 14, chip-render 17, vitest 7, deep-boot smoke, `tsc --noEmit` clean, bridge.py syntax OK. Python bridge dispatch suite unchanged (pytest not available in this sandbox; `bridge.py` logic untouched this release).
+
 ## 5.6.5 - 1000x Tool Visibility: expert personas + args on every stream card, chips rebuilt to glow
 
 **Sprint C — the chips, stream, and pill get their full visual treatment** (builds on 5.6.0's visibility plumbing, plus the 5.6.1–5.6.4 boot fixes: bar-always-visible fallback, pill inline click, and the `feed is not defined` merged-comment crash that killed every release since 5.6.0).

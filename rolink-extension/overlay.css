@@ -876,3 +876,78 @@ html.rl-light .rl-stream-args { color: #24292f; }
 html.rl-light .rl-stream-args .rl-more { color: #6e7781; }
 html.rl-light .rl-stream-card-foot .rl-copy { background: rgba(0,0,0,0.05); color: #1f2430; border-color: rgba(0,0,0,0.12); }
 html.rl-light .rl-stream-card-foot .rl-copy:hover { background: rgba(0,0,0,0.10); }
+
+/* ── 5.7.0 — 1000x chip meta: token pills, args grid on chat chips, pretty results ── */
+/* Token pill (chat chip head + Row 2 + stream card head). `~` = local estimate. */
+.rl-tok {
+  display: inline-flex; align-items: center;
+  padding: 1px 7px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.3px;
+  color: #79c0ff; background: rgba(121,192,255,0.10);
+  border: 1px solid rgba(121,192,255,0.25);
+  font-variant-numeric: tabular-nums; flex-shrink: 0;
+  cursor: default;
+}
+.rl-chip.rl-err .rl-tok { color: #ffa198; background: rgba(248,81,73,0.10); border-color: rgba(248,81,73,0.30); }
+/* Args grid on chat chips — same grid language as .rl-stream-args (shared renderer). */
+.rl-args-grid {
+  padding: 8px 12px 2px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 10px;
+  align-items: baseline;
+  font: 10.5px/1.5 ui-monospace, Menlo, Consolas, monospace;
+  color: #adbac7;
+}
+.rl-args-grid .rl-ak {
+  color: var(--cat);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 130px;
+}
+.rl-args-grid .rl-av { min-width: 0; word-break: break-all; cursor: default; }
+.rl-args-grid .rl-more { grid-column: 1 / -1; color: #57606a; font-size: 9.5px; }
+/* Pretty (JSON) results: line-number gutter via .rl-ln spans; Copy reads raw text. */
+.rl-chip-body pre .rl-ln,
+.rl-stream-card-body pre .rl-ln {
+  color: #3d444d;
+  user-select: none;
+  display: inline-block;
+  min-width: 2ch;
+  margin-right: 10px;
+  text-align: right;
+  opacity: 0.7;
+}
+/* Settle glow: one-shot pulse when the outcome lands (class added at finalize). */
+@keyframes rl-settle-ok {
+  0% { box-shadow: 0 0 0 3px rgba(63,185,80,0.28), 0 1px 12px rgba(63,185,80,0.35); }
+  100% { box-shadow: 0 1px 10px rgba(63,185,80,0.14), 0 4px 16px rgba(0,0,0,0.30); }
+}
+@keyframes rl-settle-err {
+  0% { box-shadow: 0 0 0 3px rgba(248,81,73,0.30), 0 1px 12px rgba(248,81,73,0.38); }
+  100% { box-shadow: 0 1px 10px rgba(248,81,73,0.16), 0 4px 16px rgba(0,0,0,0.30); }
+}
+.rl-chip.rl-ok { animation: rl-settle-ok 0.6s ease; }
+.rl-chip.rl-err { animation: rl-settle-err 0.6s ease; }
+.rl-chip.rl-result.rl-ok { animation: none; }
+/* Session totals in the Tool Stream header (calls · errs · ≈tok · time). */
+.rl-stream-totals {
+  color: #8b949e;
+  font-size: 10px;
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+/* Light mode */
+html.rl-light .rl-tok { color: #0b57d0; background: rgba(11,87,208,0.08); border-color: rgba(11,87,208,0.25); }
+html.rl-light .rl-chip.rl-err .rl-tok { color: #c93c37; background: rgba(248,81,73,0.08); border-color: rgba(248,81,73,0.30); }
+html.rl-light .rl-args-grid { color: #24292f; }
+html.rl-light .rl-args-grid .rl-more { color: #6e7781; }
+html.rl-light .rl-chip-body pre .rl-ln,
+html.rl-light .rl-stream-card-body pre .rl-ln { color: #8c959f; }
+html.rl-light .rl-stream-totals { color: #57606a; }

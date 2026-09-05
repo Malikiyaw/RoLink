@@ -359,7 +359,7 @@
   // dispatch of a session; once the user closes it, it stays closed.
   const streamPanel = el("div", "rl-stream");
   streamPanel.innerHTML = `
-    <div class="rl-stream-head"><span class="rl-stream-title">📺 Tool Stream</span><span class="rl-stream-old" id="rl-stream-old"></span><button class="rl-feed-clear rl-stream-follow" id="rl-stream-follow" title="Follow live — auto-scroll (on)">⬇</button><button class="rl-feed-clear" id="rl-stream-clear" title="Clear stream">⌫</button></div>
+    <div class="rl-stream-head"><span class="rl-stream-title">📺 Tool Stream</span><span class="rl-stream-totals" id="rl-stream-totals"></span><span class="rl-stream-old" id="rl-stream-old"></span><button class="rl-feed-clear rl-stream-follow" id="rl-stream-follow" title="Follow live — auto-scroll (on)">⬇</button><button class="rl-feed-clear" id="rl-stream-clear" title="Clear stream">⌫</button></div>
     <div class="rl-stream-list" id="rl-stream-list"></div>
   `;
   root.appendChild(streamPanel);
@@ -766,6 +766,60 @@
     if(oldEl) oldEl.textContent = streamOldCount ? "… " + streamOldCount + " older" : "";
     if(streamFollow) list.scrollTop = list.scrollHeight;
   }
+  // ── 5.7.0 — 1000x chip meta: estTokens / prettyResult / session totals ──
+  // estTokens: honest local approximation (chars ÷ 4). Sites never expose
+  // real API counts; every chip label carries the `~` so it never claims
+  // precision it does not have. Pure local math — no permissions, no calls.
+  function estTokens(str){
+    try{ return Math.ceil(String(str == null ? "" : str).length / 4); }catch{ return 0; }
+  }
+  // Session totals, accumulated in chipFinalize (the funnel every settled
+  // dispatch passes through) and rendered in the Tool Stream header.
+  function bumpTokSession(name, callMeta, resMeta){
+    try{
+      const S = (A.tokSession = A.tokSession || { calls: 0, errs: 0, tok: 0, ms: 0 });
+      S.calls++;
+      if(resMeta && resMeta.err) S.errs++;
+      S.tok += (callMeta && callMeta.tok || 0) + (resMeta && resMeta.tok || 0);
+      S.ms += resMeta && resMeta.ms || 0;
+      updateStreamTotals();
+    }catch{}
+  }
+  function fmtTok(n){
+    n = Number(n) || 0;
+    return n >= 10000 ? "≈" + (n / 1000).toFixed(1) + "k tok" : "~" + n + " tok";
+  }
+  function updateStreamTotals(){
+    try{
+      const t = document.getElementById("rl-stream-totals");
+      if(!t) return;
+      const S = A.tokSession;
+      if(!S || !S.calls){ t.textContent = ""; return; }
+      const secs = S.ms >= 10000 ? Math.round(S.ms / 1000) + "s" : (S.ms / 1000).toFixed(1) + "s";
+      t.textContent = S.calls + " call" + (S.calls > 1 ? "s" : "")
+        + (S.errs ? " · " + S.errs + " err" : "")
+        + " · " + fmtTok(S.tok) + " · " + secs;
+      t.title = "Session totals — token counts are local estimates (chars ÷ 4)";
+    }catch{}
+  }
+  // prettyResult: bounded pretty-print when the result body parses as JSON
+  // (numbered gutter comes from CSS counters on .rl-pre-num). Never throws —
+  // any hiccup falls back to the raw text, truncated exactly as before.
+  function prettyResult(text){
+    let body = String(text == null ? "" : text);
+    let pretty = false, html = "";
+    try{
+      const t = body.trim();
+      if(t && (t[0] === "{" || t[0] === "[") && t.length <= 4000){
+        body = JSON.stringify(JSON.parse(t), null, 2);
+        pretty = true;
+        // Numbered gutter as spans; Copy handlers read the raw text, not this.
+        html = body.split("\n").map((l, i) => `<span class="rl-ln">${i + 1}</span>${escapeHtml(l)}`).join("\n");
+      }
+    }catch{ /* not JSON — keep as-is */ }
+    if(body.length > 4000) body = body.slice(0, 3960) + "\n… (truncated — Copy for full)";
+    return { text: body, html, pretty };
+  }
   // First sentence of the tool's expert persona (Sprint A generated prompts).
   // Returns "" when the lookup is missing — callers must treat empty as safe.
   function personaFirstLine(name){
@@ -776,8 +830,11 @@
       return first ? first[0].trim() : (mp && mp.persona ? String(mp.persona).trim() : "");
     }catch{ return ""; }
   }
-  // Stream args as a readable key-value grid (max 6 rows, overflow collapsed).
-  function formatArgsLines(args){
+  // Args as a readable key-value grid (max 6 rows, overflow collapsed).
+  // 5.7.0: shared by chat chips (rl-args-grid) and stream cards (rl-stream-args)
+  // so every tool renders identically on both surfaces. Values mid-ellipsis at
+  // 80 chars; the full value rides on the row's title tooltip.
+  function renderArgsGrid(args, cls){
     if(!args || typeof args !== "object" || !Object.keys(args).length) return "";
     const keys = Object.keys(args).slice(0, 6);
     const extra = Object.keys(args).length - keys.length;
@@ -785,12 +842,16 @@
     for(const k of keys){
       let v = args[k];
       try{ v = (v && typeof v === "object") ? JSON.stringify(v) : String(v); }catch{ v = String(v); }
-      if(v.length > 80) v = v.slice(0, 77) + "…";
-      rows.push(`<span class="rl-ak">${escapeHtml(String(k))}</span><span class="rl-av">${escapeHtml(String(v))}</span>`);
+      const vFull = String(v);
+      let vShort = vFull;
+      if(vShort.length > 80) vShort = vShort.slice(0, 44) + " … " + vShort.slice(-34);
+      rows.push(`<span class="rl-ak">${escapeHtml(String(k))}</span><span class="rl-av" title="${escapeHtml(vFull)}">${escapeHtml(vShort)}</span>`);
     }
     if(extra > 0) rows.push(`<span class="rl-more">+ ${extra} more arg${extra > 1 ? "s" : ""}</span>`);
-    return `<div class="rl-stream-args">${rows.join("")}</div>`;
+    return `<div class="${cls || "rl-args-grid"}">${rows.join("")}</div>`;
   }
+  // Stream variant keeps its historical class (CSS + tests) — same grid underneath.
+  function formatArgsLines(args){ return renderArgsGrid(args, "rl-stream-args"); }
   function makeStreamCard(name, args, pinned){
     const card = el("div", "rl-stream-card rl-pending");
     const cat = getToolCategory(name) || "tool";
@@ -806,16 +867,22 @@
       ? `<div class="rl-stream-persona" title="${escapeHtml(personaLine)}">${escapeHtml(personaLine)}</div>`
       : "";
     const argsHtml = formatArgsLines(args);
+    // 5.7.0: running token estimate (args only — result tokens join at settle).
+    let tokMeta = "";
+    try{
+      const callTok = estTokens(JSON.stringify(args || {})) + estTokens(name);
+      card.dataset.callTok = String(callTok);
+      if(callTok > 0) tokMeta = `<span class="rl-tok">${fmtTok(callTok)}</span>`;
+    }catch{}
     card.innerHTML =
       `<div class="rl-stream-card-head"><span class="rl-spinner"></span><span class="rl-ico">⚙</span>` +
       `<span class="rl-name">${escapeHtml(name)}</span><span class="rl-detail">${escapeHtml(detail)}</span>` +
-      `<span class="rl-time">0s</span>${tag}<span class="rl-chevron">▼</span></div>` +
+      `<span class="rl-time">0s</span>${tokMeta}${tag}<span class="rl-chevron">▼</span></div>` +
       personaHtml +
       `<div class="rl-stream-card-body">${argsHtml}<pre></pre><div class="rl-stream-card-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur"></span></div></div>`;
     try{
       card.querySelector(".rl-stream-card-head").onclick = (e)=>{ e.stopPropagation(); card.classList.toggle("open"); };
-      const btn = card.querySelector(".rl-copy");
-      if(btn) btn.onclick = (e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(String((card.querySelector("pre") || {}).textContent || "")); btn.textContent = "Copied"; btn.classList.add("copied"); setTimeout(()=>{ btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1200); }catch{} };
+      const btn = card.querySelector(".rl-copy");          if(btn) btn.onclick = (e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(String((card.dataset.full) || (card.querySelector("pre") || {}).textContent || "")); btn.textContent = "Copied"; btn.classList.add("copied"); setTimeout(()=>{ btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1200); }catch{} };
       const tEl = card.querySelector(".rl-time");
       const iv = setInterval(()=>{
         if(!card.isConnected){ clearInterval(iv); return; }
@@ -836,6 +903,8 @@
     const durMs = (meta.durationMs != null) ? meta.durationMs
       : (Number(card.dataset.t0 || 0) ? Date.now() - Number(card.dataset.t0) : 0);
     const full = ok ? (res && (res.text || "done")) : (res && (res.error || "failed"));
+    // 5.7.0: bounded pretty-print — stream card body mirrors the chat chip.
+    const pr = prettyResult(full);
     const dur = durMs < 10000 ? (durMs / 1000).toFixed(1) + "s" : Math.round(durMs / 1000) + "s";
     card.classList.remove("rl-pending");
     card.classList.add(ok ? "rl-ok" : "rl-err");
@@ -852,6 +921,15 @@
       // (Scope to badge + warn tag so the pinned-from-chat tag survives.)
       head.querySelectorAll(".rl-stream-badge").forEach(x => x.remove());
       head.querySelectorAll(".rl-stream-tag-warn").forEach(x => x.remove());
+      // 5.7.0: settled token meta = args + result tokens (same math as chat chips).
+      try{
+        let tokEl = head.querySelector(".rl-tok");
+        const callTok = Number(card.dataset.callTok || 0);
+        const totTok = callTok + estTokens(String(full));
+        if(!tokEl){ tokEl = document.createElement("span"); tokEl.className = "rl-tok"; const tm = head.querySelector(".rl-time"); if(tm) tm.after(tokEl); else head.appendChild(tokEl); }
+        tokEl.textContent = totTok > 0 ? fmtTok(totTok) : "";
+        if(pr.pretty) card.classList.add("rl-pretty");
+      }catch{}
       const badgeCls = meta.stale ? "stale" : (ok ? "ok" : "err");
       const badge = el("span", "rl-stream-badge " + badgeCls);
       badge.textContent = meta.stale ? "STALE" : (ok ? "OK" : "ERROR");
@@ -862,7 +940,8 @@
       }
     }
     const pre = card.querySelector(".rl-stream-card-body pre");
-    if(pre) pre.textContent = String(full).slice(0, 4000);
+    if(pre){ if(pr.pretty && pr.html) pre.innerHTML = pr.html; else pre.textContent = pr.text; }
+    try{ card.dataset.full = String(full).slice(0, 8000); }catch{}
     const durEl = card.querySelector(".rl-dur");
     if(durEl) durEl.textContent = (ok ? "done in " : "failed in ") + dur;
   }
@@ -903,12 +982,22 @@
       const gid=args && (args.generationId||args.generation_id||args.id);
       if(typeof gid==="string" && gid.length>=8) genHint=` <span class="rl-gen">${escapeHtml(String(gid).slice(0,18))}</span>`;
     }catch{}
-    chip.innerHTML = `<div class="rl-chip-head"><span class="rl-spinner"></span><span class="rl-ico">⚙</span><span class="rl-name">${escapeHtml(name)}</span><span class="rl-detail">${escapeHtml(detail)}</span><span class="rl-time">0s</span>${genHint}<span class="rl-chevron">▼</span></div><div class="rl-chip-body"><pre></pre><div class="rl-chip-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur"></span></div></div>`;
+    // 5.7.0: running meta shows args-token estimate only — we never claim
+    // tokens we have not seen yet. Result tokens join at finalize.
+    let tokMeta="";
+    try{
+      const callTok = estTokens(JSON.stringify(args || {})) + estTokens(name);
+      chip.dataset.callTok = String(callTok);
+      if(callTok > 0) tokMeta = `<span class="rl-tok">${fmtTok(callTok)}</span>`;
+    }catch{}
+    // 5.7.0: readable args grid in the body (same renderer as stream cards).
+    const argsGrid = renderArgsGrid(args, "rl-args-grid");
+    chip.innerHTML = `<div class="rl-chip-head"><span class="rl-spinner"></span><span class="rl-ico">⚙</span><span class="rl-name">${escapeHtml(name)}</span><span class="rl-detail">${escapeHtml(detail)}</span><span class="rl-time">0s</span>${tokMeta}${genHint}<span class="rl-chevron">▼</span></div><div class="rl-chip-body">${argsGrid}<pre></pre><div class="rl-chip-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur"></span></div></div>`;
     chip.querySelector(".rl-chip-head").onclick=(e)=>{ e.stopPropagation(); chip.classList.toggle("open"); };
     try{
       const pre=chip.querySelector(".rl-chip-body pre");
       const btn=chip.querySelector(".rl-copy");
-      if(btn) btn.onclick=(e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(pre?pre.textContent:""); btn.textContent="Copied"; btn.classList.add("copied"); setTimeout(()=>{btn.textContent="Copy"; btn.classList.remove("copied");},1200); }catch{} };
+      if(btn) btn.onclick=(e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(chip.dataset.full || (pre?pre.textContent:"")); btn.textContent="Copied"; btn.classList.add("copied"); setTimeout(()=>{btn.textContent="Copy"; btn.classList.remove("copied");},1200); }catch{} };
     }catch{}
     // Live elapsed timer (ZeroScript parity: chip timer keeps ticking while running)
     try{
@@ -929,24 +1018,41 @@
     try{ if(chip._timer) clearInterval(chip._timer); }catch{}
     const ico=res.ok?"✓":"✗";
     const full=res.ok ? (res.text||"done") : (res.error||"failed");
-    let body=full;
-    if(typeof body==="string" && body.length>2000) body=body.slice(0,1960)+"… (truncated, Copy for full)";
+    // 5.7.0: bounded pretty-print when the result body is JSON; raw text otherwise.
+    const pr = prettyResult(full);
+    let body=pr.text;
     const secs=chip.dataset.t0?((Date.now()-Number(chip.dataset.t0))/1000):0;
     const dur=secs<10?secs.toFixed(1)+"s":Math.round(secs)+"s";
     const head=chip.querySelector(".rl-chip-head");
     if(head){
       const icoEl=head.querySelector(".rl-ico"); if(icoEl) icoEl.textContent=ico;
       const d=head.querySelector(".rl-detail"); if(d) d.textContent=shorten(String(full).replace(/\n/g," "), 120);
+      // 5.7.0: settled meta = args tokens (captured at start) + result tokens.
       const tEl=head.querySelector(".rl-time"); if(tEl) tEl.textContent=dur;
+      let tokEl=head.querySelector(".rl-tok");
+      try{
+        const callTok = Number(chip.dataset.callTok || 0) || estTokens(JSON.stringify(name)) ;
+        const resTok = estTokens(String(full));
+        const totTok = callTok + resTok;
+        if(!tokEl){ tokEl=document.createElement("span"); tokEl.className="rl-tok"; const ch=head.querySelector(".rl-chevron"); if(ch) head.insertBefore(tokEl, ch); else head.appendChild(tokEl); }
+        tokEl.textContent = totTok > 0 ? fmtTok(totTok) : "";
+        if(pr.pretty) chip.classList.add("rl-pretty");
+      }catch{}
       const sp=head.querySelector(".rl-spinner"); if(sp) sp.style.display="none";
     }
     const pre=chip.querySelector(".rl-chip-body pre");
-    if(pre) pre.textContent=String(body);
+    if(pre){ if(pr.pretty && pr.html) pre.innerHTML = pr.html; else pre.textContent = String(body); }
     const durEl=chip.querySelector(".rl-dur");
     if(durEl) durEl.textContent=(res.ok?"done in ":"failed in ")+dur;
     // Result-row semantics: collapsed result body, head shows outcome (screenshot parity)
     chip.classList.add("open");
     try{ chip.dataset.full=String(full).slice(0,8000); }catch{}
+    // 5.7.0: session totals — this is the funnel every settled dispatch passes
+    // through, so the Stream header tally covers all 111+ tools by construction.
+    try{
+      const durMs = secs * 1000;
+      bumpTokSession(name, { tok: Number(chip.dataset.callTok || 0) }, { tok: estTokens(String(full)), ms: durMs, err: !res.ok });
+    }catch{}
   }
   // ── Row 2: result chip (ZeroScript `name · result` parity) ───────────────
   // Separate collapsed card under the call chip: grey on success, red on
@@ -962,14 +1068,19 @@
     }catch{}
     const full = res.ok ? (res.text || "done") : (res.error || "failed");
     const summary = shorten(String(full).replace(/\n/g, " "), 120) || (res.ok ? "done" : "failed");
-    let body = String(full);
-    if(body.length > 2000) body = body.slice(0, 1960) + "… (truncated, Copy for full)";
+    // 5.7.0: same bounded pretty-print + token meta as Row 1 — every result
+    // card shows what the tool returned and what it roughly cost.
+    const pr = prettyResult(full);
+    let body = pr.text;
+    let tokMeta = "";
+    try{ const t = estTokens(String(full)); if(t > 0) tokMeta = `<span class="rl-tok">${fmtTok(t)}</span>`; }catch{}
     const ico = res.ok ? "⇩" : "✗";
-    rc.innerHTML = `<div class="rl-chip-head"><span class="rl-ico">${ico}</span><span class="rl-name">${escapeHtml(name)} · result</span><span class="rl-detail">${escapeHtml(summary)}</span><span class="rl-chevron">▼</span></div><div class="rl-chip-body"><pre></pre><div class="rl-chip-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur">${escapeHtml((res.ok ? "done in " : "failed in ") + dur)}</span></div></div>`;
+    rc.innerHTML = `<div class="rl-chip-head"><span class="rl-ico">${ico}</span><span class="rl-name">${escapeHtml(name)} · result</span><span class="rl-detail">${escapeHtml(summary)}</span>${tokMeta}<span class="rl-chevron">▼</span></div><div class="rl-chip-body"><pre></pre><div class="rl-chip-foot"><button class="rl-copy" type="button">Copy</button><span class="rl-dur">${escapeHtml((res.ok ? "done in " : "failed in ") + dur)}</span></div></div>`;
+    if(pr.pretty) rc.classList.add("rl-pretty");
     if(!res.ok) rc.classList.add("rl-err");
     rc.querySelector(".rl-chip-head").onclick = (e)=>{ e.stopPropagation(); rc.classList.toggle("open"); };
     const pre = rc.querySelector(".rl-chip-body pre");
-    if(pre) pre.textContent = body;
+    if(pre){ if(pr.pretty && pr.html) pre.innerHTML = pr.html; else pre.textContent = body; }
     try{
       const btn = rc.querySelector(".rl-copy");
       if(btn) btn.onclick = (e)=>{ e.stopPropagation(); try{ navigator.clipboard.writeText(String(full)); btn.textContent = "Copied"; btn.classList.add("copied"); setTimeout(()=>{ btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1200); }catch{} };
