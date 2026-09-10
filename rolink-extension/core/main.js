@@ -85,6 +85,61 @@
     }, 1000);
   })();
 
+  // ── missed-turn watchdog (chip-rescue release) ─────────────────────────
+  // If waitForReply ever finalizes a turn WITHOUT dispatching its complete
+  // tool block (provider read the wrong node, viewer chrome poisoned the
+  // parse, generation flickered), the sweeps still see the block — this 1.5s
+  // interval re-arms agentLoop on it. Guards (ported from the proven pattern):
+  // idle loop only, foreground tab, fresh text, same conversation, boot turn
+  // excluded, halted turns left alone, result-below means settled, and the
+  // executed-memory (+ persisted history) makes double-fire impossible.
+  const WATCHDOG_FRESH_MS = 60000;
+  let _wdLastText = null, _wdLastChange = 0;
+  setInterval(()=>{
+    try{
+      if(!A.started || A.running || A.starting || A.injecting) return;
+      if(A.stopping || A.userStopped) return;
+      if(document.hidden) return;
+      if(P.isGenerating && P.isGenerating()){ A.lastGenAt = Date.now(); _wdLastChange = Date.now(); return; }
+      if(!P.lastAssistant || !P.allItems) return;
+      const item = P.lastAssistant();
+      if(!item || (item.dataset && item.dataset.rlResume)) return;
+      const curKey = P.conversationKey ? P.conversationKey() : location.pathname;
+      if(A.loopKey && curKey !== A.loopKey) return;
+      // Never resume the turn that predated this session (reload artefact).
+      try{
+        if(A.lastAssistantIdAtBoot != null && P.lastAssistantId && P.lastAssistantId() === A.lastAssistantIdAtBoot) return;
+      }catch{}
+      if(P.turnHalted && P.turnHalted(item)) return;
+      // Result-below: an injected-feedback turn after this one means settled.
+      try{
+        const all = P.allItems();
+        const after = all[all.indexOf(item) + 1];
+        if(after && P.isUserItem && P.isUserItem(after)){
+          const t = P.classifyText ? P.classifyText(after) : "";
+          if(INJECTED_RE.test(t || "") || (t || "").indexOf(SYS_MARKER_TEXT) !== -1) return;
+        }
+      }catch{}
+      let txt = "";
+      try{ txt = (P.itemText ? P.itemText(item) : "") || ""; }catch{}
+      if(txt !== _wdLastText){ _wdLastText = txt; _wdLastChange = Date.now(); }
+      if(!txt || !ZSParse.hasToolSignature(txt)) return;
+      if(ZSParse.hasOpenToolBlock(txt)) return;
+      const calls = ZSParse.extractAll(txt).filter(Boolean);
+      if(!calls.length) return;
+      if(Date.now() - _wdLastChange > WATCHDOG_FRESH_MS) return;
+      const key = normCmdKey(calls[0].tool, calls[0].args);
+      if(A.executedCmds && A.executedCmds.has(key)) return;
+      if(historyHasSettled(calls[0].tool, key)) return;
+      try{ item.dataset.rlResume = "1"; }catch{}
+      rememberExecuted(calls[0].tool, calls[0].args);
+      diag("watchdog.resume", { tool: calls[0].tool });
+      if(__trace) __trace.push({ ts: Date.now(), level:"warn", msg:`watchdog: resuming missed ${calls[0].tool}` });
+      A.running = true;
+      agentLoop(P.assistantCount ? P.assistantCount() - 1 : 0);
+    }catch{}
+  }, 1500);
+
   // ── hidden diag JSON node (Sprint 4 #13) ───────────────────────────────
   // Mirrors the 300-slot diag ring into <script id="rl-diag"> so a headless
   // evaluator (or the popup) can read the full ring as JSON without calling
@@ -175,6 +230,7 @@
     stoppedAt: 0,             // timestamp of stop (for grace windows)
     strippedBlocks: new WeakSet(),
     dispatchedItems: new WeakSet(),  // message items we've already processed
+    executedCmds: new Map(),  // normalized tool+args keys the loop dispatched (watchdog double-fire guard)
   };
   // Mirror for execution.js (loaded before/after main.js — reads this flag).
   try{ window.__rolinkBgRun = A.bgRun !== false; }catch{}
@@ -1398,6 +1454,39 @@ ${customBlock}
     if(fsm) try{ fsm.transition("WAITING_FOR_AI", "feedDone"); }catch{}
   }
 
+  // ── watchdog executed-memory (double-fire guard) ───────────────────────
+  // Normalized tool+args key: sorted-keys JSON so arg order never matters.
+  function normCmdKey(name, args){
+    try{
+      const a = (args && typeof args === "object" && !Array.isArray(args)) ? args : {};
+      return String(name) + "|" + JSON.stringify(a, Object.keys(a).sort());
+    }catch{ return String(name) + "|?"; }
+  }
+  function rememberExecuted(name, args){
+    try{
+      if(!A.executedCmds) A.executedCmds = new Map();
+      A.executedCmds.set(normCmdKey(name, args), Date.now());
+      if(A.executedCmds.size > 300){
+        const k = A.executedCmds.keys().next().value;
+        A.executedCmds.delete(k);
+      }
+    }catch{}
+  }
+  // Persisted settled-history: a matching tool_call FOLLOWED by a tool_result
+  // for the same tool means it ran (survives reloads, unlike executedCmds).
+  function historyHasSettled(name, key){
+    try{
+      const h = A.history || [];
+      for(let i = h.length - 1; i >= 0; i--){
+        const e = h[i];
+        if(!e) continue;
+        if(e.role === "tool_result" && e.name === name) return true;
+        if(e.role === "tool_call" && e.name === name && normCmdKey(e.name, e.args) === key) return false;
+      }
+    }catch{}
+    return false;
+  }
+
   // ── dispatch a tool call (canonical, awaited, id-correlated) ────────────
   async function dispatchTool(name, args, sourceBlock, sourceItem, images, afterChip){
     // Strict validation before execution: valid tool name, complete args
@@ -1474,6 +1563,8 @@ ${customBlock}
       if(chipPinned) diag("chip.fallback", { name });
     }
     A.busy = true; A.toolRunning = name; A.toolStart = Date.now();
+    rememberExecuted(name, args);
+    A.lastGenAt = Date.now();
     // Sprint B: live pill + Tool Stream — every dispatch is visible from the
     // moment it starts (the pill replaces the idle status; the panel
     // auto-opens once per session). The stream card outlives the pill so the
@@ -1636,6 +1727,18 @@ ${customBlock}
     const withRider = maybeRider(feedbackMsg);
     // Transactional feeding: hidden injection (camouflaged), not visible user bubble — free chat
     await feedToolResultTransactional(withRider, imgs || []);
+    // React survival: frameworks reconcile the turn subtree on send/settle and
+    // can wipe our chip. If it got detached, re-anchor at the same spot.
+    try{
+      if(chip && !chip.isConnected && sourceItem && sourceItem.isConnected && P.findToolBlockSpot){
+        const spot = P.findToolBlockSpot(sourceItem, chip);
+        if(spot && spot.parent && spot.parent.isConnected){
+          spot.parent.insertBefore(chip, spot.ref || null);
+          if(tail && tail !== chip && !tail.isConnected) spot.parent.insertBefore(tail, chip.nextSibling);
+          diag("chip.reanchor", { name });
+        }
+      }
+    }catch{}
     return {chip, tail, name, res, text};
   }
 

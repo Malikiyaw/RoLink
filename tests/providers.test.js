@@ -45,6 +45,34 @@ function assert(cond, msg){ if(!cond) throw new Error(msg); }
     } catch (e) { bad(p, e); }
   }
 
+  // Meta adapter: turn-level contract (chip-rescue release). No document in
+  // this sandbox, so every Meta override must degrade without throwing.
+  try {
+    const generic = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "providers", "generic.js"), "utf8");
+    const code = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "providers", "meta.js"), "utf8");
+    const w = loadInSandbox([generic, code]);
+    const P = w.ZSProvider;
+    assert(P.id === "meta", "meta: id");
+    // No per-turn continue marker on Meta — generic Continue regex would
+    // divert abridged JSON to "truncated".
+    assert(P.findContinueBtn() === null, "meta: findContinueBtn null");
+    assert(typeof P.thinkingSel === "string" && P.thinkingSel.includes("thinking-status"), "meta: thinkingSel");
+    assert(P.lastAssistantId() === null, "meta: no turn without DOM");
+    assert(P.findToolBlockSpot(null) === null, "meta: null item -> null spot");
+    const ra = P.readAssistant();
+    assert(ra && ra.present === false && ra.reply === "", "meta: empty readAssistant without DOM");
+    assert(P.isGenerating() === false, "meta: not generating without DOM");
+    assert(P.isHardGenerating() === false, "meta: hard check without DOM");
+    // Turn-list + viewer markers present in source (live-DOM behavior is
+    // covered by the manual 8-provider matrix).
+    for (const needle of [
+      'data-testid="assistant-message"', '[data-testid="composer-stop-button"]',
+      ".ur-code-block", "rl-cmd-mask", "rl-tool-hide", "mx-auto",
+      "composer-stop-button", "findContinueBtn",
+    ]) assert(code.includes(needle), "meta.js contains " + needle);
+    ok("meta turn-level contract (no-DOM safe)");
+  } catch (e) { bad("meta contract", e); }
+
   // The MAIN-world hooks (chatgpt-cm.js, qwen-net.js) should be harmless
   // when no chatgpt.com / chat.qwen.ai is loaded — they just need to
   // install without throwing.

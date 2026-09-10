@@ -1,4 +1,14 @@
 # Changelog
+## Unreleased - chip rescue: Meta adapter rebuild + missed-turn watchdog
+
+**Symptom.** On Meta AI (and any provider whose DOM defeats the generic selectors), raw `###MCP_TOOL###` JSON stayed visible with no in-chat chip while the Timeline showed the tool as `queued` forever: page-wide sweeps parsed the block (emitting `queued`), but the agent loop never dispatched it.
+
+**Meta adapter rebuild** (`providers/meta.js`, ported from the proven ZeroScript adapter): real turn-list climbing (`flex flex-col` holding `[data-testid="assistant-message"]`, spacer excluded), `textContent` reads (display:none-safe), reasoning exclusion, command-shaped viewer flip-to-Raw + triangle-strip + toolbar de-chrome, `<pre>` line-span rejoining, WeakMap turn ids, authoritative `[data-testid="composer-stop-button"]` generation signal, `findContinueBtn → null` (generic Continue regex diverted abridged JSON to `truncated`), turn-level hide (code wrappers + bare blocks) with content-column chip fallback that never returns null.
+
+**Missed-turn watchdog** (`core/main.js`, all providers): 1.5s interval re-arms `agentLoop` on a complete-but-undispatched block with boot-turn exclusion, same-conversation + halted + result-below + 60s-freshness guards, and double-fire protection via normalized executed-memory (`normCmdKey`) plus persisted settled-history. `dispatchTool` records every dispatch and re-anchors React-wiped chips after feeding.
+
+**Tests**: new `tests/chip-resume.test.js` (6: key normalization, map cap, settled vs in-flight, watchdog/re-anchor contracts); `providers.test.js` gains the Meta no-DOM turn-level contract (10 → 11). Full battery green: node 15 suites, vitest 11, `tsc --noEmit` clean, `bridge.py` compiles.
+
 ## 5.10.0 - 1000x Tool Visibility P0–P4: event spine, Side Dock, Bottom Timeline, Studio hologram HUD, polish
 
 **P0 event spine.** Every tool call is now a `ToolEvent` (`shared/protocol.ts`: `ToolEvent`/`ToolStatus`/`ToolCategory`/`ToolEventFrame`, `tool_event` wire method). `core/tool-events.js` (new bus: pub/sub, 50-event ring, `console.debug` log) is fed by `parser.js` (`queued`) and `execution.js` (`running` → terminal, reusing the `rl_*` id with `durationMs`); `background.js` fans events to all tabs + popup pulse; `bridge.py` broadcasts `running` → terminal with `_tool_category()` mirror; `config.js toolCategory()` extended to cover all 111 (only 6 ops tools stay grey `tool`). `ui/toolHud/toolRegistry.js` maps all 111 to category/color/icon/preview.
