@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased - chip rescue: Meta adapter rebuild + missed-turn watchdog
+## 5.10.1 - chip rescue: Meta adapter rebuild + missed-turn watchdog
 
 **Symptom.** On Meta AI (and any provider whose DOM defeats the generic selectors), raw `###MCP_TOOL###` JSON stayed visible with no in-chat chip while the Timeline showed the tool as `queued` forever: page-wide sweeps parsed the block (emitting `queued`), but the agent loop never dispatched it.
 
