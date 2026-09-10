@@ -106,6 +106,45 @@ function render(s){
   allTools = tools;
   renderTools(tools);
   applyLive();
+  renderEvents(s);
+}
+
+// P4 Bridge Dashboard: live tool-event feed (background ring: last 20,
+// newest first). Refreshes with every status broadcast while visible.
+function fmtDur(ms){
+  if(ms == null || isNaN(ms)) return "";
+  ms = Math.max(0, ms | 0);
+  if(ms < 1000) return ms + "ms";
+  const s = ms / 1000;
+  if(s < 60) return (Math.round(s * 10) / 10) + "s";
+  return ((s / 60) | 0) + "m" + (((s % 60) | 0) ? " " + ((s % 60) | 0) + "s" : "");
+}
+function renderEvents(s){
+  const box = document.getElementById("eventsList");
+  const sum = document.getElementById("eventsSummary");
+  if(!box) return;
+  const evts = Array.isArray(s?.recent) ? s.recent.slice().reverse() : [];
+  const run = (s?.agent && s.agent.running && s.agent.running.name) || "";
+  if(sum){
+    const counts = {};
+    for(const e of evts) counts[e.status] = (counts[e.status] || 0) + 1;
+    sum.textContent = evts.length
+      ? `${evts.length} recent · ${counts.running || 0} running · ${counts.success || 0} ok · ${(counts.error || 0) + (counts.timeout || 0)} failed`
+      : (run ? `⚡ ${run} running…` : "No tool activity yet");
+  }
+  if(!evts.length){
+    box.innerHTML = '<span style="color:var(--muted)">Waiting for tool events…</span>';
+    return;
+  }
+  box.innerHTML = evts.map(e => {
+    const st = e.status || "queued";
+    const dur = fmtDur(e.durationMs);
+    const when = e.ts ? relTime(e.ts) : "";
+    return `<div class="ev-row"><span class="ev-dot" data-s="${escapeHtml(st)}"></span>` +
+      `<span class="ev-name">${escapeHtml(e.tool || "?")}</span>` +
+      `<span class="ev-cat">${escapeHtml(e.category || "tool")}</span>` +
+      `<span class="ev-meta">${escapeHtml([dur, when].filter(Boolean).join(" · "))}</span></div>`;
+  }).join("");
 }
 
 // Per-server dots, scoped per server. The header dot above only reflects
@@ -306,6 +345,7 @@ document.querySelectorAll(".tab").forEach(tab=>{
     document.getElementById(id)?.classList.add("active");
     if(tab.dataset.tab==="tools") renderTools(allTools);
     if(tab.dataset.tab==="logs") renderLogs();
+    if(tab.dataset.tab==="events") renderEvents(lastStatus);
   });
 });
 document.getElementById("toolSearch")?.addEventListener("input", ()=> renderTools(allTools));

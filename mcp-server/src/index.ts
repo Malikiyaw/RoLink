@@ -87,7 +87,7 @@ app.post("/queue/result", (req, res) => {
   if (error && shouldAutoHeal(String(error))) {
     const hr = healCode(cmd.command, String(error));
     if (hr.healed && hr.fixed) {
-      const newCmd = commandQueue.enqueue({ tool: cmd.tool, command: hr.fixed, args: { ...cmd.args, healedFrom: id }, priority: 9, projectId: cmd.projectId });
+      const newCmd = commandQueue.enqueue({ tool: cmd.tool, command: hr.fixed, args: { ...cmd.args, healedFrom: id }, priority: 9, projectId: cmd.projectId, meta: cmd.meta });
       teamLog.append("info", cmd.projectId || "default", "heal", `auto-healed ${id} -> ${newCmd.id}`, hr);
       healed = { healed:true, newId: newCmd.id, reason: hr.reason };
       console.log(`[heal] ${id} -> ${newCmd.id} reason=${hr.reason}`);

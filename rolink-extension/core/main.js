@@ -304,6 +304,8 @@
     <button class="rl-icon" id="rl-tools-btn" title="Show available tools">🛠</button>
     <button class="rl-icon" id="rl-feed-btn" title="Show activity">📜</button>
     <button class="rl-icon" id="rl-stream-btn" title="Tool Stream — every tool call, live (auto-opens)">📺</button>
+    <button class="rl-icon" id="rl-dock-btn" title="Side Dock — live tool feed (P1)">🧰</button>
+    <button class="rl-icon" id="rl-tl-btn" title="Bottom Timeline — tool sequence (P2)">🎞</button>
     <button class="rl-icon" id="rl-trace-btn" title="Show execution trace">🔍</button>
     <button class="rl-icon" id="rl-workspace-btn" title="Workspace memory">🧠</button>
     <button class="rl-icon" id="rl-bgrun-btn" title="Background run">🌙</button>
@@ -496,6 +498,12 @@
     if(streamBtn) streamBtn.onclick = e => { e.stopPropagation(); closeWorkspace(); tracePanel.classList.remove("rl-show"); toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show"); streamPanel.classList.toggle("rl-show"); if(!streamPanel.classList.contains("rl-show")) A.streamDismissed = true; };
     const traceBtn = document.getElementById("rl-trace-btn");
     if(traceBtn) traceBtn.onclick = e => { e.stopPropagation(); closeWorkspace(); toolsPanel.classList.remove("rl-show"); feed.classList.remove("rl-show"); streamPanel.classList.remove("rl-show"); tracePanel.classList.toggle("rl-show"); };
+    // P1 Side Dock toggle (guarded — sideDock.js loads before main.js).
+    const dockBtn = document.getElementById("rl-dock-btn");
+    if(dockBtn) dockBtn.onclick = e => { e.stopPropagation(); try { if(window.RolinkSideDock) window.RolinkSideDock.toggle(); } catch (err) {} };
+    // P2 Bottom Timeline toggle (guarded — bottomTimeline.js loads before main.js).
+    const tlBtn = document.getElementById("rl-tl-btn");
+    if(tlBtn) tlBtn.onclick = e => { e.stopPropagation(); try { if(window.RolinkTimeline) window.RolinkTimeline.toggle(); } catch (err) {} };
     document.getElementById("rl-feed-clear").onclick = e => { e.stopPropagation(); document.getElementById("rl-feed-list").innerHTML=""; };
     document.getElementById("rl-workspace-btn").onclick = e => {
       e.stopPropagation();
@@ -1075,6 +1083,35 @@
   function notifyBgTool(state, name, extra){
     try{ bg({type: "tool-state", state, name, ...(extra || {})}); }catch{}
   }
+  // ── P0 ToolEvent spine: forward local bus → background (cross-tab/popup
+  // fan-out), and accept relayed events from sibling tabs. Relayed ids are
+  // tracked locally so they are never re-forwarded (no echo loop).
+  try{
+    const __bus0 = (typeof window !== "undefined" && (window.RolinkToolEvents || window.ToolEventBus)) || null;
+    const __relayedIds = new Set();
+    if(__bus0 && typeof __bus0.subscribe === "function"){
+      __bus0.subscribe((ev)=>{
+        try{
+          if(!ev || __relayedIds.has(ev.id)) return;
+          bg({type:"tool_event", event:ev});
+        }catch{}
+      });
+    }
+    if(typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage){
+      chrome.runtime.onMessage.addListener((msg)=>{
+        try{
+          if(msg && msg.type === "rolink-tool-event" && msg.event && __bus0){
+            __relayedIds.add(msg.event.id);
+            if(__relayedIds.size > 200){
+              const first = __relayedIds.values().next().value;
+              __relayedIds.delete(first);
+            }
+            __bus0.publish(msg.event);
+          }
+        }catch{}
+      });
+    }
+  }catch{}
 
   // ── tool chip helpers — 1000x original (head + collapsible body, category color, no copy) ──
   function getToolCategory(name){
@@ -2692,6 +2729,16 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     return "";
   }
 
+  // P2 replay: re-run a past tool call through the canonical dispatch path
+  // (chip anchoring, history, result feed all behave like a live call).
+  // Timeline passes stored {tool, args}; datamodel/studio injection applies.
+  function replayTool(name, args){
+    if(!name || typeof name !== "string") return Promise.resolve({ ok:false, kind:"validation_error", error:"invalid tool name", text:"" });
+    const safeArgs = (args && typeof args === "object" && !Array.isArray(args)) ? Object.assign({}, args) : {};
+    delete safeArgs._partial;
+    return dispatchTool(name, safeArgs, null, null, null);
+  }
+
   // expose for debug / popup
   window.ROLINK = {
     start: startSession,
@@ -2702,5 +2749,6 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     P,
     narratedTool,
     INTENT_STEMS,
+    replayTool,
   };
 })();

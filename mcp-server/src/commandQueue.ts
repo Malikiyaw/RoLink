@@ -1,7 +1,23 @@
-import { makeId, type QueuedCommand, type EnqueuePayload } from "../../shared/protocol.js";
+import { makeId, type QueuedCommand, type EnqueuePayload, type ToolCategory } from "../../shared/protocol.js";
 
 const MAX_QUEUE = 200;
 const CLAIM_TIMEOUT_MS = 30000;
+
+// P3: Studio HUD category mirror. Coarse port of
+// rolink-extension/core/config.js toolCategory() — the extension sends the
+// authoritative category with bus events; the plugin falls back to this
+// mapping for queue-originated visuals. Keep the 8 canonical names.
+export function categoryOfTool(name: string): ToolCategory {
+  const n = (name || "").toLowerCase();
+  if (/^(take_snapshot|get_snapshot|rollback|diff_snapshots|get_instances|find_instance|list_commands)$/.test(n)) return "inspect";
+  if (/^(execute_luau|run_code|set_script_content|create_module|multi_edit|create_instance|set_properties|set_property|delete_instance|clone_instance|move_instance|run_function|add_event_handler|remove_event_handler|ensure_path|resolve_path|place_parts|create_model_from_table|set_terrain_region|set_ui_property|bind_ui_click|set_datastore_value|setup_datastore|create_project|import_project|switch_project|set_breakpoint|remove_breakpoint|apply_template|add_template|refactor_code|load_plugin|git_commit|git_rollback|adjust_difficulty|set_difficulty_profile)$/.test(n)) return "edit";
+  if (/script_search|script_grep|search_game_tree|inspect_instance|get_script_content|get_context_summary|get_function_signatures|get_property_value|get_all_properties|search_by_attribute|get_referenced_instances|get_global_variables|get_dependency_graph|get_ui_tree|get_datastore_value|get_projects|get_suggestions|get_analytics|get_metrics|get_memory_usage|get_performance_stats|get_time|list_templates|list_plugins|list_sessions|git_log|explain_code|validate_command|suggest_|search_scripts|get_instance_tree|list_roblox_studios|get_studio_state|export_session_log|replay_session|compare_sessions|session_users|report_metrics|report_analytics|predict_bug|review_code|export_project/.test(n)) return "read";
+  if (/generate_|compile_visual_graph/.test(n)) return "generate";
+  if (/search_asset|import_asset|apply_material/.test(n)) return "asset";
+  if (/create_ui|create_animation_track|play_animation|set_lighting|add_particle_emitter|play_sound|send_notification/.test(n)) return "visual";
+  if (/run_tests|simulate|run_sandbox_tests|playtest|run_playtest|confirm_sandbox_apply|discard_sandbox|step_through|continue_execution|watch_variable|analyze_performance|set_performance_threshold|optimize_performance/.test(n)) return "test";
+  return "tool";
+}
 
 class CommandQueue {
   private queue: QueuedCommand[] = [];
@@ -12,8 +28,9 @@ class CommandQueue {
     if (this.queue.filter(c => c.status === "queued").length >= MAX_QUEUE) {
       throw new Error("503 queue full (max 200)");
     }
+    const id = makeId();
     const cmd: QueuedCommand = {
-      id: makeId(),
+      id,
       status: "queued",
       attempts: 0,
       createdAt: Date.now(),
@@ -23,6 +40,13 @@ class CommandQueue {
       priority: payload.priority ?? 5,
       timeoutMs: payload.timeoutMs ?? 15000,
       projectId: payload.projectId ?? "default",
+      // P3: HUD correlation — eventId is the queue id; category defaults to
+      // the local mirror unless the caller supplied an authoritative one.
+      meta: {
+        eventId: payload.meta?.eventId ?? id,
+        category: payload.meta?.category ?? categoryOfTool(payload.tool),
+        sessionId: payload.meta?.sessionId ?? null,
+      },
     };
     // insert by priority descending
     let idx = this.queue.findIndex(c => c.status === "queued" && (c.priority ?? 5) < (cmd.priority ?? 5));

@@ -15,6 +15,7 @@ export type WireMethod =
   | "error"
   | "call_tool"
   | "tool_result"
+  | "tool_event"
   | "list_tools"
   | "studio_status";
 
@@ -28,6 +29,12 @@ export interface WireFrame {
   ts?: number;
 }
 
+export interface ToolEventMeta {
+  eventId?: string; // queue command id (minted at enqueue)
+  category?: ToolCategory; // HUD color/icon family
+  sessionId?: string | null;
+}
+
 export interface EnqueuePayload {
   command: string; // Luau code or DSL
   tool: string; // e.g., "create_instance", "run_code"
@@ -35,6 +42,7 @@ export interface EnqueuePayload {
   priority?: number; // 0-10
   timeoutMs?: number;
   projectId?: string;
+  meta?: ToolEventMeta; // P3: Studio HUD correlation (optional, server fills defaults)
 }
 
 export interface QueuedCommand extends EnqueuePayload {
@@ -102,4 +110,51 @@ export interface UnifiedToolEntry {
   description: string;
   provider: "roblox" | "rolink";
   execution: "studio" | "local";
+}
+
+// ── P0 ToolEvent spine ──────────────────────────────────────────────
+// Emitted by the extension (parser → queued, execution → running →
+// terminal) and re-broadcast by bridge.py to all connected tabs.
+// UI (SideDock / Timeline / Studio HUD) subscribes; the agent loop
+// never blocks on it. Category reuses the extension's 8 toolCategory()
+// values so prompts, registry and HUD stay in sync.
+export type ToolStatus =
+  | "queued"
+  | "running"
+  | "success"
+  | "error"
+  | "waiting"
+  | "timeout"
+  | "cancelled"
+  | "stale";
+
+export type ToolCategory =
+  | "read"
+  | "edit"
+  | "inspect"
+  | "generate"
+  | "asset"
+  | "visual"
+  | "test"
+  | "tool";
+
+export interface ToolEvent {
+  id: string;
+  tool: string;
+  category: ToolCategory;
+  status: ToolStatus;
+  args: Record<string, unknown>;
+  result?: unknown;
+  startTime: number;
+  durationMs?: number;
+  previewUrl?: string;
+  codeDiff?: { before: string; after: string };
+  sessionId?: string | null;
+  turnId?: string | null;
+}
+
+export interface ToolEventFrame {
+  type: "tool_event";
+  id: string;
+  event: ToolEvent;
 }

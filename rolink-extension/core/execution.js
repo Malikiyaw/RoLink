@@ -108,6 +108,18 @@
       req.status = STATUS.RUNNING;
       this.active = req;
       this.diag("execution.start", { id, tool, sessionId, turnId, timeout });
+      // P0 ToolEvent spine: lifecycle publish (never blocks the loop).
+      const __bus = (typeof window !== "undefined" && (window.RolinkToolEvents || window.ToolEventBus)) || null;
+      const emitEv = (status, extra) => {
+        try {
+          if (__bus && typeof __bus.publish === "function") {
+            __bus.publish(Object.assign(
+              { id, tool, args, sessionId, turnId, startTime: req.startedAt, durationMs: Date.now() - req.startedAt },
+              extra || {}, { status }));
+          }
+        } catch (e) {}
+      };
+      emitEv("running");
       if(this.trace) this.trace.push({ ts: Date.now(), level:"info", msg:`Request ${id} → Bridge → StudioMCP: ${tool}` });
       if(this.state) try{ this.state.transition("EXECUTING_TOOL", tool); }catch{}
 
@@ -120,12 +132,14 @@
         await this._waitForVisible();
         if(this.cancelledIds.has(id)){
           req.status = STATUS.CANCELLED;
+          emitEv("cancelled", { result: "cancelled while tab hidden" });
           return { id, ok:false, kind:"cancelled", error:"cancelled while tab hidden", text:"" };
         }
         // check staleness after resuming
         if(sessionId && opts.getSessionId && opts.getSessionId() !== sessionId){
           req.status = STATUS.STALE;
           if(this.trace) this.trace.push({ ts: Date.now(), level:"warn", msg:`✗ stale session ${id} — dropping` });
+          emitEv("stale", { result: "stale session — new chat opened" });
           return { id, ok:false, kind:"cancelled", error:"stale session — new chat opened", text:"" };
         }
       }
@@ -151,12 +165,14 @@
           req.kind = "stale-extension";
           req.error = msg;
           if(this.trace) this.trace.push({ ts: Date.now(), level:"error", msg:`✗ ${tool} extension invalidated` });
+          emitEv("stale", { result: msg });
           return { id, ok:false, kind:"stale-extension", error:"Extension updated — please reload this page and click Start again.", text:"" };
         }
         req.status = STATUS.TIMEOUT;
         req.kind = "timeout";
         req.error = msg;
         if(this.trace) this.trace.push({ ts: Date.now(), level:"error", msg:`✗ ${tool} timeout` });
+        emitEv("timeout", { result: msg });
         return { id, ok:false, kind:"timeout", error: normalizeError({ok:false, kind:"timeout", error: msg}).error, text:"" };
       }
 
@@ -165,6 +181,7 @@
         req.error = "no response from bridge";
         req.kind = "bridge_offline";
         if(this.trace) this.trace.push({ ts: Date.now(), level:"error", msg:`✗ ${tool} no bridge response` });
+        emitEv("error", { result: "no response from bridge" });
         return { id, ok:false, kind:"bridge_offline", error: normalizeError({ok:false, kind:"bridge_offline", error:"no response"}).error, text:"" };
       }
 
@@ -172,6 +189,7 @@
       if(sessionId && opts.getSessionId && opts.getSessionId() !== sessionId){
         req.status = STATUS.STALE;
         if(this.trace) this.trace.push({ ts: Date.now(), level:"warn", msg:`↻ ${tool} result arrived for stale session — not feeding` });
+        emitEv("stale", { result: res.text || res.error || "" });
         // Still return but mark stale so caller can drop feeding
         return { id, ok: !!res.ok, kind: res.kind || (res.ok ? "success" : "execution_error"), error: res.error||"", text: res.text||"", stale:true };
       }
@@ -181,6 +199,7 @@
         req.result = res.text||"";
         req.kind = "success";
         if(this.trace) this.trace.push({ ts: Date.now(), level:"ok", msg:`Studio ✓ ${tool} ${String(res.text||"done").slice(0,80)}` });
+        emitEv("success", { result: res.text || "" });
         return { id, ok:true, kind:"success", error:"", text: res.text||"", images: res.images||[] };
       } else {
         const norm = normalizeError(res);
@@ -188,6 +207,7 @@
         req.kind = norm.kind;
         req.error = norm.error;
         if(this.trace) this.trace.push({ ts: Date.now(), level:"error", msg:`Studio ✗ ${tool} ${norm.kind}: ${String(norm.error).slice(0,120)}` });
+        emitEv(norm.kind === "timeout" ? "timeout" : "error", { result: norm.error });
         return { id, ok:false, kind: norm.kind, error: norm.error, text: res.text||"" };
       }
     }

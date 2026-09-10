@@ -3,14 +3,17 @@ const ROLINK_VERSION = "5.9.1";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
+  // P0: extended to cover all 111 registry tools deterministically.
+  // Keeps the original 8 category names so prompts, registry and HUD stay
+  // in sync (see shared/protocol.ts ToolCategory).
   const n=(name||"").toLowerCase();
-  if(/script_search|script_grep|search_game_tree|inspect_instance|get_script_content|get_context_summary/.test(n)) return "read";
-  if(/execute_luau|set_script_content|create_module|multi_edit|create_instance|set_properties|delete_instance|clone_instance|move_instance/.test(n)) return "edit";
-  if(/get_snapshot|take_snapshot|get_instances|find_instance/.test(n)) return "inspect";
-  if(/generate_asset|generate_terrain|create_model_from_table|generate_level|generate_quest/.test(n)) return "generate";
+  if(/^(take_snapshot|get_snapshot|rollback|diff_snapshots|get_instances|find_instance|list_commands)$/.test(n)) return "inspect";
+  if(/^(execute_luau|run_code|set_script_content|create_module|multi_edit|create_instance|set_properties|set_property|delete_instance|clone_instance|move_instance|run_function|add_event_handler|remove_event_handler|ensure_path|resolve_path|place_parts|create_model_from_table|set_terrain_region|set_ui_property|bind_ui_click|set_datastore_value|setup_datastore|create_project|import_project|switch_project|set_breakpoint|remove_breakpoint|apply_template|add_template|refactor_code|load_plugin|git_commit|git_rollback|adjust_difficulty|set_difficulty_profile)$/.test(n)) return "edit";
+  if(/script_search|script_grep|search_game_tree|inspect_instance|get_script_content|get_context_summary|get_function_signatures|get_property_value|get_all_properties|search_by_attribute|get_referenced_instances|get_global_variables|get_dependency_graph|get_ui_tree|get_datastore_value|get_projects|get_suggestions|get_analytics|get_metrics|get_memory_usage|get_performance_stats|get_time|list_templates|list_plugins|list_sessions|git_log|explain_code|validate_command|suggest_|search_scripts|get_instance_tree|list_roblox_studios|get_studio_state|export_session_log|replay_session|compare_sessions|session_users|report_metrics|report_analytics|predict_bug|review_code|export_project/.test(n)) return "read";
+  if(/generate_asset|generate_terrain|generate_level|generate_quest|generate_sound|generate_sound_pack|generate_test|generate_mesh|generate_material|generate_procedural_model|compile_visual_graph/.test(n)) return "generate";
   if(/search_asset|import_asset|apply_material/.test(n)) return "asset";
-  if(/create_ui|create_animation_track|play_animation|set_lighting|add_particle_emitter/.test(n)) return "visual";
-  if(/run_tests|simulate_ticks|run_in_sandbox|playtest/.test(n)) return "test";
+  if(/create_ui|create_animation_track|play_animation|set_lighting|add_particle_emitter|play_sound|send_notification/.test(n)) return "visual";
+  if(/run_tests|simulate_ticks|simulate_economy|run_in_sandbox|run_sandbox_tests|playtest|run_playtest|confirm_sandbox_apply|discard_sandbox|step_through|continue_execution|watch_variable|analyze_performance|set_performance_threshold|optimize_performance/.test(n)) return "test";
   return "tool";
 }
 

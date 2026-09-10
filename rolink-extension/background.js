@@ -37,6 +37,11 @@ let studioApp = null;
 // Sprint B: agent-session snapshot relayed from the content script on each
 // tool start/finish — popup live highlight (pulse + last-used timestamps).
 let agentTools = { running: null, lastUsed: {}, lastResult: null };
+// P4 Bridge Dashboard: ring of the last 20 ToolEvents (any source: content
+// bus forwards + bridge broadcasts). Served to the popup Events tab via
+// statusObj(). Capped — never grows unbounded in the service worker.
+let recentEvents = [];
+const RECENT_EVENTS_MAX = 20;
 
 function log(...a){ console.log("[rolink-bg]", ...a); }
 
@@ -130,7 +135,7 @@ async function refreshStudioStatus(){
   }finally{ studioProbing=false; }
 }
 
-function handleBridgeMessage(msg){
+function handleBridgeMessage(msg, opts){
   if("studio" in msg && (typeof msg.studio==="boolean" || msg.studio===null)) studioConnected=msg.studio;
   if("studio_app" in msg && (typeof msg.studio_app==="boolean" || msg.studio_app===null)) studioApp=msg.studio_app;
   if(msg.type==="studio_status"){ resolvePending(msg.id, {ok:true, studio:studioConnected}); broadcastStatus(); return; }
@@ -164,6 +169,55 @@ function handleBridgeMessage(msg){
     resolvePending(msg.id, msg.ok
       ? {ok:true, text:msg.text, images:msg.images||[], kind}
       : {ok:false, kind, error:msg.error});
+    return;
+  }
+  if(msg.type==="tool_event" && msg.event){
+    // P0 ToolEvent spine: bridge (or a content script) fanned a lifecycle
+    // event out. Mirror it to every provider tab + popup so P1 Dock/Timeline
+    // can render without opening their own sockets. Never resolves pending.
+    const ev = msg.event;
+    try {
+      if(ev.status === "running"){
+        agentTools.running = { name: ev.tool || "", since: ev.startTime || Date.now() };
+      } else if(ev.status === "success" || ev.status === "error" || ev.status === "timeout" || ev.status === "cancelled" || ev.status === "stale"){
+        agentTools.running = null;
+        if(ev.tool){
+          agentTools.lastUsed[ev.tool] = Date.now();
+          const keys = Object.keys(agentTools.lastUsed);
+          if(keys.length > 200) delete agentTools.lastUsed[keys[0]];
+          agentTools.lastResult = { name: ev.tool, ok: ev.status === "success", durationMs: ev.durationMs || 0, ts: Date.now() };
+        }
+      }
+    } catch (e) {}
+    // P4: record into the dashboard ring (dedup by id — same event may
+    // arrive from both the content-script forward and the bridge broadcast).
+    try {
+      if (ev && ev.id) {
+        const ix = recentEvents.findIndex((x) => x && x.id === ev.id);
+        const lite = {
+          id: ev.id,
+          tool: ev.tool || "?",
+          category: ev.category || "tool",
+          status: ev.status || "queued",
+          durationMs: typeof ev.durationMs === "number" ? ev.durationMs : null,
+          startTime: ev.startTime || Date.now(),
+          ts: Date.now(),
+        };
+        if (ix >= 0) recentEvents[ix] = lite;
+        else recentEvents.push(lite);
+        while (recentEvents.length > RECENT_EVENTS_MAX) recentEvents.shift();
+      }
+    } catch (e) {}
+    try {
+      const skipTab = (opts && opts.skipTabId) || -1;
+      chrome.tabs.query({url:PROVIDER_URLS.map(h=>"*://"+h+"/*")}, tabs=>{
+        for(const t of tabs||[]){
+          if(t.id === skipTab) continue;
+          chrome.tabs.sendMessage(t.id, {type:"rolink-tool-event", event:ev}).catch(()=>{});
+        }
+      });
+    } catch (e) {}
+    broadcastStatus();
     return;
   }
   if(msg.type==="server_changed"){
@@ -222,6 +276,7 @@ function statusObj(){
     bridgeState: deriveBridgeState(),
     nudgeStats: getNudgeStats(),
     agent: agentTools,
+    recent: recentEvents.slice(-RECENT_EVENTS_MAX),
     bridgeVersion: chrome.runtime.getManifest().version
   };
 }
@@ -250,6 +305,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse)=>{
           }
         }
         broadcastStatus();
+        sendResponse({ok:true});
+        break;
+      }
+      case "tool_event": {
+        // P0: content-script bus forwards lifecycle events here so other
+        // tabs + the popup see them. Reuse the bridge-message path, skipping
+        // the origin tab (it already has the event locally).
+        try {
+          const skipTabId = (_sender && _sender.tab && _sender.tab.id) || -1;
+          handleBridgeMessage({ type: "tool_event", event: msg.event }, { skipTabId });
+        } catch (e) {}
         sendResponse({ok:true});
         break;
       }

@@ -112,3 +112,45 @@ function mcpStatus(msg, err) {
 
 document.getElementById("addServer").onclick = addServer;
 refreshMcpList();
+
+// ── P4 HUD category toggles ─────────────────────────────────────────
+// Must stay in sync with ui/toolHud/toolRegistry.js CATEGORY_ORDER/COLORS.
+// Stored as an array of hidden category names under `rl-hidden-cats`.
+const HUD_CATS = [
+  ["read", "#5B8DEF", "Reads & queries"],
+  ["edit", "#FFB800", "Edits & creates"],
+  ["inspect", "#00E5FF", "Snapshots & explore"],
+  ["generate", "#FF6B35", "Generators"],
+  ["asset", "#F472B6", "Marketplace assets"],
+  ["visual", "#A855F7", "UI, light & sound"],
+  ["test", "#00FF88", "Tests & sims"],
+  ["tool", "#94A3B8", "Ops & misc"],
+];
+const HIDDEN_CATS_KEY = "rl-hidden-cats";
+const catBox = document.getElementById("catToggles");
+function renderCatToggles(hidden) {
+  const set = new Set(Array.isArray(hidden) ? hidden : []);
+  catBox.innerHTML = HUD_CATS.map(([name, color, desc]) => `
+    <label class="cat-row">
+      <input type="checkbox" data-cat="${name}" ${set.has(name) ? "" : "checked"}>
+      <span class="cat-dot" style="background:${color}"></span>
+      <span class="cn">${name}</span>
+      <span class="cd">${desc}</span>
+    </label>`).join("");
+  catBox.querySelectorAll("input[data-cat]").forEach(box => {
+    box.onchange = () => {
+      const nowHidden = HUD_CATS.map(([n]) => n).filter(n => {
+        const el = catBox.querySelector(`input[data-cat="${n}"]`);
+        return el && !el.checked;
+      });
+      chrome.storage.local.set({ [HIDDEN_CATS_KEY]: nowHidden }, () => {
+        s.textContent = "Categories saved";
+        s.className = "status ok";
+        setTimeout(() => { s.textContent = ""; s.className = "status"; }, 1500);
+      });
+    };
+  });
+}
+chrome.storage.local.get([HIDDEN_CATS_KEY], v => {
+  renderCatToggles(v && v[HIDDEN_CATS_KEY]);
+});

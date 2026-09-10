@@ -1589,6 +1589,75 @@ def _ai_readable_error(kind: str, raw: str, tool: str) -> str:
         return f"ERROR calling {tool}: {raw}\nCheck tool name and required arguments from the system prompt list."
     return raw
 
+# ── P0 ToolEvent spine ──────────────────────────────────────────────────
+# Mirrors rolink-extension/core/config.js toolCategory() (coarse on purpose;
+# the extension emits the authoritative category with its queued/running
+# events; the P1 Dock/Timeline and P3 Studio HUD fall back to this mapping
+# for bridge-originated events).
+def _tool_category(name):
+    n = (name or "").lower()
+    if n in ("take_snapshot", "get_snapshot", "rollback", "diff_snapshots",
+             "get_instances", "find_instance", "list_commands"):
+        return "inspect"
+    if n.startswith("generate_") or n == "compile_visual_graph":
+        return "generate"
+    if n in ("search_asset", "import_asset", "apply_material"):
+        return "asset"
+    if n in ("create_ui", "create_animation_track", "play_animation",
+             "set_lighting", "add_particle_emitter", "play_sound",
+             "send_notification"):
+        return "visual"
+    if ("run_tests" in n or "simulate" in n or "sandbox" in n
+            or "playtest" in n or "step_through" in n
+            or "watch_variable" in n or "breakpoint" in n
+            or "performance" in n or "optimize_performance" in n
+            or n in ("continue_execution", "discard_sandbox",
+                     "confirm_sandbox_apply")):
+        return "test"
+    if (n.startswith("get_") or n.startswith("list_")
+            or n.startswith("search_") or n.startswith("find_")
+            or n.startswith("suggest_") or n.startswith("report_")
+            or n in ("validate_command", "suggest_ordering", "resolve_path",
+                     "ensure_path", "explain_code", "review_code",
+                     "predict_bug", "export_session_log", "replay_session",
+                     "compare_sessions", "session_users", "export_project",
+                     "git_log")):
+        return "read"
+    if ("event_handler" in n or "run_function" in n or "set_terrain" in n
+            or "place_parts" in n or "create_model" in n
+            or "set_ui_" in n or "bind_ui" in n):
+        return "edit"
+    if n in ("execute_luau", "run_code", "set_script_content", "create_module",
+             "create_instance", "set_properties", "set_property",
+             "delete_instance", "clone_instance", "move_instance",
+             "set_datastore_value", "setup_datastore",
+             "create_project", "switch_project", "import_project",
+             "apply_template", "add_template", "refactor_code", "load_plugin",
+             "git_commit", "git_rollback", "adjust_difficulty",
+             "set_difficulty_profile", "set_breakpoint", "remove_breakpoint"):
+        return "edit"
+    return "tool"
+
+
+async def broadcast_tool_event(event):
+    """Fan a ToolEvent out to every connected extension tab.
+
+    P1 SideDock/Timeline render from this stream; the agent loop never waits
+    on it, so failures here are swallowed (best-effort).
+    """
+    if not clients:
+        return
+    try:
+        payload = json.dumps({"type": "tool_event", "event": event})
+    except (TypeError, ValueError):
+        return
+    for ws in list(clients):
+        try:
+            await ws.send(payload)
+        except Exception:
+            pass
+
+
 def safe_call(name, arguments, timeout):
     """Never raises. Always returns a dict the extension can feed back. Deterministic handle_call_tool."""
     if not name or not isinstance(name, str):
@@ -1652,11 +1721,42 @@ def handle_call_tool(name, arguments, timeout):
     return safe_call(name, arguments, timeout)
 
 
-async def run_tool_task(ws, name, args, timeout, rid):
+async def run_tool_task(ws, name, args, timeout, rid, session_id=None, turn_id=None):
     """Execute one tool off the socket read loop and send its result back."""
     t0 = time.monotonic()
+    start_wall = int(time.time() * 1000)
+    # P0: lifecycle broadcast (running → terminal). Best-effort; the
+    # tool_result below remains the authoritative reply for the agent loop.
+    try:
+        await broadcast_tool_event({
+            "id": rid, "tool": name, "category": _tool_category(name),
+            "status": "running",
+            "args": args if isinstance(args, dict) else {},
+            "startTime": start_wall,
+            "sessionId": session_id, "turnId": turn_id,
+        })
+    except Exception:
+        pass
     res = await asyncio.to_thread(safe_call, name, args, timeout)
     elapsed = time.monotonic() - t0
+    try:
+        if res.get("ok"):
+            terminal = "success"
+        elif res.get("kind") == "timeout":
+            terminal = "timeout"
+        else:
+            terminal = "error"
+        await broadcast_tool_event({
+            "id": rid, "tool": name, "category": _tool_category(name),
+            "status": terminal,
+            "args": args if isinstance(args, dict) else {},
+            "result": res.get("text") if res.get("ok") else res.get("error"),
+            "startTime": start_wall,
+            "durationMs": int(elapsed * 1000),
+            "sessionId": session_id, "turnId": turn_id,
+        })
+    except Exception:
+        pass
     tag = "gr" if res.get("ok") else "rd"
     summary = (res.get("text") or res.get("error") or "")[:80].replace("\n", " ")
     slow = "  [SLOW]" if elapsed > 5 else ""
@@ -1836,7 +1936,9 @@ async def handler(ws):
                     log(f"   DEBUG dispatch id={rid} name={name} hash={_h} args_keys={list(args.keys())}", "dim", terminal=False)
                 # Deterministic execution via handle_call_tool (validates, checks studio, etc.)
                 # Run as BACKGROUND task so pings stay responsive (sequential guarantee is client-side)
-                asyncio.create_task(run_tool_task(ws, name, args, timeout, rid))
+                asyncio.create_task(run_tool_task(
+                    ws, name, args, timeout, rid,
+                    msg.get("sessionId"), msg.get("turnId")))
 
             elif mtype in ("add_server", "remove_server"):
                 # Adding/removing an addon MCP server rewrites config.json, which

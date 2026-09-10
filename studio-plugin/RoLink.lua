@@ -11,6 +11,8 @@ local PLUGIN_NAME = "RoLink 4.0"
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (111 tools, poll 200ms)", "rbxassetid://0")
 btn.ClickableWhenViewportHidden = true
+local hudBtn = toolbar:CreateButton("HUD", "RoLink hologram HUD — tool visuals in Studio (P3)", "rbxassetid://0")
+hudBtn.ClickableWhenViewportHidden = true
 local enabled = true
 
 local function log(msg) print("[RoLink] "..msg) end
@@ -77,6 +79,313 @@ local function findByPath(path:string): Instance?
   pcall(function() for _,v in ipairs(game:GetDescendants()) do if v.Name==path then found=v; break end end end)
   return found
 end
+
+-- ── P3 ToolVisualizer (embedded copy — VISUALIZER SYNC) ────────────────
+-- Keep in sync with studio-plugin/src/toolVisualizer.luau (source of truth).
+-- In-Studio hologram HUD: counters, ghost highlights, script diff popups,
+-- progress chips, subtle sounds. Every entry pcall-guarded: a HUD failure
+-- must never fail a tool command. Toggle via the "HUD" toolbar button.
+local VEnabled = true
+local VSoundOn = true
+local VHud: ScreenGui? = nil
+local VHead: TextLabel? = nil
+local VLog: ScrollingFrame? = nil
+local VStats = { total = 0, running = 0, errors = 0 }
+local VPending: { [string]: any } = {}
+local VCatColor: { [string]: Color3 } = {
+	read = Color3.fromRGB(91, 141, 239), edit = Color3.fromRGB(255, 184, 0),
+	inspect = Color3.fromRGB(0, 229, 255), generate = Color3.fromRGB(255, 107, 53),
+	asset = Color3.fromRGB(244, 114, 182), visual = Color3.fromRGB(168, 85, 247),
+	test = Color3.fromRGB(0, 255, 136), tool = Color3.fromRGB(148, 163, 184),
+}
+local VCatExact: { [string]: string } = {
+	take_snapshot = "inspect", rollback = "inspect", diff_snapshots = "inspect",
+	get_instances = "inspect", find_instance = "inspect",
+	execute_luau = "edit", set_script_content = "edit", create_module = "edit",
+	create_instance = "edit", set_properties = "edit", delete_instance = "edit",
+	clone_instance = "edit", move_instance = "edit", run_function = "edit",
+	add_event_handler = "edit", remove_event_handler = "edit", ensure_path = "edit",
+	resolve_path = "edit", place_parts = "edit", create_model_from_table = "edit",
+	set_terrain_region = "edit", set_ui_property = "edit", bind_ui_click = "edit",
+	set_datastore_value = "edit", setup_datastore = "edit", create_project = "edit",
+	import_project = "edit", switch_project = "edit", set_breakpoint = "edit",
+	remove_breakpoint = "edit", apply_template = "edit", add_template = "edit",
+	refactor_code = "edit", load_plugin = "edit", git_commit = "edit",
+	git_rollback = "edit", adjust_difficulty = "edit", set_difficulty_profile = "edit",
+	get_script_content = "read", get_context_summary = "read", get_function_signatures = "read",
+	get_property_value = "read", get_all_properties = "read", search_by_attribute = "read",
+	get_referenced_instances = "read", get_global_variables = "read", get_dependency_graph = "read",
+	get_ui_tree = "read", get_datastore_value = "read", get_projects = "read",
+	get_suggestions = "read", get_analytics = "read", get_metrics = "read",
+	get_memory_usage = "read", get_performance_stats = "read", get_time = "read",
+	list_templates = "read", list_plugins = "read", list_sessions = "read",
+	git_log = "read", explain_code = "read", validate_command = "read",
+	suggest_ordering = "read", suggest_design = "read", suggest_balance = "read",
+	export_session_log = "read", replay_session = "read", compare_sessions = "read",
+	session_users = "read", report_metrics = "read", report_analytics = "read",
+	predict_bug = "read", review_code = "read", export_project = "read",
+	generate_terrain = "generate", generate_asset = "generate", generate_level = "generate",
+	generate_quest = "generate", generate_sound = "generate", generate_sound_pack = "generate",
+	generate_test = "generate", compile_visual_graph = "generate",
+	search_asset = "asset", import_asset = "asset", apply_material = "asset",
+	create_ui = "visual", create_animation_track = "visual", play_animation = "visual",
+	set_lighting = "visual", add_particle_emitter = "visual", play_sound = "visual",
+	send_notification = "visual",
+	run_tests = "test", simulate_ticks = "test", simulate_economy = "test",
+	run_in_sandbox = "test", run_playtest = "test", confirm_sandbox_apply = "test",
+	discard_sandbox = "test", step_through = "test", continue_execution = "test",
+	watch_variable = "test", analyze_performance = "test",
+	set_performance_threshold = "test", optimize_performance = "test",
+	batch_queue = "tool", cancel_command = "tool", train_model = "tool",
+	plan_game = "tool", execute_plan = "tool", learning_mode = "tool",
+}
+local VSoundTick = "rbxasset://sounds/electronicpingshort.wav"
+local VSoundOk = "rbxasset://sounds/bass.wav"
+local VSoundErr = "rbxasset://sounds/electronicpingshort.wav"
+local function vCategory(tool: string): string
+	local hit = VCatExact[tool]
+	if hit then return hit end
+	local n = (tool or ""):lower()
+	if n:find("generate", 1, true) then return "generate" end
+	if n:find("search_asset", 1, true) or n:find("import_asset", 1, true) then return "asset" end
+	if n:find("animation", 1, true) or n:find("lighting", 1, true) or n:find("particle", 1, true) then return "visual" end
+	if n:find("test", 1, true) or n:find("simulat", 1, true) or n:find("sandbox", 1, true) or n:find("playtest", 1, true) or n:find("breakpoint", 1, true) then return "test" end
+	if n:sub(1, 4) == "get_" or n:sub(1, 5) == "list_" or n:find("suggest", 1, true) or n:find("search", 1, true) then return "read" end
+	return "tool"
+end
+local function vPlay(id: string, vol: number, speed: number)
+	if not VSoundOn then return end
+	pcall(function()
+		local svc = game:GetService("SoundService")
+		local s = Instance.new("Sound")
+		s.SoundId = id; s.Volume = vol; s.PlaybackSpeed = speed
+		svc:PlayLocalSound(s)
+		task.delay(3, function() pcall(function() s:Destroy() end) end)
+	end)
+end
+local function vHead()
+	pcall(function()
+		if VHead then VHead.Text = string.format("RoLink • 111 Tools   |   running %d   |   done %d   |   errors %d", VStats.running, VStats.total, VStats.errors) end
+	end)
+end
+local function vLogLine(text: string, color: Color3?)
+	pcall(function()
+		if not VLog then return end
+		local line = Instance.new("TextLabel")
+		line.BackgroundTransparency = 1; line.Font = Enum.Font.Code; line.TextSize = 11
+		line.TextXAlignment = Enum.TextXAlignment.Left; line.Text = text:sub(1, 120)
+		line.TextColor3 = color or Color3.fromRGB(230, 237, 243)
+		line.Size = UDim2.new(1, -8, 0, 16); line.Parent = VLog
+		local count = 0
+		for _, k in ipairs(VLog:GetChildren()) do
+			if k:IsA("TextLabel") then count += 1; if count > 30 then k:Destroy() break end end
+		end
+	end)
+end
+local function vEnsureHud(): boolean
+	if VHud and VHud.Parent then return true end
+	local coreGui: DataModel? = nil
+	pcall(function() coreGui = game:GetService("CoreGui") end)
+	if not coreGui then return false end
+	local ok = pcall(function()
+		local old = (coreGui :: DataModel):FindFirstChild("RoLinkHUD")
+		if old then old:Destroy() end
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "RoLinkHUD"; gui.ResetOnSpawn = false; gui.DisplayOrder = 999; gui.Parent = coreGui
+		local panel = Instance.new("Frame")
+		panel.AnchorPoint = Vector2.new(1, 0); panel.Position = UDim2.new(1, -12, 0, 40)
+		panel.Size = UDim2.new(0, 300, 0, 30)
+		panel.BackgroundColor3 = Color3.fromRGB(14, 17, 24); panel.BackgroundTransparency = 0.08
+		panel.BorderSizePixel = 0; panel.Parent = gui
+		local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 10); corner.Parent = panel
+		local head = Instance.new("TextLabel")
+		head.BackgroundTransparency = 1; head.Font = Enum.Font.GothamBold; head.TextSize = 11
+		head.TextColor3 = Color3.fromRGB(230, 237, 243); head.TextXAlignment = Enum.TextXAlignment.Left
+		head.Size = UDim2.new(1, -16, 1, 0); head.Position = UDim2.new(0, 8, 0, 0)
+		head.Text = "RoLink • 111 Tools"; head.Parent = panel
+		local logF = Instance.new("ScrollingFrame")
+		logF.Position = UDim2.new(0, 0, 1, 4); logF.Size = UDim2.new(1, 0, 0, 0)
+		logF.AutomaticCanvasSize = Enum.AutomaticSize.Y; logF.CanvasSize = UDim2.new(0, 0, 0, 0)
+		logF.ScrollBarThickness = 4; logF.BackgroundColor3 = Color3.fromRGB(14, 17, 24)
+		logF.BackgroundTransparency = 0.08; logF.BorderSizePixel = 0; logF.Visible = false; logF.Parent = panel
+		local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0, 8); pad.PaddingTop = UDim.new(0, 4); pad.Parent = logF
+		local layout = Instance.new("UIListLayout"); layout.SortOrder = Enum.SortOrder.LayoutOrder; layout.Parent = logF
+		VHud = gui; VHead = head; VLog = logF
+	end)
+	if ok then vHead() end
+	return ok
+end
+local function vFocusPos(): Vector3
+	local pos = Vector3.new(0, 20, 0)
+	pcall(function()
+		local cam = workspace.CurrentCamera
+		if cam then pos = cam.Focus.Position end
+	end)
+	return pos
+end
+local function vShowChip(cmd: any, color: Color3, phase: string, note: string)
+	pcall(function()
+		local args = cmd.args or {}
+		local target = findByPath(args.path or args.parent or "")
+		local anchor: Instance? = nil
+		if target and target:IsA("BasePart") then
+			anchor = target
+		else
+			local pos = vFocusPos()
+			if target then pcall(function() pos = (target :: Model):GetPivot().Position + Vector3.new(0, 3, 0) end) end
+			local p = Instance.new("Part")
+			p.Name = "RoLinkPin_" .. tostring(cmd.id); p.Anchored = true
+			p.CanCollide = false; p.CanQuery = false; p.CanTouch = false
+			p.Transparency = 1; p.Size = Vector3.new(1, 1, 1); p.Position = pos; p.Parent = workspace
+			pcall(function() game:GetService("Debris"):AddItem(p, 12) end)
+			anchor = p
+		end
+		if not anchor then return end
+		local gui = Instance.new("BillboardGui")
+		gui.Name = "RoLinkChip_" .. tostring(cmd.id); gui.Adornee = anchor
+		gui.Size = UDim2.fromOffset(230, 56); gui.StudsOffset = Vector3.new(0, 3, 0)
+		gui.AlwaysOnTop = true; gui.LightInfluence = 0; gui.Parent = anchor
+		local frame = Instance.new("Frame")
+		frame.Size = UDim2.fromScale(1, 1); frame.BackgroundColor3 = Color3.fromRGB(14, 17, 24)
+		frame.BackgroundTransparency = 0.12; frame.BorderSizePixel = 0; frame.Parent = gui
+		local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(0, 8); fc.Parent = frame
+		local stroke = Instance.new("UIStroke"); stroke.Color = color; stroke.Thickness = 1.5; stroke.Parent = frame
+		local nameL = Instance.new("TextLabel")
+		nameL.BackgroundTransparency = 1; nameL.Font = Enum.Font.Code; nameL.TextSize = 13
+		nameL.TextColor3 = color; nameL.TextXAlignment = Enum.TextXAlignment.Left
+		nameL.Text = (phase == "done" and "✓ " or (phase == "error" and "✗ " or "◌ ")) .. tostring(cmd.tool)
+		nameL.Size = UDim2.new(1, -12, 0, 20); nameL.Position = UDim2.new(0, 6, 0, 4); nameL.Parent = frame
+		local sub = Instance.new("TextLabel")
+		sub.BackgroundTransparency = 1; sub.Font = Enum.Font.Gotham; sub.TextSize = 11
+		sub.TextColor3 = Color3.fromRGB(170, 178, 190); sub.TextXAlignment = Enum.TextXAlignment.Left
+		sub.Text = note; sub.Size = UDim2.new(1, -12, 0, 16); sub.Position = UDim2.new(0, 6, 0, 26); sub.Parent = frame
+		pcall(function() game:GetService("Debris"):AddItem(gui, phase == "run" and 30 or 8) end)
+		if phase == "run" then VPending[tostring(cmd.id) .. ":chip"] = gui end
+	end)
+end
+local function vGhost(createdPath: string?, color: Color3)
+	pcall(function()
+		if not createdPath then return end
+		local inst = findByPath(createdPath)
+		if not inst or not inst:IsA("BasePart") then return end
+		local box = Instance.new("SelectionBox")
+		box.Adornee = inst; box.Color3 = color; box.LineThickness = 0.08
+		box.SurfaceTransparency = 0.6; box.Parent = inst
+		pcall(function() game:GetService("Debris"):AddItem(box, 6) end)
+		-- Holographic beam from above: ghost shimmer on the new instance.
+		local beam = Instance.new("Beam")
+		local a0 = Instance.new("Attachment"); a0.Position = Vector3.new(0, 6, 0); a0.Parent = inst
+		local a1 = Instance.new("Attachment"); a1.Position = Vector3.new(0, -2, 0); a1.Parent = inst
+		beam.Attachment0 = a0; beam.Attachment1 = a1; beam.Color = ColorSequence.new(color)
+		beam.Width0 = 0.4; beam.Width1 = 1.6; beam.Transparency = NumberSequence.new(0.4)
+		beam.Parent = inst
+		pcall(function()
+			local d = game:GetService("Debris")
+			d:AddItem(beam, 6); d:AddItem(a0, 6); d:AddItem(a1, 6)
+		end)
+	end)
+end
+local function vDiffLines(before: string, after: string): string
+	local function split(s: string): { string }
+		local out: { string } = {}
+		for line in (s .. "\n"):gmatch("([^\n]*)\n") do table.insert(out, line) end
+		return out
+	end
+	local a, b = split(before), split(after)
+	local pre = 0
+	while pre < #a and pre < #b and a[pre + 1] == b[pre + 1] do pre += 1 end
+	local suf = 0
+	while suf < (#a - pre) and suf < (#b - pre) and a[#a - suf] == b[#b - suf] do suf += 1 end
+	local lines: { string } = {}
+	for i = pre + 1, #a - suf do if #lines >= 10 then table.insert(lines, "- …"); break end; table.insert(lines, "- " .. a[i]:sub(1, 90)) end
+	for i = pre + 1, #b - suf do if #lines >= 22 then table.insert(lines, "+ …"); break end; table.insert(lines, "+ " .. b[i]:sub(1, 90)) end
+	if #lines == 0 then return "= no line changes" end
+	return table.concat(lines, "\n")
+end
+local function vShowDiff(tool: string, path: string, diff: string)
+	pcall(function()
+		if not vEnsureHud() or not VHud then return end
+		local old = VHud:FindFirstChild("RoLinkDiff")
+		if old then old:Destroy() end
+		local frame = Instance.new("Frame")
+		frame.Name = "RoLinkDiff"; frame.AnchorPoint = Vector2.new(1, 0)
+		frame.Position = UDim2.new(1, -12, 0, 76); frame.Size = UDim2.new(0, 300, 0, 170)
+		frame.BackgroundColor3 = Color3.fromRGB(14, 17, 24); frame.BackgroundTransparency = 0.08
+		frame.BorderSizePixel = 0; frame.Parent = VHud
+		local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 10); c.Parent = frame
+		local title = Instance.new("TextLabel")
+		title.BackgroundTransparency = 1; title.Font = Enum.Font.GothamBold; title.TextSize = 11
+		title.TextColor3 = Color3.fromRGB(255, 184, 0); title.TextXAlignment = Enum.TextXAlignment.Left
+		title.Text = "✎ " .. tool .. "  " .. path:sub(1, 40)
+		title.Size = UDim2.new(1, -12, 0, 20); title.Position = UDim2.new(0, 6, 0, 4); title.Parent = frame
+		local body = Instance.new("TextLabel")
+		body.BackgroundTransparency = 1; body.Font = Enum.Font.Code; body.TextSize = 10
+		body.TextColor3 = Color3.fromRGB(230, 237, 243)
+		body.TextXAlignment = Enum.TextXAlignment.Left; body.TextYAlignment = Enum.TextYAlignment.Top
+		body.Text = diff:sub(1, 1200)
+		body.Size = UDim2.new(1, -12, 1, -28); body.Position = UDim2.new(0, 6, 0, 24); body.Parent = frame
+		task.delay(10, function() pcall(function() frame:Destroy() end) end)
+	end)
+end
+local function VisualizerOnClaim(cmd: any)
+	pcall(function()
+		if not VEnabled or not cmd then return end
+		local cat = (cmd.meta and cmd.meta.category) or vCategory(cmd.tool)
+		local color = VCatColor[cat] or VCatColor.tool
+		VStats.running += 1; vHead(); vPlay(VSoundTick, 0.25, 1.2)
+		vEnsureHud()
+		if VLog then VLog.Visible = true end
+		vLogLine("◌ " .. tostring(cmd.tool), color)
+		local args = cmd.args or {}
+		if cmd.tool == "set_script_content" and args.path then
+			local inst = findByPath(args.path)
+			if inst then
+				local ok, src = pcall(function() return (inst :: any).Source end)
+				VPending[tostring(cmd.id)] = { before = (ok and type(src) == "string") and src or "" }
+			end
+		end
+		vShowChip(cmd, color, "run", cat .. " · running…")
+	end)
+end
+local function VisualizerOnDone(cmd: any, result: any, err: string?, elapsed: number?)
+	pcall(function()
+		if not cmd then return end
+		local cat = (cmd.meta and cmd.meta.category) or vCategory(cmd.tool)
+		local color = VCatColor[cat] or VCatColor.tool
+		VStats.running = math.max(0, VStats.running - 1); VStats.total += 1
+		local okDone = err == nil
+		if not okDone then VStats.errors += 1 end
+		vHead()
+		if VEnabled then vPlay(okDone and VSoundOk or VSoundErr, okDone and 0.22 or 0.35, okDone and 1.4 or 0.55) end
+		local ms = ""
+		if type(elapsed) == "number" then ms = elapsed < 1 and string.format(" · %dms", math.floor(elapsed * 1000)) or string.format(" · %.1fs", elapsed) end
+		vLogLine((okDone and "✓ " or "✗ ") .. tostring(cmd.tool) .. ms, okDone and color or Color3.fromRGB(248, 81, 73))
+		if not VEnabled then return end
+		local key = tostring(cmd.id) .. ":chip"
+		local old = VPending[key]
+		if old then pcall(function() (old :: BillboardGui):Destroy() end); VPending[key] = nil end
+		vShowChip(cmd, okDone and color or Color3.fromRGB(248, 81, 73), okDone and "done" or "error", cat .. (okDone and " · done" or " · failed") .. ms)
+		if okDone and result and type(result) == "table" then
+			local created = (result :: any).created or (result :: any).cloned or (result :: any).model
+			if type(created) == "string" then vGhost(created, color) end
+		end
+		if okDone and cmd.tool == "set_script_content" then
+			local args = cmd.args or {}
+			local pend = VPending[tostring(cmd.id)]
+			local before = (pend and pend.before) or ""
+			VPending[tostring(cmd.id)] = nil
+			if type(args.content) == "string" then vShowDiff(cmd.tool, tostring(args.path or ""), vDiffLines(before, args.content)) end
+		end
+	end)
+end
+hudBtn.Click:Connect(function()
+	VEnabled = not VEnabled
+	hudBtn:SetActive(VEnabled)
+	pcall(function() if VHud then VHud.Enabled = VEnabled end end)
+	log("hologram HUD " .. (VEnabled and "enabled" or "disabled"))
+end)
+hudBtn:SetActive(true)
+-- ── end P3 ToolVisualizer ─────────────────────────────────────────────
 
 local function executeCommand(cmd:any): (any, string?)
   local tool=cmd.tool; local args=cmd.args or {}; local result:any=nil; local err:string?=nil
@@ -229,7 +538,9 @@ local function poll()
   if not ok2 then return end
   local cmd=data.command; if not cmd then return end
   log("executing "..cmd.id.." tool="..cmd.tool)
+  VisualizerOnClaim(cmd)
   local result, err, elapsed=executeCommand(cmd)
+  VisualizerOnDone(cmd, result, err, elapsed)
   reportResult(cmd.id, result, err, elapsed)
   if err then warn("[RoLink] "..err) end
 end

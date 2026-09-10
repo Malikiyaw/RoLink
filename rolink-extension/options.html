@@ -29,6 +29,12 @@ button.danger{background:#21262d;border-color:#da3633;color:var(--red)}
 .status.err{color:var(--red)}
 .kbd{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px}
 .footer{text-align:center;color:var(--muted);font-size:11px;margin-top:24px;padding-top:20px;border-top:1px solid var(--border)}
+.cat-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin:6px 0;background:#0d1117;cursor:pointer}
+.cat-row:hover{border-color:#3a424d}
+.cat-row input{width:auto;margin:0;accent-color:var(--accent)}
+.cat-dot{width:10px;height:10px;border-radius:50%;flex:none}
+.cat-row .cn{font-weight:600;font-size:13px}
+.cat-row .cd{margin-left:auto;font-size:11px;color:var(--muted)}
 </style>
 <header>
   <div class="logo">R</div>
@@ -74,6 +80,12 @@ button.danger{background:#21262d;border-color:#da3633;color:var(--red)}
     <input id="newServerEnv" placeholder="optional env (KEY=value,KEY2=value2)" style="flex:1">
     <span class="status" id="mcpStatus"></span>
   </div>
+</section>
+
+<section>
+  <h2><span class="ico">🎛</span> HUD categories</h2>
+  <p class="desc">Show or hide tool families in the Side Dock feed and the Bottom Timeline filmstrip. The Ctrl+K palette browser and the in-Studio hologram HUD always show everything.</p>
+  <div id="catToggles"></div>
 </section>
 
 <section>

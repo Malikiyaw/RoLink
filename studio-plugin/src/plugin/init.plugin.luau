@@ -15,6 +15,20 @@ btn.ClickableWhenViewportHidden = true
 
 local enabled = true
 local statusText = "RoLink: connecting..."
+
+-- P3 hologram HUD (optional): src/toolVisualizer.luau as a sibling module.
+-- Single-file installs (no sibling) degrade gracefully to no HUD.
+local hudBtn = toolbar:CreateButton("HUD", "RoLink hologram HUD — tool visuals (P3)", "rbxassetid://0")
+hudBtn.ClickableWhenViewportHidden = true
+local ToolVisualizer: any = nil
+pcall(function()
+	local sib = script:FindFirstChild("toolVisualizer")
+		or (script.Parent and script.Parent:FindFirstChild("toolVisualizer"))
+		or (script.Parent and script.Parent.Parent and script.Parent.Parent:FindFirstChild("toolVisualizer"))
+	if sib and sib:IsA("ModuleScript") then
+		ToolVisualizer = require(sib)
+	end
+end)
 local wsClient: any = nil
 local useWS = false
 
@@ -34,6 +48,29 @@ end)
 
 local function log(msg: string)
 	print("[RoLink] " .. msg)
+end
+
+if ToolVisualizer then
+	pcall(function()
+		ToolVisualizer.init({
+			resolve = function(path: string): Instance?
+				local ok, res = pcall(function()
+					if path == "workspace" then return workspace end
+					if path:sub(1, 5) == "game." then path = path:sub(6) end
+					return game:FindFirstChild(path, true)
+				end)
+				return (ok and res) or nil
+			end,
+			log = function(m: string) log(m) end,
+		})
+	end)
+	hudBtn.Click:Connect(function()
+		pcall(function()
+			ToolVisualizer.setEnabled(not ToolVisualizer.isEnabled())
+			hudBtn:SetActive(ToolVisualizer.isEnabled())
+		end)
+	end)
+	hudBtn:SetActive(true)
 end
 
 -- Sandbox env allowlist
@@ -257,7 +294,9 @@ local function poll()
 	end
 	statusText = "RoLink: executing " .. tostring(cmd.tool)
 	log("executing " .. cmd.id .. " tool=" .. cmd.tool)
+	if ToolVisualizer then pcall(function() ToolVisualizer.onClaim(cmd) end) end
 	local result, err, elapsed = executeCommand(cmd)
+	if ToolVisualizer then pcall(function() ToolVisualizer.onDone(cmd, result, err, elapsed) end) end
 	reportResult(cmd.id, result, err, elapsed)
 	if err then
 		warn("[RoLink] error " .. tostring(err))

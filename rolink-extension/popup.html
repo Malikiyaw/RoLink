@@ -118,6 +118,21 @@
     .toast{position:fixed;bottom:50px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:11px;box-shadow:0 4px 12px rgba(0,0,0,.5);opacity:0;transition:opacity .2s;pointer-events:none;z-index:10}
     .toast.show{opacity:1}
     .toast.err{border-color:#f87171;color:#fca5a5}
+    /* P4 Bridge Dashboard: live tool-event feed */
+    .ev-box{max-height:220px;overflow-y:auto;background:rgba(0,0,0,.25);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:10.5px}
+    .ev-box::-webkit-scrollbar{width:5px}
+    .ev-box::-webkit-scrollbar-thumb{background:#3a3a44;border-radius:3px}
+    .ev-row{display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+    .ev-row:last-child{border-bottom:none}
+    .ev-dot{width:7px;height:7px;border-radius:50%;background:#6b7280;flex:none}
+    .ev-dot[data-s="running"]{background:var(--yl);animation:pulse 1.2s infinite}
+    .ev-dot[data-s="queued"]{background:#6b7280}
+    .ev-dot[data-s="success"]{background:var(--green)}
+    .ev-dot[data-s="error"],.ev-dot[data-s="timeout"]{background:var(--red)}
+    .ev-dot[data-s="cancelled"],.ev-dot[data-s="stale"]{background:var(--muted)}
+    .ev-name{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .ev-cat{font-size:9px;color:var(--muted);border:1px solid var(--border);border-radius:8px;padding:0 5px;flex:none}
+    .ev-meta{margin-left:auto;font-size:9px;color:var(--muted);white-space:nowrap;flex:none}
   </style>
 </head>
 <body>
@@ -127,6 +142,7 @@
       <div class="tab active" data-tab="status">Status</div>
       <div class="tab" data-tab="tools">Tools</div>
       <div class="tab" data-tab="logs">Logs</div>
+      <div class="tab" data-tab="events">Events</div>
     </div>
     <!-- STATUS PANEL -->
     <div class="panel active" id="panel-status">
@@ -171,6 +187,12 @@
       <div class="logs-box" id="logsList">No logs yet</div>
       <button class="ghost" id="copyLogs" style="margin-top:6px">Copy logs</button>
       <button class="ghost" id="clearLogs" style="margin-top:6px">Clear</button>
+    </div>
+    <!-- EVENTS PANEL (P4 Bridge Dashboard) -->
+    <div class="panel" id="panel-events">
+      <div class="row dim" id="eventsSummary">No tool activity yet</div>
+      <div class="ev-box" id="eventsList"><span style="color:var(--muted)">Waiting for tool events…</span></div>
+      <div class="row dim" style="margin-top:6px">Live feed from all tabs + bridge — newest first</div>
     </div>
   </div>
   <div class="toast" id="toast"></div>

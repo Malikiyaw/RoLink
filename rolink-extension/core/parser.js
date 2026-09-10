@@ -549,7 +549,9 @@
       if (parser === parseMcp || parser === parseBare) {
         parsed = applyRawFields(parsed, extractRawBlocks(slice, allowed));
       }
-      out.push(cleanLuaCall(parsed));
+      const cleaned = cleanLuaCall(parsed);
+      out.push(cleaned);
+      if (cleaned && cleaned.tool) maybeEmitQueued(cleaned);
       remaining = slice.slice(Math.max(parsed.raw?.length || 0, 8));
     }
     return out;
@@ -605,10 +607,22 @@
 
   // Augment extract() to record outcomes.
   const _origExtract = extract;
+  // P0 ToolEvent spine: publish status "queued" for every recognized tool
+  // block. Guarded — parser behavior is unchanged when the bus is absent
+  // (unit tests without tool-events.js, stripped pages).
+  function maybeEmitQueued(parsed) {
+    try {
+      const bus = (typeof window !== "undefined" && (window.RolinkToolEvents || window.ToolEventBus)) || null;
+      if (bus && parsed && parsed.tool && typeof bus.publish === "function") {
+        bus.publish({ tool: parsed.tool, args: parsed.args || {}, status: "queued", startTime: Date.now() });
+      }
+    } catch (e) {}
+  }
   function extractInstrumented(text) {
     const r = _origExtract(text);
     if (!r && hasToolSignature(text)) recordNudge("malformed");
     else if (r && r.repaired) recordRepair();
+    if (r && r.tool) maybeEmitQueued(r);
     return r;
   }
 
