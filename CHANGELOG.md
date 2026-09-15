@@ -1,4 +1,12 @@
 # Changelog
+## 5.11.1 - fix Arena Agent page stuck send ("did not accept the injected message")
+
+**Symptom.** On `arena.ai/agent` the loop started (bridge connected, 137 tools) but the greeting injection failed 4/4 attempts: text sat unsent because the Agent composer differs from Direct chat and the generic send silently no-oped.
+
+**Arena send hardening** (`providers/arena.js`): agent-first editor resolution (`agentEditor()`), kind-aware insert with verification (`execCommand("insertText")` + `beforeinput` for contenteditable, React-aware value set for textarea — the attempt aborts when text never lands instead of burning retries), and a send cascade that never silently no-ops (Agent submit button → generic send button with stop-state guard → enclosing form `requestSubmit` → synthetic Enter, once per attempt). Fired leg recorded on `P.lastSendLeg`; new `P.describeComposer()` one-liner (mode + editor + send buttons + leg) surfaces in the Activity feed on failure. `agentBusy()` also honors a visible Stop control (outside `#rl-root`). Direct chat path unchanged.
+
+**Loop** (`core/main.js` `submitAndGetBase`): 6 attempts on Agent Mode (4 elsewhere); failure feed line now includes the composer diagnosis. **Tests**: Arena contract asserts `describeComposer`/`lastSendLeg`/cascade markers.
+
 ## 5.11.0 - Arena Agent Mode support (Direct + Agent, Battle/Side-by-Side still blocked)
 
 **Arena provider** (`providers/arena.js`): `arenaMode()` now returns `direct|agent|battle|side-by-side|unknown` (combo text + `/agent` path + Agent DOM markers) with new `isAgentMode()` helper. `ensureComposerReady` refuses only Battle / Side-by-Side; Direct + Agent + unknown pass. `restoreDirectOnce()` never flips Agent Mode away. Agent-aware `readAssistant` (latest settled plan-step/task node, generic fallback), `isGenerating`/`isHardGenerating` (aria-busy/progress markers), send-until-clear extended to ~12s, tool-spot expansion of collapsed steps. Selectors widened to agent-step/task/plan nodes.

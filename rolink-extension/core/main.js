@@ -1846,7 +1846,11 @@ ${customBlock}
       // throttle rendering, which made landed-check unreliable.
       let tries = 0, messageSent = false;
       const myGen = A.startGen;
-      while(!messageSent && !landed() && tries < 4 && A.startGen === myGen && !A.stopping){
+      // Agent Mode composers are slower/agglutinative: allow more attempts
+      // there (Direct chat keeps the historic 4).
+      let maxTries = 4;
+      try{ if(P.isAgentMode && P.isAgentMode()) maxTries = 6; }catch{}
+      while(!messageSent && !landed() && tries < maxTries && A.startGen === myGen && !A.stopping){
         if(document.hidden){
           if(!(await waitForVisible()) || A.stopping) break;
         }
@@ -1865,7 +1869,9 @@ ${customBlock}
       }
       if(!messageSent && !landed() && A.startGen === myGen && !A.stopping){
         diag("send.failed", { tries });
-        pushFeed("err", "✗", `${P.displayName} did not accept the injected message after ${tries} attempts. Send a short message yourself to resume.`);
+        let composerDiag = "";
+        try{ if(P.describeComposer) composerDiag = " Composer: " + P.describeComposer(); }catch{}
+        pushFeed("err", "✗", `${P.displayName} did not accept the injected message after ${tries} attempts.${composerDiag} Send a short message yourself to resume.`);
         showBanner("Send failed — type a short message to resume", "warn", 6000);
       }
       return base;

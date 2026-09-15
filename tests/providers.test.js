@@ -89,11 +89,17 @@ function assert(cond, msg){ if(!cond) throw new Error(msg); }
     assert(P.isGenerating() === false, "arena: not generating without DOM");
     assert(P.isHardGenerating() === false, "arena: hard check without DOM");
     assert(P.findToolBlockSpot(null) === null, "arena: null item -> null spot");
+    assert(typeof P.describeComposer === "function", "arena: describeComposer exposed");
+    assert(typeof P.typeAndSend === "function", "arena: typeAndSend exposed");
+    const desc = P.describeComposer();
+    assert(typeof desc === "string" && desc.indexOf("mode=") === 0, "arena: describeComposer no-DOM string");
+    assert(P.lastSendLeg === null, "arena: no send leg without DOM");
     const ready = await P.ensureComposerReady("test");
     assert(ready && ready.ready === true, "arena: gate open for unknown mode (no-DOM)");
     for (const needle of [
       "isAgentMode", "aria-busy", "plan-step", "/agent",
-      "Battle / Side-by-Side",
+      "Battle / Side-by-Side", "execCommand", "describeComposer",
+      "requestSubmit", "lastSendLeg",
     ]) assert(code.includes(needle), "arena.js contains " + needle);
     ok("arena agent-mode contract (no-DOM safe)");
   } catch (e) { bad("arena contract", e); }
