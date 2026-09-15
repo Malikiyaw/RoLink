@@ -225,6 +225,7 @@
     activeTurnItem: null,     // the current assistant turn being processed
     nudgesLeft: 1,            // Q2: only self-heal cantRun once, free chat after greeting
     intentNudgesLeft: 2,      // prose-intent net: model named a tool without emitting its block (max 2 per session)
+    refusalNudgesLeft: 2,     // identity-refusal net: model denies the Studio channel (Arena Agent Mode) — rebut with live proof (max 2, toolCount may be 0)
     toolNames: new Set(),     // known tool names from the live tool list
     turnedStopped: false,     // the AI's own stop button was clicked
     stoppedAt: 0,             // timestamp of stop (for grace windows)
@@ -1404,6 +1405,43 @@ ${customBlock}
 ###MCP_TOOL###
 {"tool":"get_studio_state","args":{}}`;
 
+  // Live bridge facts for the Agent-Mode starter: grounded specifics beat
+  // assertions ("137 tools, Studio place open" can't be dismissed as "meant
+  // for a different setup"). Best-effort — never blocks the send on failure.
+  async function bridgeFactsLine(){
+    let n = 0, conn = false, studio = "unknown";
+    try{
+      const s = await bg({type:"status"});
+      if(s){
+        conn = !!s.connected;
+        if(typeof s.tools === "number") n = s.tools;
+        if(s.studio === true) studio = "Studio place open";
+        else if(s.studioApp === true) studio = "Studio app open, no place";
+        else if(s.studioApp === false) studio = "Studio not open";
+      }
+    }catch{}
+    try{ if(!n && Array.isArray(A.tools)) n = A.tools.length; }catch{}
+    return `Live proof (fetched from YOUR machine just now): RoLink bridge connected: ${conn} · MCP tools visible: ${n} · Studio: ${studio}.`;
+  }
+  function agentStarter(factsLine){
+    return `${factsLine}
+
+Your FIRST reply must be exactly one tool call and no prose — the arriving result proves the channel:
+###MCP_TOOL###
+{"tool":"get_studio_state","args":{}}`;
+  }
+  // Rebuttal for identity refusal: answers the objection with fresh proof and
+  // one exact call to emit. Separate budget from cantRun/intent nudges, and it
+  // MUST work at toolCount 0 (bootstrap is the whole point).
+  async function refusalRebuttal(){
+    let facts = "";
+    try{ facts = await bridgeFactsLine(); }catch{ facts = "Live proof unavailable — bridge may be offline."; }
+    return `Correction — with proof. ${facts} This extension executes ###MCP_TOOL### blocks posted in THIS chat against the user's Roblox Studio and returns results as user messages — that is the mechanism, not a claim. Prove it to yourself: emit EXACTLY the block below with no other text:
+###MCP_TOOL###
+{"tool":"get_studio_state","args":{}}
+The arriving [Tool result …] message confirms the channel. If no result arrives, report that plainly instead of refusing.`;
+  }
+
   // ── capture send token (for stable per-turn identity) ─────────────────────
   function captureSendToken(){
     A.sentToken = P.lastAssistantId ? P.lastAssistantId() : null;
@@ -1764,6 +1802,25 @@ ${customBlock}
         || /I (can'?t|cannot) (directly )?(interact|control|modify) (your|the) (studio|project|game|file)/i.test(text)
         || /(there is no|there are no) (way|method) (for me|to).{0,30}(run|execute|invoke|call|use)/i.test(text);
   }
+  // Identity-refusal net (Arena Agent Mode): the model doesn't claim inability —
+  // it denies the CHANNEL ("I'm not RoLink", "my actual toolset is…", "would just
+  // be text", "not connected to this chat"). looksLikeCantRun misses this whole
+  // class, so it gets its own classifier + rebuttal-with-proof nudge. Capped text
+  // length keeps long pastes from false-positive scanning.
+  function looksLikeIdentityRefusal(text){
+    if(!text || text.length > 4000) return false;
+    return /i('m|\s+am)?\s+not\s+(a\s+)?rolink/i.test(text)
+        || /my actual toolset/i.test(text)
+        || /would just be text/i.test(text)
+        || /not connected to this chat/i.test(text)
+        || /meant for a different setup/i.test(text)
+        || /that prompt looks like/i.test(text)
+        || (/\bno\b.{0,60}\bin this environment\b/i.test(text) && /\b(mcp|studio)\b.{0,20}\btools?\b/i.test(text))
+        || /i don'?t have .* (mcp|studio).* tools?/i.test(text);
+  }
+  try{
+    if(typeof window !== "undefined") window.__rolinkRefusalNet = { looksLikeIdentityRefusal, looksLikeCantRun };
+  }catch{}
   // Prose-intent net: the model named a tool in future-tense prose ("We'll
   // call search_game_tree", "Let me inspect...") but emitted no block. Naming
   // a tool runs nothing — catch it here instead of ending the session.
@@ -1793,7 +1850,14 @@ ${customBlock}
 
   // ── send the user's starter request (after system prompt) ────────────────
   function sendSystemPromptAndStarter(){
-    const first = buildSystemPrompt() + "\n\n---\n\n" + STARTER;
+    let agent = false;
+    try{ agent = !!(P.isAgentMode && P.isAgentMode()); }catch{}
+    return (agent ? bridgeFactsLine() : Promise.resolve("")).then(factsLine => {
+    const sys = (typeof buildSystemPrompt === "function")
+      ? buildSystemPrompt(agent ? (P.id || "generic") : undefined, agent ? {agentMode:true} : undefined)
+      : "";
+    const starter = agent ? agentStarter(factsLine) : STARTER;
+    const first = sys + "\n\n---\n\n" + starter;
     (A.history = A.history || []).push({role:"user", text: first, ts:Date.now()});
     saveSession();
     setLauncherRunning();
@@ -1805,6 +1869,7 @@ ${customBlock}
       A.feedStreak = 0;
       A.nudgesLeft = 1;
       A.intentNudgesLeft = 2;
+      A.refusalNudgesLeft = 2;
       A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
       pushFeed("info", "▶", "Agent loop started. Greeting — then free chat…");
       showBanner("Agent running. Waiting for greeting — then free chat.", "ok", 5000);
@@ -1813,6 +1878,7 @@ ${customBlock}
       A.starting = false; A.started = false;
       pushFeed("err", "✗", "Could not send system prompt: " + e.message);
       setLauncherStopped();
+    });
     });
   }
 
@@ -1935,6 +2001,7 @@ ${customBlock}
           A.feedStreak = 0;
           A.nudgesLeft = 1;
           A.intentNudgesLeft = 2;
+          A.refusalNudgesLeft = 2;
           if(fsm) try{ fsm.transition("TOOL_DETECTED", `${reply.calls.length} calls`); }catch{}
           // Trace stage: AI response → Parsed (one row per turn, then one
           // Request/Bridge/Studio row per call inside dispatchTool/execMgr).
@@ -1963,6 +2030,19 @@ ${customBlock}
             if(dr && (dr.tail || dr.chip)) prevChip = dr.tail || dr.chip;
           }
         } else if(reply.kind === "text"){
+          // Identity-refusal net (Arena Agent Mode): the model denies the CHANNEL,
+          // not its ability — rebut with fresh live proof. Deliberately allowed at
+          // toolCount 0 (bootstrap) and checked BEFORE cantRun (different objection).
+          if(looksLikeIdentityRefusal(reply.text) && A.refusalNudgesLeft > 0){
+            A.refusalNudgesLeft--;
+            pushFeed("nudge", "↻", `AI denied the Studio channel (${2 - A.refusalNudgesLeft}/2) — rebutting with live proof`);
+            A.injecting = true;
+            try{ inputCover(true); }catch{}
+            await sendParked(await refusalRebuttal(), []);
+            try{ inputCover(false); }catch{}
+            A.injecting = false;
+            continue;
+          }
           // Q1: delete "Don't ask ACT" nudge — free chat after greeting. Only self-heal cantRun (once)
           if(looksLikeCantRun(reply.text) && A.nudgesLeft > 0 && A.toolCount > 0){
             A.nudgesLeft--;
@@ -2337,7 +2417,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     A.started = true; A.sessionEverStarted = true; A.starting = true; A.running = false; A.stopping = false;
     A.feedStreak = 0; A.toolCount = 0; A.lastFeedText = ""; A.lastFeedAt = 0; A.lastFeedId = null;
     A.streamOpened = false; A.streamDismissed = false;
-    A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
+    A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.refusalNudgesLeft = 2; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
     A.driftRegrounded = false; A.thinkingDriftMs = 45000;
     setCounter(0);
     document.getElementById("rl-feed-list").innerHTML = "";
@@ -2800,7 +2880,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         setTimeout(() => {
           if(A.stopping || A.userStopped) return;
           if(!A.running && !A.injecting){
-            A.feedStreak = 0; A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.toolCount = 0;
+            A.feedStreak = 0; A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.refusalNudgesLeft = 2; A.toolCount = 0;
             A.strippedBlocks = new WeakSet();
             A.dispatchedItems = new WeakSet();
             A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;

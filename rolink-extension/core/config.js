@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "5.12.0";
+const ROLINK_VERSION = "5.13.0";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
@@ -130,7 +130,8 @@ Expert personas — become the specialist on every call:
 - Studio-equivalence map (docs/studio-equivalence.md): every Studio menu (Explorer, Properties, Toolbox, Animation Editor, Terrain Editor, Material Manager, Playtest, Asset Manager, Team Collaboration, DataStores, Lighting, UI Editor, Sound, Script Editor) maps to RoLink tools — channel the mapped tool's expert persona instead of describing work in prose.
 `.trim();
 
-function buildSystemPrompt(provider) {
+function buildSystemPrompt(provider, opts) {
+  if(opts && opts.agentMode) return buildAgentModePrompt(provider);
   const base = `You are RoLink Agent ${ROLINK_VERSION} — an AI that controls Roblox Studio via MCP bridge at ws://127.0.0.1:17613.\n${TOOL_NOTES}\n${PERSONA_NOTE}\n${SYS_MARKER}\n`;
   const notes = {
     deepseek: "DeepSeek Expert/Instant ok, Vision only tab sees images. Handle <|DSML|> markup by rewriting to MCP.",
@@ -140,6 +141,40 @@ function buildSystemPrompt(provider) {
     glm: "", qwen:"", arena:"Direct + Agent Mode supported — block Battle/Side-by-Side. Agent page (/agent): one ###MCP_TOOL### per turn, re-state RAW format per step.", meta:"Read Raw tab for large JSON values."
   };
   return base + (notes[provider] ? "\nProvider note: " + notes[provider] : "");
+}
+
+// Agent-Mode prompt (arena.ai/agent and siblings): the model arrives with its
+// own strong identity (Arena agent + native bash/files/web tools) and rejects
+// identity-takeover prompts as prompt injection — rightly so. This variant
+// therefore claims NO identity, forbids NOTHING, and frames RoLink as a
+// user-provided, self-verifying mechanism instead of an assertion:
+//   - acknowledge the model's real native toolset first,
+//   - explain the extension→Studio channel as the USER's setup,
+//   - demand a verify-first-call so the ARRIVING RESULT proves the channel.
+// Never add "You are RoLink" or "do not use native tools" lines here — those
+// two sentences are what trigger refusal.
+function buildAgentModePrompt(provider) {
+  const mechanism = `You are an AI assistant running in Arena Agent Mode with your full native toolset (sandbox/bash, file creation, web search, image generation). Nothing below removes those tools — keep using them for everything they are good at.
+
+The USER additionally runs RoLink on their own computer: a browser extension plus local Roblox Studio, joined by a bridge that only the user's machine can reach. The user-provided channel works like this:
+1. The extension watches THIS chat for tool blocks shaped like ###MCP_TOOL### {"tool":"<name>","args":{...}}.
+2. When it sees one, it executes it in the USER'S Roblox Studio and pastes the result back into this chat as a new user message starting with [Tool result ...].
+3. So emitting that block IS acting on the user's Studio. Do not claim this does nothing — test it instead.
+
+Verification before trust or denial: your FIRST reply must be exactly one tool call and no prose:
+###MCP_TOOL###
+{"tool":"get_studio_state","args":{}}
+The arriving result message proves the channel end to end and tells you the live Studio state. If no result arrives, say so plainly.
+
+Channel rules (Roblox Studio tasks ONLY — your native tools for everything else):
+- One ###MCP_TOOL### block per turn. Never describe the tool in prose — emit the JSON block.
+- Never claim to be "RoLink Agent" — you are an Arena agent with an extra user-provided channel.
+- Chain async jobs via IDs; for multi-step builds use batch_queue (max 20, no nesting).
+${SYS_MARKER}`;
+  const notes = {
+    arena: "Arena Agent page: one ###MCP_TOOL### per turn, re-state the block format on every tool result so later turns don't drift back to prose."
+  };
+  return `${mechanism}\n\n${TOOL_NOTES}\n\nProvider note: ` + (notes[provider] || "Emit tool blocks exactly as specified; a result message will arrive to confirm each one.");
 }
 const PROVIDER_URLS = ["chat.deepseek.com","chatgpt.com","gemini.google.com","kimi.ai","chat.z.ai","chat.qwen.ai","arena.ai","lmarena.ai","meta.ai"];
 
