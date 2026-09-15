@@ -67,8 +67,9 @@ local TOOL_CATEGORY: { [string]: string } = {
 	generate_test = "generate", compile_visual_graph = "generate",
 	-- asset (3)
 	search_asset = "asset", import_asset = "asset", apply_material = "asset",
-	-- visual (7)
+	-- visual (9)
 	create_ui = "visual", create_animation_track = "visual", play_animation = "visual",
+	get_animation_info = "visual", delete_animation = "visual",
 	set_lighting = "visual", add_particle_emitter = "visual", play_sound = "visual",
 	send_notification = "visual",
 	-- test (13)

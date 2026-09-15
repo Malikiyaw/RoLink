@@ -1,0 +1,7 @@
+###MCP_TOOL###
+{
+  "tool": "get_animation_info",
+  "args": {
+    "animationId": "rbxassetid://0"
+  }
+}

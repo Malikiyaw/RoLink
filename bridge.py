@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "5.11.1"
+BRIDGE_VERSION = "5.12.0"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613")))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -112,7 +112,8 @@ STUDIO_ROUTED_TOOLS = frozenset([
     "resolve_path", "ensure_path", "generate_terrain", "set_terrain_region",
     "place_parts", "create_model_from_table", "apply_material", "create_ui",
     "set_ui_property", "get_ui_tree", "bind_ui_click", "create_animation_track",
-    "play_animation", "set_lighting", "add_particle_emitter",
+    "play_animation", "get_animation_info", "delete_animation",
+    "set_lighting", "add_particle_emitter",
     "get_datastore_value", "set_datastore_value", "send_notification",
     "set_breakpoint", "remove_breakpoint", "watch_variable", "step_through",
     "continue_execution", "run_playtest", "adjust_difficulty",
@@ -1604,8 +1605,8 @@ def _tool_category(name):
     if n in ("search_asset", "import_asset", "apply_material"):
         return "asset"
     if n in ("create_ui", "create_animation_track", "play_animation",
-             "set_lighting", "add_particle_emitter", "play_sound",
-             "send_notification"):
+             "get_animation_info", "delete_animation", "set_lighting",
+             "add_particle_emitter", "play_sound", "send_notification"):
         return "visual"
     if ("run_tests" in n or "simulate" in n or "sandbox" in n
             or "playtest" in n or "step_through" in n

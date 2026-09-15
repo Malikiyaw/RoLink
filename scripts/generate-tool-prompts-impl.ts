@@ -32,7 +32,7 @@ export async function generateToolPrompts(): Promise<void> {
     `// rolink-extension/core/tool-prompts.js — GENERATED. Do not edit by hand.\n` +
     `// Re-emit with: npm run generate:prompts (from mcp-server/)\n` +
     `//\n` +
-    `// Source of truth: mcp-server/src/tools/toolPrompts.ts (all 111 tools; lazy lookup, ~60KB one-time parse).\n` +
+    `// Source of truth: mcp-server/src/tools/toolPrompts.ts (all 113 tools; lazy lookup, ~60KB one-time parse).\n` +
     `// Loaded by content scripts (see rolink-extension/manifest.json) AFTER\n` +
     `// core/code-fields.js. main.js consults window.ROLINK_TOOL_PROMPTS on the\n` +
     `// error-recovery path (failed tool -> usage + pitfalls fed back to model).\n` +

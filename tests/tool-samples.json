@@ -532,5 +532,13 @@
     "path": "test",
     "soundId": "test",
     "projectId": "test"
+  },
+  "get_animation_info": {
+    "animationId": "test",
+    "projectId": "test"
+  },
+  "delete_animation": {
+    "animationId": "test",
+    "projectId": "test"
   }
 }

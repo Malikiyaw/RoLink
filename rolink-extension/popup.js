@@ -14,7 +14,7 @@ const healthMcpEl=document.getElementById("h-mcp-val"), healthStudioEl=document.
 const logsListEl=document.getElementById("logsList");
 let lastStatus=null, lastToolsJson="", allTools=[], startTime=Date.now();
 
-// Category map for 111 tools
+// Category map for 113 tools
 const CATEGORY_MAP = {
   "Core Manipulation":["get_instances","create_instance","set_properties","delete_instance","clone_instance","move_instance","find_instance"],
   "Scripting":["execute_luau","get_script_content","set_script_content","create_module","run_function","add_event_handler","remove_event_handler","get_global_variables"],
@@ -25,7 +25,7 @@ const CATEGORY_MAP = {
   "Perf":["get_performance_stats","analyze_performance","set_performance_threshold","get_memory_usage"],
   "Terrain":["generate_terrain","set_terrain_region","place_parts","create_model_from_table","apply_material"],
   "GUI":["create_ui","set_ui_property","get_ui_tree","bind_ui_click"],
-  "Animation":["create_animation_track","play_animation","set_lighting","add_particle_emitter"],
+  "Animation":["create_animation_track","play_animation","get_animation_info","delete_animation","set_lighting","add_particle_emitter"],
   "DataStore":["setup_datastore","get_datastore_value","set_datastore_value"],
   "Team":["export_session_log","replay_session","list_sessions","compare_sessions"],
   "Templates":["list_templates","apply_template","add_template"],

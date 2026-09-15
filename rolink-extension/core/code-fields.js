@@ -11,7 +11,7 @@ window.ROLINK_CODE_FIELDS = {
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
   "generatedAt": "2026-09-02T12:20:58.726Z",
-  "toolCount": 111,
+  "toolCount": 113,
   "toolFields": {
     "get_instances": [
       "path",
@@ -206,11 +206,13 @@ window.ROLINK_CODE_FIELDS = {
       "projectId"
     ],
     "create_animation_track": [
+      "keyframes[].poses[].part",
       "name",
       "projectId"
     ],
     "play_animation": [
       "animationId",
+      "characterPath",
       "projectId",
       "target"
     ],
@@ -436,6 +438,14 @@ window.ROLINK_CODE_FIELDS = {
       "path",
       "projectId",
       "soundId"
+    ],
+    "get_animation_info": [
+      "animationId",
+      "projectId"
+    ],
+    "delete_animation": [
+      "animationId",
+      "projectId"
     ]
   },
   "stringFields": [
@@ -445,6 +455,7 @@ window.ROLINK_CODE_FIELDS = {
     "attribute",
     "b",
     "category",
+    "characterPath",
     "className",
     "code",
     "commit",
@@ -469,6 +480,7 @@ window.ROLINK_CODE_FIELDS = {
     "newName",
     "newParent",
     "parent",
+    "part",
     "path",
     "projectId",
     "prompt",

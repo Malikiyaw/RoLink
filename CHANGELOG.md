@@ -1,4 +1,14 @@
 # Changelog
+## 5.12.0 - real animation tools: typed schemas, live KeyframeSequence builders, get/delete_animation (111 → 113 tools)
+
+**Previously stubs.** `create_animation_track` / `play_animation` existed with loose schemas and mock plugin results (`{track=name}`, `{playing=true}`); `get_animation_info` / `delete_animation` did not exist.
+
+**MCP server** (`tools/registry.ts`): `create_animation_track` now enforces `{name[1-64], keyframes[1-200] of {time>=0, poses[1-64] of {part, position, rotation, scale?}}}` and passes full args JSON (was a `--anim` DSL stub); `play_animation` gains `{characterPath, animationId*, speed 0.1-8, loop}` (keeps legacy `target`); new `112 get_animation_info {animationId*}` and `113 delete_animation {animationId*}`. **Prompts** (`toolPrompts.ts` + regenerated mirrors): new librarian/stagehand personas, keyframe JSON shape guide — keyframes go INLINE as JSON (RAW blocks deliver strings and fail Zod).
+
+**Studio plugin** (`RoLink.lua`): real `createAnimationTrack` (KeyframeSequence + Keyframe + Pose/CFrame build, `RoLinkAnimations` folder, waypoint, `RegisterKeyframeSequence` → temp hash, id→sequence cache), `playAnimation` (rig/Humanoid/Animator resolve, speed clamp, loop), `getAnimationInfo` (`GetKeyframeSequenceAsync` pcall → count/duration/parts), `deleteAnimation` (`:Destroy()` + cache drop — there is no provider remove API). Dispatcher cases replace the mocks; `VCatExact` + `toolVisualizer.luau` map both new tools to `visual`.
+
+**Ripple 111→113**: `__registry__.json`, `toolRegistry` (count derived), popup map + counts, `config.js` category/prompt groups, `bridge.py` studio-route + category, code-fields mirrors (+`characterPath`/`part` string fields), persona-lines, 2 new fixtures, `tool-samples.json`, exact-count asserts (`tool-events`, `studioHud`, `sideDock`, `p4-polish` label). Full node battery green.
+
 ## 5.11.1 - fix Arena Agent page stuck send ("did not accept the injected message")
 
 **Symptom.** On `arena.ai/agent` the loop started (bridge connected, 137 tools) but the greeting injection failed 4/4 attempts: text sat unsent because the Agent composer differs from Direct chat and the generic send silently no-oped.

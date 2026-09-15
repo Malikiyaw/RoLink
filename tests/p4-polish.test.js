@@ -60,7 +60,7 @@ function loadRegistry(seed) {
   const optJs = fs.readFileSync(path.join(EXT, "options.js"), "utf8");
   const registryNames = JSON.parse(fs.readFileSync(path.join(ROOT, "tests", "__registry__.json"), "utf8"));
 
-  await run("icon audit: all 111 resolve a non-empty glyph", async () => {
+  await run("icon audit: all 113 resolve a non-empty glyph", async () => {
     const { api } = loadRegistry();
     assert(Object.keys(api.ICON_OVERRIDES).length >= 30, `>=30 overrides, got ${Object.keys(api.ICON_OVERRIDES).length}`);
     const bad = registryNames.filter((n) => !api.iconFor(n));

@@ -65,10 +65,10 @@ function loadSideDock() {
     assert(m("", "anything") === true, "empty matches all");
   });
 
-  await run("filterTools covers 111, substring first", async () => {
+  await run("filterTools covers 113, substring first", async () => {
     const ctx = loadSideDock();
     const api = ctx.RolinkSideDock;
-    assert(api.filterTools("").length === 111, "empty query returns 111");
+    assert(api.filterTools("").length === 113, "empty query returns 113");
     const hits = api.filterTools("asset");
     assert(hits.includes("generate_asset"), "asset hit");
     assert(hits[0] === "search_asset", "registry-order substring hit ranks first");

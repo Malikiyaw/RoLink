@@ -1,9 +1,9 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "5.11.1";
+const ROLINK_VERSION = "5.12.0";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
-  // P0: extended to cover all 111 registry tools deterministically.
+  // P0: extended to cover all 113 registry tools deterministically.
   // Keeps the original 8 category names so prompts, registry and HUD stay
   // in sync (see shared/protocol.ts ToolCategory).
   const n=(name||"").toLowerCase();
@@ -12,7 +12,7 @@ function toolCategory(name){
   if(/script_search|script_grep|search_game_tree|inspect_instance|get_script_content|get_context_summary|get_function_signatures|get_property_value|get_all_properties|search_by_attribute|get_referenced_instances|get_global_variables|get_dependency_graph|get_ui_tree|get_datastore_value|get_projects|get_suggestions|get_analytics|get_metrics|get_memory_usage|get_performance_stats|get_time|list_templates|list_plugins|list_sessions|git_log|explain_code|validate_command|suggest_|search_scripts|get_instance_tree|list_roblox_studios|get_studio_state|export_session_log|replay_session|compare_sessions|session_users|report_metrics|report_analytics|predict_bug|review_code|export_project/.test(n)) return "read";
   if(/generate_asset|generate_terrain|generate_level|generate_quest|generate_sound|generate_sound_pack|generate_test|generate_mesh|generate_material|generate_procedural_model|compile_visual_graph/.test(n)) return "generate";
   if(/search_asset|import_asset|apply_material/.test(n)) return "asset";
-  if(/create_ui|create_animation_track|play_animation|set_lighting|add_particle_emitter|play_sound|send_notification/.test(n)) return "visual";
+  if(/create_ui|create_animation_track|play_animation|get_animation_info|delete_animation|set_lighting|add_particle_emitter|play_sound|send_notification/.test(n)) return "visual";
   if(/run_tests|simulate_ticks|simulate_economy|run_in_sandbox|run_sandbox_tests|playtest|run_playtest|confirm_sandbox_apply|discard_sandbox|step_through|continue_execution|watch_variable|analyze_performance|set_performance_threshold|optimize_performance/.test(n)) return "test";
   return "tool";
 }
@@ -39,7 +39,7 @@ PREFERRED FORMAT — to avoid malformed-JSON failures, ALWAYS use the RAW escape
 The list of fields that accept RAW blocks is generated from the registered tool schemas (${_CODE_FIELDS.length} fields). Use the RAW form for: ${_CODE_FIELDS.join(", ")}. You can also bundle multiple RAW fields with one block per field, or use the tool-scoped form ###TOOL:<name>### ... ###END_TOOL### for an entire tool call.
 `.trim();
 const TOOL_NOTES = `
-You have RoLink MCP tools (111 total). To call one, output ONE JSON block:
+You have RoLink MCP tools (113 total). To call one, output ONE JSON block:
 
 ###MCP_TOOL###
 {"tool":"<name>","args":{...}}
@@ -59,6 +59,7 @@ Groups:
 - Terrain 38-42: generate_terrain, set_terrain_region, place_parts, create_model_from_table, apply_material
 - GUI 43-46: create_ui, set_ui_property, get_ui_tree, bind_ui_click
 - Anim 47-50: create_animation_track, play_animation, set_lighting, add_particle_emitter
+- Anim 112-113: get_animation_info, delete_animation
 - DataStore 51-53: setup_datastore, get_datastore_value, set_datastore_value
 - Team 54-57: export_session_log, replay_session, list_sessions, compare_sessions
 - Templates 58-60: list_templates, apply_template, add_template
@@ -88,6 +89,7 @@ Groups:
 - Explain 105-106: explain_code, learning_mode
 - DDA 107-108: adjust_difficulty, set_difficulty_profile
 - Sound 109-111: generate_sound, generate_sound_pack, play_sound
+- Anim 112-113: get_animation_info, delete_animation
 
 For workspace explores use get_instances (search_game_tree is a legacy alias for it) — ALWAYS emit ###MCP_TOOL### JSON.
 Never describe the tool in prose — emit the JSON block.

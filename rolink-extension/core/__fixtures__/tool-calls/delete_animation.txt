@@ -1,0 +1,7 @@
+###MCP_TOOL###
+{
+  "tool": "delete_animation",
+  "args": {
+    "animationId": "rbxassetid://0"
+  }
+}

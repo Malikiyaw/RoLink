@@ -84,14 +84,14 @@ async function run(n, fn) { try { await fn(); ok(n); } catch (e) { fail(n, e); }
     assert(bus.recent(5).length === 5, "recent(5) works");
   });
 
-  await run("all 111 registry tools map to a valid category", async () => {
-    assert(registryNames.length === 111, `111 names, got ${registryNames.length}`);
+  await run("all 113 registry tools map to a valid category", async () => {
+    assert(registryNames.length === 113, `113 names, got ${registryNames.length}`);
     const bad = registryNames.filter((n) => !VALID_CATS.includes(bus.categoryOf(n)));
     assert(bad.length === 0, `uncategorized: ${bad.join(",")}`);
   });
 
-  await run("toolRegistry has 111 entries with color+icon+preview", async () => {
-    assert(reg && reg.TOOL_COUNT === 111, `111 entries, got ${reg && reg.TOOL_COUNT}`);
+  await run("toolRegistry has 113 entries with color+icon+preview", async () => {
+    assert(reg && reg.TOOL_COUNT === 113, `113 entries, got ${reg && reg.TOOL_COUNT}`);
     for (const n of registryNames) {
       const e = reg.registry[n];
       assert(e, `entry ${n}`);

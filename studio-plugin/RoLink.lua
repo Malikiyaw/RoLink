@@ -1,4 +1,4 @@
--- RoLink.lua — Studio Plugin (111 tools, production)
+-- RoLink.lua — Studio Plugin (113 tools, production)
 -- Place in Studio Plugins folder or Rojo. Polls MCP every 200ms, executes, snapshots, heals, reports.
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
@@ -9,7 +9,7 @@ local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 4.0"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
-local btn = toolbar:CreateButton("RoLink", "AI bridge (111 tools, poll 200ms)", "rbxassetid://0")
+local btn = toolbar:CreateButton("RoLink", "AI bridge (113 tools, poll 200ms)", "rbxassetid://0")
 btn.ClickableWhenViewportHidden = true
 local hudBtn = toolbar:CreateButton("HUD", "RoLink hologram HUD — tool visuals in Studio (P3)", "rbxassetid://0")
 hudBtn.ClickableWhenViewportHidden = true
@@ -80,6 +80,104 @@ local function findByPath(path:string): Instance?
   return found
 end
 
+-- ── Animation track cache + builders (tools 47-48, 112-113) ─────────────
+-- KeyframeSequenceProvider only issues temporary Studio-local hash IDs
+-- (RegisterKeyframeSequence); there is NO provider remove API, so
+-- delete_animation destroys our cached sequence. Service is deprecated in
+-- favor of AnimationClipProvider but still functional in Studio.
+local animCache: { [string]: KeyframeSequence } = {}
+local function num(v:any, d:number): number
+  local n = tonumber(v); if n == nil then return d end; return n
+end
+local function vec3(t:any): Vector3
+  if type(t) ~= "table" then return Vector3.zero end
+  return Vector3.new(num(t.x, 0), num(t.y, 0), num(t.z, 0))
+end
+local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
+  local name = tostring(args.name or "RoLinkAnimation"):sub(1, 64)
+  local kfData = args.keyframes
+  if type(kfData) ~= "table" or #kfData == 0 then error("keyframes must be a non-empty array") end
+  if #kfData > 200 then error("too many keyframes (max 200)") end
+  local folder = game.Workspace:FindFirstChild("RoLinkAnimations")
+  if not folder then folder = Instance.new("Folder"); folder.Name = "RoLinkAnimations"; folder.Parent = game.Workspace end
+  local seq = Instance.new("KeyframeSequence")
+  seq.Name = name
+  if args.loop == true then seq.Loop = true end
+  for _, kfD in ipairs(kfData) do
+    if type(kfD) ~= "table" then error("keyframe must be an object") end
+    local kf = Instance.new("Keyframe")
+    kf.Time = math.max(0, num((kfD::any).time, 0))
+    local poses = (kfD::any).poses
+    if type(poses) ~= "table" or #poses == 0 then error("keyframe poses must be non-empty") end
+    if #poses > 64 then error("too many poses per keyframe (max 64)") end
+    for _, pD in ipairs(poses) do
+      local pose = Instance.new("Pose")
+      pose.Name = tostring((pD::any).part or "Torso"):sub(1, 64)
+      local pos = vec3((pD::any).position)
+      local rot = (pD::any).rotation
+      local cf = CFrame.new(pos) * CFrame.Angles(math.rad(num(rot and (rot::any).x, 0)), math.rad(num(rot and (rot::any).y, 0)), math.rad(num(rot and (rot::any).z, 0)))
+      pose.CFrame = cf
+      local sc = (pD::any).scale
+      if type(sc) == "table" then pose.Weight = math.clamp(num((sc::any).x, 1), 0.01, 10) end
+      pose.Parent = kf
+    end
+    kf.Parent = seq
+  end
+  seq.Parent = folder
+  pcall(function() ChangeHistoryService:SetWaypoint("RoLink create " .. name) end)
+  local hashId = game:GetService("KeyframeSequenceProvider"):RegisterKeyframeSequence(seq)
+  animCache[tostring(hashId)] = seq
+  return { animationId = tostring(hashId), name = name, keyframes = #kfData }
+end
+local function playAnimation(args:{ [string]: any }): { [string]: any }
+  local char = findByPath(tostring(args.characterPath or args.target or "workspace"))
+  if not char then error("character not found: " .. tostring(args.characterPath or args.target)) end
+  local humanoid = char:FindFirstChildOfClass("Humanoid")
+  if not humanoid then error("HUMANOID_NOT_FOUND") end
+  local animator = humanoid:FindFirstChildOfClass("Animator")
+  if not animator then animator = Instance.new("Animator"); animator.Parent = humanoid end
+  local animId = tostring(args.animationId or "")
+  if animId == "" then error("animationId required (use create_animation_track first)") end
+  local animation = Instance.new("Animation")
+  animation.AnimationId = animId
+  local track = (animator::any):LoadAnimation(animation)
+  track:Play()
+  local speed = num(args.speed, 1)
+  if speed ~= 1 then track:AdjustSpeed(math.clamp(speed, 0.1, 8)) end
+  if args.loop == true then track.Looped = true end
+  return { success = true, trackName = track.Name, animationId = animId }
+end
+local function getAnimationInfo(args:{ [string]: any }): { [string]: any }
+  local animId = tostring(args.animationId or "")
+  if animId == "" then error("animationId required") end
+  local seq = animCache[animId]
+  if not seq then
+    local ok, got = pcall(function() return game:GetService("KeyframeSequenceProvider"):GetKeyframeSequenceAsync(animId) end)
+    if not ok or not got then error("animation not found: " .. animId) end
+    seq = got
+  end
+  local kfs = seq:GetKeyframes()
+  local parts:{string} = {}; local seen:{[string]:boolean} = {}; local dur = 0
+  for _, kf in ipairs(kfs) do
+    if kf.Time > dur then dur = kf.Time end
+    for _, d in ipairs(kf:GetDescendants()) do
+      if d:IsA("Pose") and not seen[d.Name] then seen[d.Name] = true; table.insert(parts, d.Name) end
+    end
+  end
+  table.sort(parts)
+  return { animationId = animId, name = seq.Name, keyframeCount = #kfs, duration = dur, parts = parts, loop = seq.Loop }
+end
+local function deleteAnimation(args:{ [string]: any }): { [string]: any }
+  local animId = tostring(args.animationId or "")
+  if animId == "" then error("animationId required") end
+  local seq = animCache[animId]
+  if seq then pcall(function() seq:Destroy() end); animCache[animId] = nil
+    pcall(function() ChangeHistoryService:SetWaypoint("RoLink delete " .. animId) end)
+    return { deleted = true, animationId = animId }
+  end
+  return { deleted = false, animationId = animId, error = "not cached (only temp tracks can be deleted)" }
+end
+
 -- ── P3 ToolVisualizer (embedded copy — VISUALIZER SYNC) ────────────────
 -- Keep in sync with studio-plugin/src/toolVisualizer.luau (source of truth).
 -- In-Studio hologram HUD: counters, ghost highlights, script diff popups,
@@ -129,6 +227,7 @@ local VCatExact: { [string]: string } = {
 	generate_test = "generate", compile_visual_graph = "generate",
 	search_asset = "asset", import_asset = "asset", apply_material = "asset",
 	create_ui = "visual", create_animation_track = "visual", play_animation = "visual",
+	get_animation_info = "visual", delete_animation = "visual",
 	set_lighting = "visual", add_particle_emitter = "visual", play_sound = "visual",
 	send_notification = "visual",
 	run_tests = "test", simulate_ticks = "test", simulate_economy = "test",
@@ -460,9 +559,11 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="set_ui_property" then local inst=findByPath(args.path or ""); if inst then (inst::any)[args.property]=args.value end; result={set=true}
     elseif tool=="get_ui_tree" then local t={}; for _,v in ipairs(game.StarterGui:GetDescendants()) do table.insert(t, v:GetFullName().." ("..v.ClassName..")") end; result={uiTree=t}
     elseif tool=="bind_ui_click" then result={bound=args.path}
-    -- 47-50 Animation
-    elseif tool=="create_animation_track" then result={track=args.name}
-    elseif tool=="play_animation" then result={playing=true}
+    -- 47-50 Animation (+112-113 info/delete)
+    elseif tool=="create_animation_track" then result=createAnimationTrack(args)
+    elseif tool=="play_animation" then result=playAnimation(args)
+    elseif tool=="get_animation_info" then result=getAnimationInfo(args)
+    elseif tool=="delete_animation" then result=deleteAnimation(args)
     elseif tool=="set_lighting" then for k,v in pairs(args.properties or {}) do pcall(function() game.Lighting[k]=v end) end; result={lighting=true}
     elseif tool=="add_particle_emitter" then local inst=findByPath(args.path or ""); if inst then local e=Instance.new("ParticleEmitter"); e.Parent=inst; result={emitter=true} else error("not found") end
     -- 51-53 DataStore

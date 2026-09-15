@@ -109,5 +109,7 @@
   "set_difficulty_profile",
   "generate_sound",
   "generate_sound_pack",
-  "play_sound"
+  "play_sound",
+  "get_animation_info",
+  "delete_animation"
 ]

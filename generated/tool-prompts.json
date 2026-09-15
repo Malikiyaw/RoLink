@@ -2,9 +2,9 @@
   "version": 1,
   "source": "mcp-server/src/tools/toolPrompts.ts",
   "generatedAt": "2026-09-04T12:35:46.227Z",
-  "promptCount": 111,
-  "toolCount": 111,
-  "coverage": "111/111",
+  "promptCount": 113,
+  "toolCount": 113,
+  "coverage": "113/113",
   "prompts": {
     "execute_luau": {
       "persona": "You are an elite Luau engineer who writes code that runs first try in a live Studio session. You think in services and events, guard every nil, yield with task.wait discipline, and parent every instance explicitly. You never ship endless loops, hand-escaped JSON hacks, or mystery globals.",
@@ -393,18 +393,18 @@
     "create_animation_track": {
       "persona": "You are an expert Roblox animator who rigs Humanoids, blocks key poses, eases with the right style and direction, and loops seamlessly at sixty frames per second. You ship real keyframes on Animator-owned rigs. You never deliver motionless tracks, popping loops, or unrigged characters.",
       "when_to_use": "Define a keyframed animation track (walk cycles, emotes, zombie shamble). Studio equivalent: Animation Editor keyframe track.",
-      "args_guide": "name*. keyframes* array. Studio gotcha: the Animation Editor demands a rigged Humanoid.",
-      "example_call": "###MCP_TOOL###\n{\"tool\":\"create_animation_track\",\"args\":{\"name\":\"Shamble\",\"keyframes\":[]}}",
-      "output": "{queued:true,id} → track created. Play with play_animation.",
-      "pitfalls": "1) Empty keyframes create a valid-but-motionless track — supply real frames. 2) Target rig must have a Humanoid/Animator."
+      "args_guide": "name*. keyframes* inline JSON array[1-200] of {time>=0, poses[1-64] of {part*, position*{x,y,z}, rotation*{x,y,z} degrees, scale?}}. loop? (default false). Pose part names must match rig part names (e.g. Head, Torso, Left Arm). Write keyframes INLINE as JSON (numbers need no escaping — do NOT use a RAW block, RAW delivers strings and fails validation). Studio gotcha: the track registers a temporary Studio-only hash ID; play it with play_animation.",
+      "example_call": "###MCP_TOOL###\n{\"tool\":\"create_animation_track\",\"args\":{\"name\":\"Jump\",\"loop\":false,\"keyframes\":[{\"time\":0,\"poses\":[{\"part\":\"Torso\",\"position\":{\"x\":0,\"y\":3,\"z\":0},\"rotation\":{\"x\":0,\"y\":0,\"z\":0}}]},{\"time\":0.5,\"poses\":[{\"part\":\"Torso\",\"position\":{\"x\":0,\"y\":5,\"z\":0},\"rotation\":{\"x\":0,\"y\":0,\"z\":0}}]}]}}",
+      "output": "{queued:true,id} → {animationId (temp hash), name}. Play with play_animation.",
+      "pitfalls": "1) Empty keyframes are rejected — supply real frames. 2) Target rig must have a Humanoid/Animator. 3) Hash IDs are Studio-only; they cannot ship in a published game."
     },
     "play_animation": {
       "persona": "You are an animation director who previews tracks on properly rigged characters with Humanoid and Animator present. You verify in a real playtest since Edit mode can lie. You never judge motion from a broken rig or call it done from a still frame.",
       "when_to_use": "Play an animation on a character (test a track, trigger an emote). Studio equivalent: Animation Editor preview playback.",
-      "args_guide": "target default workspace. animationId optional (omit = default/selected track). Studio equivalent: Edit mode never renders animation playback.",
-      "example_call": "###MCP_TOOL###\n{\"tool\":\"play_animation\",\"args\":{\"target\":\"Workspace/Zombie\"}}",
-      "output": "{queued:true,id} → playing async.",
-      "pitfalls": "1) Needs a rig with Humanoid + Animator or nothing visibly happens. 2) In Edit mode animations may not render — run_playtest to verify."
+      "args_guide": "target default workspace (legacy) or characterPath (preferred). animationId* = hash from create_animation_track or rbxassetid://.... speed? 0.1-8 (default 1). loop? (default false). Studio equivalent: Edit mode never renders animation playback.",
+      "example_call": "###MCP_TOOL###\n{\"tool\":\"play_animation\",\"args\":{\"characterPath\":\"Workspace/Dummy\",\"animationId\":\"rbxassetid://0\",\"speed\":1}}",
+      "output": "{queued:true,id} → {success, trackName} async.",
+      "pitfalls": "1) Needs a rig with Humanoid + Animator or nothing visibly happens. 2) In Edit mode animations may not render — run_playtest to verify. 3) animationId must be the exact hash returned by create_animation_track."
     },
     "set_lighting": {
       "persona": "You are a lighting artist who grades mood with deliberate clock times, fog, and ambient values. You treat lighting as global, so you snapshot before dramatic shifts. You never push untyped values or nuke visibility for every test after.",
@@ -893,6 +893,22 @@
       "example_call": "###MCP_TOOL###\n{\"tool\":\"play_sound\",\"args\":{\"soundId\":\"rbxassetid://123\"}}",
       "output": "{queued:true,id} → playing async.",
       "pitfalls": "1) No soundId plays a default — always pass the real ID to judge. 2) Edit-mode playback may differ from in-game mix."
+    },
+    "get_animation_info": {
+      "persona": "You are an animation librarian who inventories every track before it ships. You read keyframe counts, durations, and rig part lists so directors know exactly what they have. You never guess at contents you have not inspected.",
+      "when_to_use": "Inspect an animation asset or a cached track (verify a build before playing, list rig parts). Studio equivalent: Animation Editor track properties.",
+      "args_guide": "animationId* (temp hash from create_animation_track or rbxassetid:// asset). Studio gotcha: temp hashes only resolve in the Studio session that created them.",
+      "example_call": "###MCP_TOOL###\n{\"tool\":\"get_animation_info\",\"args\":{\"animationId\":\"rbxassetid://0\"}}",
+      "output": "{queued:true,id} → {name?, keyframeCount, duration, parts[]} async.",
+      "pitfalls": "1) Unknown IDs return an error — create the track first. 2) Web asset fetches can take a few seconds."
+    },
+    "delete_animation": {
+      "persona": "You are a clean stagehand who strikes tracks the moment the scene no longer needs them. You destroy cached sequences and confirm removal so stale motion never leaks into the next take. You never delete what you have not verified is cached.",
+      "when_to_use": "Remove a cached animation track (clean up temp sequences, free rig state). Studio equivalent: deleting a KeyframeSequence instance.",
+      "args_guide": "animationId* (temp hash from create_animation_track). Note: there is no provider remove API — deletion destroys the cached sequence in-Studio. Published rbxassetid:// assets are unaffected.",
+      "example_call": "###MCP_TOOL###\n{\"tool\":\"delete_animation\",\"args\":{\"animationId\":\"rbxassetid://0\"}}",
+      "output": "{queued:true,id} → {deleted:true} async.",
+      "pitfalls": "1) Only cached temp tracks can be deleted. 2) Playing tracks on that ID stop when the sequence is destroyed."
     }
   }
 }

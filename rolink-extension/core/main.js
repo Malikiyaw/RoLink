@@ -1354,8 +1354,8 @@
                 + lines.join("\n")
                 + "\n\nThe focused DataModel (" + (A.focusedDataModel || "auto-detected") + ") and studio_id are auto-injected for tools that need them. If a call fails, read the error and fix it on the next call — don't guess at unrelated tool names.";
     } else {
-      // Fallback keeps grouped 111 list so AI still sees search_game_tree etc even if bridge reports 0-1 tools
-      toolBlock = "Tools (111 grouped) — use EXACT names below. Studio needs bridge running (ws://127.0.0.1:17613).\n" + TOOL_NOTES + "\n\nIf bridge reports 0 tools, use fallback: get_studio_state, get_instances, find_instance, execute_luau.";
+      // Fallback keeps grouped 113 list so AI still sees search_game_tree etc even if bridge reports 0-1 tools
+      toolBlock = "Tools (113 grouped) — use EXACT names below. Studio needs bridge running (ws://127.0.0.1:17613).\n" + TOOL_NOTES + "\n\nIf bridge reports 0 tools, use fallback: get_studio_state, get_instances, find_instance, execute_luau.";
     }
     // If live list is tiny (<10) keep grouped 111 + live to avoid hiding search_game_tree
     if(tools && tools.length > 0 && tools.length < 10){
@@ -1363,7 +1363,7 @@
         const nm = (t && t.name) || (typeof t === "string" ? t : "?");
         return `- ${nm} (live)`;
       }).join("\n");
-      toolBlock = "LIVE tools from bridge (" + tools.length + "):\n" + liveLines + "\n\nFULL 111 grouped fallback:\n" + TOOL_NOTES;
+      toolBlock = "LIVE tools from bridge (" + tools.length + "):\n" + liveLines + "\n\nFULL 113 grouped fallback:\n" + TOOL_NOTES;
     }
     const custom = (A.customPrompt || "").trim();
     const customBlock = custom ? `\n\n# User-added instructions\n${custom}\n` : "";
@@ -1684,7 +1684,7 @@ ${customBlock}
     if(!ok){
       // Master-prompt recovery: feed the failed tool's usage + pitfalls so
       // the model self-corrects with guidance, not just an error string.
-      // Sourced from generated window.ROLINK_TOOL_PROMPTS (all 111, lazy lookup).
+      // Sourced from generated window.ROLINK_TOOL_PROMPTS (all 113, lazy lookup).
       try{
         const allP = (typeof window !== "undefined" && window.ROLINK_TOOL_PROMPTS) || null;
         const mp = allP && allP[name];
@@ -2049,7 +2049,7 @@ ${customBlock}
           // SUPER-POWERFUL: tool-specific nudge with visible example for the failing tool
           let toolNudge = "";
           if(targetTool === "multi_edit"){
-            // multi_edit is not one of the 111 RoLink tools (it appears in
+            // multi_edit is not one of the 113 RoLink tools (it appears in
             // older guides) — the same rewrite goes through set_script_content
             // with the RAW hatch, which needs zero JSON escaping. The escaping
             // lesson still applies to any JSON code string: escape " as \"

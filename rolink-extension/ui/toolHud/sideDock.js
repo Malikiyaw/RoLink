@@ -3,7 +3,7 @@
 //
 // Vanilla JS, no build step. Subscribes to window.RolinkToolEvents and
 // renders the live tool feed in a glassmorphic right dock + a Ctrl+K
-// command palette over all 111 tools. Mounts into #rl-root when main.js
+// command palette over all 113 tools. Mounts into #rl-root when main.js
 // creates it (falls back to its own host). Never blocks the agent loop:
 // every handler is guarded and the dock degrades to a tool browser when
 // the bus is absent.
@@ -185,7 +185,7 @@
       '<div class="rl-dock-head">' +
         '<span class="rl-dock-dot"></span>' +
         '<span class="rl-dock-title">RoLink</span>' +
-        '<span class="rl-dock-sub"><span id="rl-dock-tools-n">111</span> tools</span>' +
+        '<span class="rl-dock-sub"><span id="rl-dock-tools-n">113</span> tools</span>' +
         '<span class="rl-dock-run" id="rl-dock-run" style="display:none"><span class="rl-spinner"></span><span id="rl-dock-run-n">0</span> running</span>' +
         '<span class="rl-dock-count" id="rl-dock-count"></span>' +
         '<button class="rl-dock-btn" id="rl-dock-pal" title="Command palette (Ctrl+K)">⌘K</button>' +
@@ -203,7 +203,7 @@
     toastEl = dockEl.querySelector("#rl-dock-toast");
     try {
       var tn = dockEl.querySelector("#rl-dock-tools-n");
-      if (tn) tn.textContent = String(toolNames().length || 111);
+      if (tn) tn.textContent = String(toolNames().length || 113);
     } catch (e) {}
 
     dockEl.querySelector("#rl-dock-x").addEventListener("click", function (e) { e.stopPropagation(); setOpen(false); });
@@ -551,7 +551,7 @@
     } catch (e) {}
   }
 
-  // ── command palette (Ctrl+K over all 111) ──────────────────────────
+  // ── command palette (Ctrl+K over all 113) ──────────────────────────
   function buildPalette(h) {
     paletteEl = mk("div", "rl-dock-pal-ov");
     paletteEl.id = "rl-dock-pal-ov";

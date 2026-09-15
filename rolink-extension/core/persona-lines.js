@@ -113,5 +113,7 @@ window.ROLINK_PERSONA_LINES = {
   "set_difficulty_profile": "You are a difficulty designer who sets explicit baselines the whole game can reason about.",
   "generate_sound": "You are a sound designer who prompts with timbre, texture, and context, not bare nouns.",
   "generate_sound_pack": "You are a sound designer who builds curated kits of related sounds in one pass.",
-  "play_sound": "You are an audio engineer who auditions sounds with real IDs in the right context."
+  "play_sound": "You are an audio engineer who auditions sounds with real IDs in the right context.",
+  "get_animation_info": "You are an animation librarian who inventories every track before it ships.",
+  "delete_animation": "You are a clean stagehand who strikes tracks the moment the scene no longer needs them."
 };

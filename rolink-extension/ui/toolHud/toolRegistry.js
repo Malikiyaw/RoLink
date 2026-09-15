@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// ui/toolHud/toolRegistry.js — P0 visual identity for all 111 tools.
+// ui/toolHud/toolRegistry.js — P0 visual identity for all 113 tools.
 //
 // Category comes from config.js toolCategory() (extended in P0 to cover
 // the full registry). Colors/icons/preview-kinds are fixed per category
@@ -9,7 +9,7 @@
 (function (root) {
   "use strict";
 
-  // Full 111-tool catalogue (mirrors tests/__registry__.json).
+  // Full 113-tool catalogue (mirrors tests/__registry__.json).
   var TOOL_NAMES = [
     "get_instances", "create_instance", "set_properties", "delete_instance",
     "clone_instance", "move_instance", "find_instance", "execute_luau",
@@ -41,7 +41,7 @@
     "import_project", "generate_quest", "simulate_economy", "suggest_balance",
     "explain_code", "learning_mode", "adjust_difficulty",
     "set_difficulty_profile", "generate_sound", "generate_sound_pack",
-    "play_sound"
+    "play_sound", "get_animation_info", "delete_animation"
   ];
 
   var CATEGORY_STYLE = {
@@ -58,7 +58,7 @@
   // P4 icon audit: per-tool glyph overrides where the category glyph
   // misleads (text-safe unicode only — no emoji-font dependency).
   // Everything else falls back to its category icon; iconFor() guarantees
-  // all 111 tools resolve a non-empty glyph (audited in tests/p4-polish).
+  // all 113 tools resolve a non-empty glyph (audited in tests/p4-polish).
   var ICON_OVERRIDES = {
     execute_luau: "➤", set_script_content: "✎", get_script_content: "⎙",
     create_module: "▦", run_function: "➤",

@@ -64,26 +64,26 @@ function parseLuauMap(src, tableName) {
   const registryNames = JSON.parse(fs.readFileSync(path.join(ROOT, "tests", "__registry__.json"), "utf8"));
   const VALID = ["read", "edit", "inspect", "generate", "asset", "visual", "test", "tool"];
 
-  await run("module: full 111-tool map, valid categories", async () => {
+  await run("module: full 113-tool map, valid categories", async () => {
     const map = parseLuauMap(module, "TOOL_CATEGORY");
-    assert(Object.keys(map).length === 111, `111 entries, got ${Object.keys(map).length}`);
+    assert(Object.keys(map).length === 113, `113 entries, got ${Object.keys(map).length}`);
     for (const n of registryNames) {
       assert(map[n], `module maps ${n}`);
       assert(VALID.includes(map[n]), `${n} valid category`);
     }
   });
 
-  await run("module map agrees with extension toolCategory() on all 111", async () => {
+  await run("module map agrees with extension toolCategory() on all 113", async () => {
     const jsCat = loadExtensionCats();
     const map = parseLuauMap(module, "TOOL_CATEGORY");
     const diff = registryNames.filter((n) => map[n] !== jsCat(n));
     assert(diff.length === 0, `parity mismatches: ${diff.join(",")}`);
   });
 
-  await run("RoLink.lua embed agrees with extension on all 111", async () => {
+  await run("RoLink.lua embed agrees with extension on all 113", async () => {
     const jsCat = loadExtensionCats();
     const map = parseLuauMap(rolua, "VCatExact");
-    assert(Object.keys(map).length === 111, `111 entries, got ${Object.keys(map).length}`);
+    assert(Object.keys(map).length === 113, `113 entries, got ${Object.keys(map).length}`);
     const diff = registryNames.filter((n) => map[n] !== jsCat(n));
     assert(diff.length === 0, `parity mismatches: ${diff.join(",")}`);
   });
