@@ -1,4 +1,10 @@
 # Changelog
+## 5.11.0 - Arena Agent Mode support (Direct + Agent, Battle/Side-by-Side still blocked)
+
+**Arena provider** (`providers/arena.js`): `arenaMode()` now returns `direct|agent|battle|side-by-side|unknown` (combo text + `/agent` path + Agent DOM markers) with new `isAgentMode()` helper. `ensureComposerReady` refuses only Battle / Side-by-Side; Direct + Agent + unknown pass. `restoreDirectOnce()` never flips Agent Mode away. Agent-aware `readAssistant` (latest settled plan-step/task node, generic fallback), `isGenerating`/`isHardGenerating` (aria-busy/progress markers), send-until-clear extended to ~12s, tool-spot expansion of collapsed steps. Selectors widened to agent-step/task/plan nodes.
+
+**Host lists**: `lmarena.ai` added to `core/config.js PROVIDER_URLS`, `background.js PROVIDER_URLS`, `popup.js SUPPORTED_HOSTS` (manifest `*://lmarena.ai/*` already covered). Arena system-prompt note updated for Agent Mode (one `###MCP_TOOL###` per turn). `providers/generic.js`: new `isGeneratingExtra` site hook. **Tests**: `providers.test.js` gains the Arena no-DOM agent-mode contract (11 → 12).
+
 ## 5.10.1 - chip rescue: Meta adapter rebuild + missed-turn watchdog
 
 **Symptom.** On Meta AI (and any provider whose DOM defeats the generic selectors), raw `###MCP_TOOL###` JSON stayed visible with no in-chat chip while the Timeline showed the tool as `queued` forever: page-wide sweeps parsed the block (emitting `queued`), but the agent loop never dispatched it.

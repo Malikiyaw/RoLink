@@ -4,7 +4,7 @@
 
 > 🌐 Free alternative for building Roblox games with AI.
 
-Eight providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** (`kimi.ai`), **GLM** (`chat.z.ai`), **Qwen** (`chat.qwen.ai`), **Arena** (`arena.ai` Direct mode), **Meta AI**. Images off on ChatGPT free tier (separate quota); Gemini/Kimi may drop tools in long sessions; Arena keep **Direct** mode.
+Eight providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** (`kimi.ai`), **GLM** (`chat.z.ai`), **Qwen** (`chat.qwen.ai`), **Arena** (`arena.ai` / `lmarena.ai` Direct + Agent Mode), **Meta AI**. Images off on ChatGPT free tier (separate quota); Gemini/Kimi may drop tools in long sessions; Arena keep **Direct or Agent** mode (Battle / Side-by-Side unsupported).
 
 ## 4.2.0 implementation
 Parser hardening, raw-field blocks, generated 111-tool fixtures/audit, provider-specific adapters, multi-MCP settings, and release/tag automation are included in this release line.

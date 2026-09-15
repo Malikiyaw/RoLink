@@ -73,6 +73,31 @@ function assert(cond, msg){ if(!cond) throw new Error(msg); }
     ok("meta turn-level contract (no-DOM safe)");
   } catch (e) { bad("meta contract", e); }
 
+  // Arena adapter: Agent Mode contract (Direct + Agent supported, Battle /
+  // Side-by-Side refused). No document in this sandbox, so arenaMode() must
+  // degrade to "unknown" without throwing and the gate must stay open.
+  try {
+    const generic2 = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "providers", "generic.js"), "utf8");
+    const code = fs.readFileSync(path.join(__dirname, "..", "rolink-extension", "providers", "arena.js"), "utf8");
+    const w = loadInSandbox([generic2, code]);
+    const P = w.ZSProvider;
+    assert(P.id === "arena", "arena: id");
+    assert(typeof P.arenaMode === "function", "arena: arenaMode exposed");
+    assert(typeof P.isAgentMode === "function", "arena: isAgentMode exposed");
+    assert(P.arenaMode() === "unknown", "arena: unknown mode without DOM");
+    assert(P.isAgentMode() === false, "arena: not agent without DOM");
+    assert(P.isGenerating() === false, "arena: not generating without DOM");
+    assert(P.isHardGenerating() === false, "arena: hard check without DOM");
+    assert(P.findToolBlockSpot(null) === null, "arena: null item -> null spot");
+    const ready = await P.ensureComposerReady("test");
+    assert(ready && ready.ready === true, "arena: gate open for unknown mode (no-DOM)");
+    for (const needle of [
+      "isAgentMode", "aria-busy", "plan-step", "/agent",
+      "Battle / Side-by-Side",
+    ]) assert(code.includes(needle), "arena.js contains " + needle);
+    ok("arena agent-mode contract (no-DOM safe)");
+  } catch (e) { bad("arena contract", e); }
+
   // The MAIN-world hooks (chatgpt-cm.js, qwen-net.js) should be harmless
   // when no chatgpt.com / chat.qwen.ai is loaded — they just need to
   // install without throwing.

@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "5.10.1";
+const ROLINK_VERSION = "5.11.0";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
@@ -135,11 +135,11 @@ function buildSystemPrompt(provider) {
     chatgpt: "ChatGPT truncates long code blocks in DOM — read CodeMirror editor content, not rendered view. Re-state the RAW-block format below on every tool result so it doesn't drift.",
     gemini: "Gemini may stop using tools in long sessions — re-prompt to use ###MCP_TOOL### or RAW blocks.",
     kimi: "Kimi may use native tools — force Roblox MCP. Re-state RAW-block format periodically.",
-    glm: "", qwen:"", arena:"Direct mode only — block Battle/Side-by-Side. Re-state RAW format on first reply.", meta:"Read Raw tab for large JSON values."
+    glm: "", qwen:"", arena:"Direct + Agent Mode supported — block Battle/Side-by-Side. Agent page (/agent): one ###MCP_TOOL### per turn, re-state RAW format per step.", meta:"Read Raw tab for large JSON values."
   };
   return base + (notes[provider] ? "\nProvider note: " + notes[provider] : "");
 }
-const PROVIDER_URLS = ["chat.deepseek.com","chatgpt.com","gemini.google.com","kimi.ai","chat.z.ai","chat.qwen.ai","arena.ai","meta.ai"];
+const PROVIDER_URLS = ["chat.deepseek.com","chatgpt.com","gemini.google.com","kimi.ai","chat.z.ai","chat.qwen.ai","arena.ai","lmarena.ai","meta.ai"];
 
 // Session-drift detection (§4 step 1). Tracks turns-since-last-successful-
 // tool-call per provider. When the gap exceeds DRIFT_TURNS the next

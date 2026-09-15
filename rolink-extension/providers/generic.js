@@ -123,6 +123,10 @@ window.makeGenericProvider = function(opts){
   function isGenerating(){
     const btn = document.querySelector(S.sendBtn);
     if(isStopBtn(btn)) return true;
+    // Site hook (e.g. Arena Agent Mode busy markers): a per-site provider may
+    // pass isGeneratingExtra to report generation states the generic stop-btn
+    // + stream sampling cannot see (aria-busy plan steps, progress bars).
+    try{ if(typeof opts.isGeneratingExtra === "function" && opts.isGeneratingExtra()) return true; }catch{}
     sampleStream();
     return _streamMax > 1 && Date.now() - _streamAt < 1200;
   }

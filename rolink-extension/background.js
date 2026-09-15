@@ -12,7 +12,7 @@ const URL = `ws://127.0.0.1:${PORT}`;
 const PROVIDER_URLS = [
   "chat.deepseek.com","deepseek.com","chatgpt.com","chat.openai.com",
   "gemini.google.com","www.kimi.ai","kimi.ai",
-  "chat.z.ai","chat.qwen.ai","arena.ai","www.meta.ai","meta.ai"
+  "chat.z.ai","chat.qwen.ai","arena.ai","lmarena.ai","www.meta.ai","meta.ai"
 ];
 
 const RECONNECT_MIN = 1000;
