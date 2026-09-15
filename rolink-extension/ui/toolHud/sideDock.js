@@ -254,8 +254,20 @@
     } catch (e) {}
   }
 
-  function unmount() {
-    try { if (busUnsub) busUnsub(); } catch (e) {}
+  // Fresh-session reset: drop all rows so stale history from prior sessions
+  // stops masquerading as current failures. Ring buffer is cleared by the
+  // caller (bus.clear); this clears rendered state. Mount state untouched.
+  function clearView() {
+    try {
+      rows.forEach(function (slot) {
+        try { if (slot.row && slot.row.parentNode) slot.row.parentNode.removeChild(slot.row); } catch (e) {}
+      });
+    } catch (e) {}
+    rows.clear(); order = [];
+    try { updateHeader(); } catch (e) {}
+  }
+
+  function unmount() {    try { if (busUnsub) busUnsub(); } catch (e) {}
     busUnsub = null;
     try { if (rootObserver) rootObserver.disconnect(); } catch (e) {}
     rootObserver = null;
@@ -711,6 +723,7 @@
   var api = {
     mount: mount,
     unmount: unmount,
+    clearView: clearView,
     toggle: toggle,
     isOpen: isOpen,
     openPalette: openPalette,

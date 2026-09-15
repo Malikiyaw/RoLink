@@ -557,8 +557,24 @@
     return out;
   }
 
-  function hasToolSignature(text) {
-    const source = String(text || "");
+  // Block-stability key for waitForReply's fast path: the raw bytes of the
+  // first COMPLETE ###MCP_TOOL### JSON payload in the text, or "" when none
+  // is complete yet. Volatile chrome (thought timers, progress text) around
+  // the block must never gate execution — only payload bytes matter.
+  function stableBlockKey(text) {
+    try {
+      const src = String(text || "");
+      const at = src.indexOf(START_M);
+      if (at === -1) return "";
+      const brace = src.indexOf("{", at + START_M.length);
+      if (brace === -1) return "";
+      const scanned = scanBalancedObject(src.slice(brace), 0);
+      if (!scanned || !scanned.balanced) return "";
+      return src.slice(brace, brace + scanned.end + 1);
+    } catch (e) { return ""; }
+  }
+
+  function hasToolSignature(text) {    const source = String(text || "");
     return source.includes(START_M) || LUA_START_RE.test(source) || /###RAW:[^#]+###/.test(source) || /###TOOL:[A-Za-z0-9_.-]+###/.test(source) || /\{[\s\S]*?"(?:tool|command|function)"\s*:\s*"[A-Za-z0-9_.-]+"/.test(source);
   }
 
@@ -614,7 +630,12 @@
     try {
       const bus = (typeof window !== "undefined" && (window.RolinkToolEvents || window.ToolEventBus)) || null;
       if (bus && parsed && parsed.tool && typeof bus.publish === "function") {
-        bus.publish({ tool: parsed.tool, args: parsed.args || {}, status: "queued", startTime: Date.now() });
+        const ev = bus.publish({ tool: parsed.tool, args: parsed.args || {}, status: "queued", startTime: Date.now() });
+        // Stamp the bus event id onto the normalized call so dispatch →
+        // execution can re-publish lifecycle events under the SAME id.
+        // Without this, Timeline/SideDock rows keyed by id stay "queued"
+        // forever (execution used to mint an unrelated rl_ id).
+        if (ev && ev.id) parsed.eventId = ev.id;
       }
     } catch (e) {}
   }
@@ -632,7 +653,7 @@
     cleanLuaCall, stripCodeChrome, salvageCutOff,
     parseMcp, parseLua, parseJsonFence, parseBare, parseRawTool,
     extract: extractInstrumented, extractAll,
-    parse: extractInstrumented, normalize, hasToolSignature, hasOpenToolBlock, toolNameFromText,
+    parse: extractInstrumented, normalize, hasToolSignature, hasOpenToolBlock, toolNameFromText, stableBlockKey,
     repairJSONStringValues, getStringFields, getNudgeStats, resetNudgeStats,
     FALLBACK_STRING_FIELDS
   };

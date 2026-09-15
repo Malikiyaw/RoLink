@@ -1526,7 +1526,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
   }
 
   // ── dispatch a tool call (canonical, awaited, id-correlated) ────────────
-  async function dispatchTool(name, args, sourceBlock, sourceItem, images, afterChip){
+  async function dispatchTool(name, args, sourceBlock, sourceItem, images, afterChip, eventId){
     // Strict validation before execution: valid tool name, complete args
     if(!name || typeof name !== "string"){
       pushFeed("err","✗",`Refused dispatch: invalid tool name ${String(name)}`);
@@ -1634,7 +1634,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
     // is now a structured error the model can self-correct from.
     try {
       if(execMgr){
-        res = await execMgr.execute({name, arguments: args}, { sessionId, turnId, timeout, getSessionId: ()=> A.sessionId || (P.conversationKey?P.conversationKey():location.pathname) });
+        res = await execMgr.execute({name, arguments: args, id: eventId || undefined}, { sessionId, turnId, timeout, getSessionId: ()=> A.sessionId || (P.conversationKey?P.conversationKey():location.pathname) });
         // Handle stale: don't feed into new chat
         if(res && res.stale){
           chipFinalize(chip, name, {ok:false, error:"Result arrived for previous chat — not injecting."});
@@ -2026,7 +2026,24 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
             // c is the normalised call from the parser; canonical fields are
             // .tool / .args. The parser also exposes .name / .arguments
             // aliases (see parser.js normalize()) so either form works here.
-            const dr = await dispatchTool(c.tool, c.args, null, reply.item, undefined, prevChip);
+            // Event-id correlation: the parser stamps calls with the bus id
+            // it published "queued" under (.eventId). Paths that bypass the
+            // parser emit (salvage) get one here plus their queued row, so
+            // Timeline/SideDock update the SAME row through running → terminal
+            // instead of stranding "queued" rows forever.
+            if(!c.eventId){
+              try{
+                const bus0 = (typeof window !== "undefined" && (window.RolinkToolEvents || window.ToolEventBus)) || null;
+                if(bus0 && typeof bus0.publish === "function"){
+                  const ev0 = bus0.publish({ tool: c.tool || c.name, args: c.args || c.arguments || {}, status: "queued", startTime: Date.now() });
+                  if(ev0 && ev0.id) c.eventId = ev0.id;
+                }
+              }catch{}
+              if(!c.eventId){
+                try{ c.eventId = "rl_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 9); }catch{ c.eventId = "rl_fallback"; }
+              }
+            }
+            const dr = await dispatchTool(c.tool, c.args, null, reply.item, undefined, prevChip, c.eventId);
             if(dr && (dr.tail || dr.chip)) prevChip = dr.tail || dr.chip;
           }
         } else if(reply.kind === "text"){
@@ -2218,6 +2235,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     let genFalseSince = 0, genOffFirstAt = 0, prevGen = null, genFlickers = 0;
     let warmSince = 0, reasonSince = 0, noTurnSince = 0, unsettledSince = 0;
     let curItem = null, lastGoodReply = "";
+    let lastBlockKey = "", blockStableSince = 0;
     const lastSeenAssistantId = A.sentToken;
     const baseline = (typeof base === "number") ? base : (A.bootstrapBase || 0);
 
@@ -2292,7 +2310,20 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       const stuckDone = started && replyText && Date.now() - lastChange > STABLE_MS &&
         !(gen && ZSParse.hasOpenToolBlock(replyText));
 
-      if((gen || effectiveBlock) && !stuckDone){
+      // Block-stable fast path: a COMPLETE tool payload that stopped changing
+      // settles the turn even while volatile chrome churns around it or the
+      // Agent page keeps reporting generating. Without this, ticking
+      // thought-timers and perpetual busy UI hold the turn open until timeout
+      // and the emitted block is never dispatched.
+      let blockKey = "";
+      try{ blockKey = (ZSParse.stableBlockKey && ZSParse.stableBlockKey(replyText)) || ""; }catch{}
+      if(blockKey){
+        if(blockKey === lastBlockKey){ if(!blockStableSince) blockStableSince = Date.now(); }
+        else { lastBlockKey = blockKey; blockStableSince = Date.now(); }
+      } else { lastBlockKey = ""; blockStableSince = 0; }
+      const blockSettled = !!(blockKey && blockStableSince && Date.now() - blockStableSince > 4000);
+
+      if((gen || effectiveBlock) && !stuckDone && !blockSettled){
         doneSince = 0;
         await sleep(160);
         continue;
@@ -2420,6 +2451,14 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.refusalNudgesLeft = 2; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
     A.driftRegrounded = false; A.thinkingDriftMs = 45000;
     setCounter(0);
+    // Fresh HUD: stale rows from prior sessions must not masquerade as
+    // current failures (bus ring + rendered dock/timeline views).
+    try{
+      const __bus0 = (typeof window !== "undefined" && (window.RolinkToolEvents || window.ToolEventBus)) || null;
+      if(__bus0 && typeof __bus0.clear === "function") __bus0.clear();
+    }catch{}
+    try{ if(window.RolinkSideDock && typeof window.RolinkSideDock.clearView === "function") window.RolinkSideDock.clearView(); }catch{}
+    try{ if(window.RolinkTimeline && typeof window.RolinkTimeline.clearView === "function") window.RolinkTimeline.clearView(); }catch{}
     document.getElementById("rl-feed-list").innerHTML = "";
     launcher.classList.add("is-active", "is-starting");
     launcher.innerHTML = `<span class="rl-spinner-inline"></span><span class="rl-label">Starting up…</span>`;

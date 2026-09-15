@@ -33,6 +33,10 @@
       editor: "textarea, [contenteditable='true'], [role='textbox']",
       sendBtn: "button[aria-label*='Send' i], button[data-testid*='send' i], button[type='submit']"
     },
+    // Volatile chrome on the Agent page: thought-duration counters, progress
+    // bars and live status regions tick inside observed replies and would
+    // defeat the loop's text-stability gate (see generic stripVolatile).
+    volatileSel: "[data-testid*='thought' i], [class*='thought' i], [data-testid*='timer' i], [class*='timer' i], [class*='progress' i], [role='progressbar']",
     augment: function(P){
       var MODE_RE = /\b(direct|battle|agent|side[\s_-]?by[\s_-]?side)\b/i;
       var BLOCKED_RE = /battle|side[\s_-]?by[\s_-]?side/i;
@@ -174,6 +178,14 @@
               if(busy) continue;
               var txt = "";
               try{ txt = (el.innerText || el.textContent) || ""; }catch(e){}
+              // Strip volatile descendants (thought timers) so the loop's
+              // stability gate sees content, not ticking chrome.
+              try{
+                if(P.stripVolatile){
+                  var st = P.stripVolatile(el);
+                  if(st != null && st.trim() !== "") txt = st;
+                }
+              }catch(e){}
               if(txt && txt.trim().length > 5) return { present: true, reply: txt, thinking: "", item: el };
             }
           }

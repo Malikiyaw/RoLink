@@ -149,7 +149,29 @@ window.makeGenericProvider = function(opts){
   }
   function readAssistant(){
     const i = lastAssistant();
-    return {present: !!i, reply: i ? (opts.readText ? opts.readText(i) : visibleText(i)) : "", thinking: "", item: i};
+    let reply = i ? (opts.readText ? opts.readText(i) : visibleText(i)) : "";
+    // Volatile-chrome strip: thought timers / progress nodes tick inside the
+    // observed reply and defeat waitForReply's text-stability gate. When the
+    // site provides volatileSel, read the clone with those nodes removed.
+    // Falls back to the raw text when stripping yields nothing.
+    try{
+      const s = i ? stripVolatile(i) : null;
+      if(s != null && s.trim() !== "") reply = s;
+    }catch{}
+    return {present: !!i, reply, thinking: "", item: i};
+  }
+  // Remove volatile descendants (thought counters, progress bars) from a
+  // CLONE so live DOM (event listeners, React state) is never touched.
+  // Returns the stripped text or null when no stripping applies.
+  const VOLATILE_SEL = opts.volatileSel || null;
+  function stripVolatile(item){
+    if(!VOLATILE_SEL || !item || !item.cloneNode || !item.querySelectorAll) return null;
+    try{
+      const c = item.cloneNode(true);
+      const bad = c.querySelectorAll(VOLATILE_SEL);
+      for(const b of bad){ try{ b.remove(); }catch{} }
+      return visibleText(c);
+    }catch{ return null; }
   }
   function turnHalted(){ return false; }
   function scanError(){ if(!getEditor()) return "Input box gone."; return null; }
@@ -352,6 +374,7 @@ window.makeGenericProvider = function(opts){
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
     capResult, overlayBlocking, replyUnsettled, hasStreamingLabel,
+    stripVolatile, volatileSel: VOLATILE_SEL,
   };
 
   // Allow per-site providers to patch the instance before exposing it.

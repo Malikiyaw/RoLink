@@ -566,6 +566,7 @@
   var api = {
     mount: mount,
     unmount: unmount,
+    clearView: clearView,
     toggle: toggle,
     isOpen: isOpen,
     replayAll: replayAll,

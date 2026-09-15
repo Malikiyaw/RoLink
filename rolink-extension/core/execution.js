@@ -96,7 +96,7 @@
       if(!v.ok){
         return { id: makeId(), ok:false, kind:"validation_error", error:v.error, text:"" };
       }
-      const id = makeId();
+      const id = (call && typeof call.id === "string" && call.id) ? call.id : makeId();
       const sessionId = opts.sessionId || null;
       const turnId = opts.turnId || null;
       let timeout = opts.timeout || TIMEOUTS.DEFAULT_MS;

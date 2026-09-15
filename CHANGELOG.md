@@ -1,4 +1,14 @@
 # Changelog
+## 5.14.0 - settle emitted turns + end-to-end event identity (no more stuck "queued")
+
+**Symptom.** On `arena.ai/agent` the model emitted a clean block, yet zero dispatches happened (`· 0 tools`) while it "thought" for 1m38s. Two defects: the turn never settled, and queued rows could never resolve.
+
+**Settle on payload, not text** (`parser.js` `stableBlockKey`, `main.js` `waitForReply` fast path): a complete, unchanging tool payload settles the turn after ~4s even while thought-timers tick and the Agent page reports generating. **Volatile stripping** (`generic.js` `stripVolatile` + `volatileSel`, arena thought/timer/progress list, agent-step read path): ticking chrome is removed from observed text via clone (live DOM untouched).
+
+**Event identity** (`parser.js` stamps the bus id onto calls → `dispatchTool` 7th param → `execMgr.execute({…, id})` → `execution.js` prefers `call.id`): Timeline/SideDock rows now transition `queued → running → terminal` in place. Fresh Start clears the bus ring + both views so stale history stops posing as current failure.
+
+**Tests**: new `tests/settle-events.test.js` (9: payload keys, id threading bus→bg→result, clearView exports, wiring contracts). All 17 suites green. Status derivation verified already honest (`ready` needs `mcpAlive && studio`), unchanged.
+
 ## 5.13.0 - defeat Arena Agent identity refusal ("I'm not RoLink…")
 
 **Symptom.** On `arena.ai/agent` the model rejected the system prompt as a foreign setup ("I'm not RoLink Agent… my actual toolset is… would just be text") and the session ended with 0 calls. Two root causes: the prompt claimed a false identity and banned native tools (classified as injection by the model), and the refusal matched neither `looksLikeCantRun` nor its `toolCount > 0` gate.
