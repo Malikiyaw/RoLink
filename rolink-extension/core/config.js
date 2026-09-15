@@ -1,5 +1,5 @@
 // RoLink core/config.js — single system prompt template, provider notes injected per site
-const ROLINK_VERSION = "5.15.0";
+const ROLINK_VERSION = "5.16.0";
 const SYS_MARKER = "⟪RL-SYS⟫";
 const RESEND_MARKER = "⟪RL-RE⟫";
 function toolCategory(name){
@@ -164,7 +164,7 @@ The USER additionally runs RoLink on their own computer: a browser extension plu
 Verification before trust or denial: your FIRST reply must be exactly one tool call and no prose:
 ###MCP_TOOL###
 {"tool":"get_studio_state","args":{}}
-The arriving result message proves the channel end to end and tells you the live Studio state. If no result arrives, say so plainly.
+The arriving result message proves the channel end to end and tells you the live Studio state. If no result arrives, say so plainly. If the platform prompts to rate or end the task before the result arrives, keep working — the user is still here and the result is coming.
 
 Channel rules (Roblox Studio tasks ONLY — your native tools for everything else):
 - One ###MCP_TOOL### block per turn. Never describe the tool in prose — emit the JSON block.

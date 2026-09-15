@@ -88,6 +88,50 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
     assert(/Agent starting up\$\{rlVer\}/.test(main), "version in startup line");
   });
 
+  // ── 7: arena tempo + tunable settle ───────────────────────────────
+  await run("arena overrides settle tempo, generic keeps defaults", async () => {
+    const arena = fs.readFileSync(path.join(EXT, "providers", "arena.js"), "utf8");
+    assert(arena.includes("BLOCK_SETTLE_MS: 1500"), "arena block settle 1.5s");
+    assert(arena.includes("BLOCK_GEN_GRACE_MS: 1000"), "arena gen grace 1s");
+    assert(arena.includes("STABLE_MS: 5000"), "arena text-stable 5s");
+    assert(/const blockSettleMs = \(T && T\.BLOCK_SETTLE_MS\) \|\| 4000/.test(main),
+      "tunable settle with 4s default");
+    assert(/blockKey \? \(\(T && T\.BLOCK_GEN_GRACE_MS\)/.test(main),
+      "complete-block gen grace tunable");
+    // Payload tracking precedes the stop grace (ordering = the fix).
+    assert(main.indexOf("let blockKey") < main.indexOf("const stopGrace"),
+      "blockKey computed before stopGrace");
+  });
+
+  await run("generic factory passes custom timings through", async () => {
+    const vm = require("node:vm");
+    const generic = fs.readFileSync(path.join(EXT, "providers", "generic.js"), "utf8");
+    const ctx = { window: {}, console };
+    vm.createContext(ctx);
+    vm.runInContext(generic + "\nwindow.__t = window.makeGenericProvider({id:'t', displayName:'T', timings:{BLOCK_SETTLE_MS:1}});", ctx);
+    assert(ctx.window.__t.timings.BLOCK_SETTLE_MS === 1, "custom key survives");
+    assert(typeof ctx.window.__t.timings.GEN_IDLE_MS === "number", "defaults retained");
+    assert(typeof ctx.window.__t.fullText === "function", "fullText exposed");
+    assert(typeof ctx.window.__t.stripVolatile === "function", "stripVolatile exposed");
+  });
+
+  // ── 8: verified send + stage timing ───────────────────────────────
+  await run("feed uses gated verifiedSend + timing lines", async () => {
+    assert(main.includes("async function verifiedSend"), "verifiedSend exists");
+    assert(/P\.editorText[\s\S]{0,120}P\.userCount/.test(main), "acceptance gate checks both");
+    assert(main.includes("result posted in ${Date.now()-feedStart}ms"), "feed timing line");
+    assert(main.includes("bridge round-trip ${Date.now()-callStart}ms"), "dispatch timing line");
+    const resets = (main.match(/A\.clipNudgesLeft = 1/g) || []).length;
+    assert(resets >= 4, `clip budget resets (found ${resets})`);
+    assert(/clipNudgesLeft: 1/.test(main), "clip budget initialized");
+  });
+
+  await run("greeting collapse + keep-working copy", async () => {
+    assert(main.includes("Reply with the greeting in this same turn"), "agent greeting tail");
+    const cfg = fs.readFileSync(path.join(EXT, "core", "config.js"), "utf8");
+    assert(cfg.includes("keep working — the user is still here"), "keep-working line");
+  });
+
   console.log(`\nProof/feed tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 })();

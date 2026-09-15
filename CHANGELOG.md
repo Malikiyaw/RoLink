@@ -1,4 +1,16 @@
 # Changelog
+## 5.16.0 - beat Arena's task clock: faster settle, verified feed, greeting collapse
+
+**Symptom.** Valid block emitted in 1s on a healthy bridge (139 tools, Studio ready), yet Arena rated/ended the task before the loop finished (~8-11s pipeline vs ~5s task patience).
+
+**Faster settle, Arena-scoped** (`main.js`, `providers/arena.js`): new provider-tunable `T.BLOCK_SETTLE_MS` (default 4s, arena 1.5s) and `T.BLOCK_GEN_GRACE_MS` (default 2.5s, arena 1s, applies once a complete payload exists — tracking reordered ahead of the stop grace); arena `STABLE_MS` 9s→5s. Direct-chat timing byte-identical.
+
+**Greeting collapse**: first result already feeds result+greeting instruction in one turn; agent copy now demands the greeting in the same turn plus a keep-working line for rate/end prompts (`main.js` greeting tail, `config.js` agent prompt).
+
+**verifiedSend + stage timing** (`main.js`): result feeding uses an acceptance-gated send (editor-clear or user-turn growth, submit-grade retries) instead of fire-once; explicit `FAILED to post` vs `result posted in Xms` lines, plus per-dispatch `bridge round-trip Xms` — every future stall report names its stage.
+
+**Tests**: `proof-feed.test.js` now 12 (tempo overrides, factory passthrough, verifiedSend, timing lines, greeting copy). All 18 suites green.
+
 ## 5.15.0 - trusted execution end to end: last-resort dispatch, verified feed-back, fast proof
 
 **Symptom.** Arena Agent complies, yet nothing executes: 54s+ thinks, hollow `{}` fence renders, DeepSeek works on the same bridge (bridge/Studio healthy — fault isolated to the Agent-page loop and feed path).

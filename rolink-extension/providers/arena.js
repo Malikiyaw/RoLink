@@ -37,6 +37,10 @@
     // bars and live status regions tick inside observed replies and would
     // defeat the loop's text-stability gate (see generic stripVolatile).
     volatileSel: "[data-testid*='thought' i], [class*='thought' i], [data-testid*='timer' i], [class*='timer' i], [class*='progress' i], [role='progressbar']",
+    // Agent tasks die fast (the platform may rate/end the task seconds after
+    // the model stops), so settle thresholds run tighter here than on
+    // persistent chats. Direct-chat providers keep generic defaults.
+    timings: { STABLE_MS: 5000, BLOCK_SETTLE_MS: 1500, BLOCK_GEN_GRACE_MS: 1000 },
     augment: function(P){
       var MODE_RE = /\b(direct|battle|agent|side[\s_-]?by[\s_-]?side)\b/i;
       var BLOCKED_RE = /battle|side[\s_-]?by[\s_-]?side/i;

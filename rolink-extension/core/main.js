@@ -1476,16 +1476,21 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
         pushFeed("nudge", "↻", "Re-attaching previously undelivered tool result");
       }
     }catch{}
-    await sendParked(text, images || []);
     // Delivery verification: the ONLY ground truth that the result landed is
     // userCount growth (the injected message renders as a user bubble).
     // Generation-start is NOT proof — always-busy Agent pages report
-    // generating even when the send silently failed. Retry submit-grade.
+    // generating even when the send silently failed. Submit-grade retries.
+    const feedStart = Date.now();
     let posted = false;
     for(let attempt = 0; attempt < 3 && !posted && !A.stopping; attempt++){
-      if(attempt > 0){ await sleep(800); try{ await sendParked(text, images || []); }catch{} }
-      await sleep(600);
-      try{ posted = (P.userCount && P.userCount() || 0) > preUser; }catch{ posted = false; }
+      if(attempt > 0) await sleep(800);
+      try{ posted = await verifiedSend(text, images || [], 2); }catch{ posted = false; }
+      if(!posted){
+        // Late-landing render: the send may have submitted while the DOM
+        // catches up — one more growth check before calling it failed.
+        await sleep(600);
+        try{ posted = (P.userCount && P.userCount() || 0) > preUser; }catch{ posted = false; }
+      }
     }
     if(!posted){
       try{ A.pendingResult = { text, images: images || [] }; }catch{}
@@ -1496,6 +1501,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
       if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "post-failed"); }catch{}
     } else {
       try{ A.pendingResult = null; }catch{}
+      try{ pushFeed("info", "⏱", `result posted in ${Date.now()-feedStart}ms`); }catch{}
       if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "posted"); }catch{}
       if(__trace) __trace.push({ ts: Date.now(), level:"ok", msg:"tool result posted (user turn grew)" });
     }
@@ -1702,6 +1708,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
     const text = res.ok ? (res.text || "OK") : ("ERROR: " + (res.error || "unknown"));
     const ok = res.ok !== false;
     pushFeed(ok ? "ok" : "err", ok ? "✓" : "✗", `${name}: ${shorten(String(text).replace(/\n/g," "), 200)}`);
+    try{ pushFeed("info", "⏱", `${name} bridge round-trip ${Date.now()-callStart}ms (${(res && res.kind) || (ok ? "success" : "error")})`); }catch{}
     if(__trace) __trace.push({ ts: Date.now(), level: ok?"ok":"error", msg:`${ok?"✓":"✗"} ${name}: ${String(text).slice(0,100)}` });
     // S9: result provenance
     (A.history = A.history || []).push({role:"tool_result", name, ok, text, ts:Date.now(), durationMs: Date.now()-callStart, kind: res.kind||(ok?"success":"error")});
@@ -1774,8 +1781,10 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
     }
     // Q1/Q2: greeting-per-click-start — first tool (get_studio_state) feeds greeting-only prompt, no "You MUST continue" / "Don't ask ACT"
     const isGreetingTool = (name === "get_studio_state" && A.toolCount <= 1 && ok);
+    let agentTail = "";
+    try{ if(P.isAgentMode && P.isAgentMode()) agentTail = " Reply with the greeting in this same turn. If the platform prompts to rate or end the task before you greet, keep working — the user is still here."; }catch{}
     const feedbackMsg = isGreetingTool
-      ? `[Tool result for ${name}]\n${textForModel}\n\nRespond with a short greeting only: "Studio is connected and ready in Edit mode. What would you like to build?" Then wait for the user. Do NOT call another tool now.`
+      ? `[Tool result for ${name}]\n${textForModel}\n\nRespond with a short greeting only: "Studio is connected and ready in Edit mode. What would you like to build?" Then wait for the user. Do NOT call another tool now.${agentTail}`
       : ok
         ? `[Tool result for ${name}]\n${textForModel}`
         : `[Tool error for ${name}]\n${text}\n\nThe tool call failed. Self-heal: fix args/JSON/Luau and retry once with correct ###MCP_TOOL###. ${hint}`;
@@ -1999,6 +2008,34 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
     }
     try{ await P.typeAndSend(text, images || []); return true; }
     catch{ return false; }
+  }
+
+  // Submit-grade send with acceptance gate (submitAndGetBase discipline,
+  // extracted for result feeding): type, then confirm the message actually
+  // landed via editor-clear or user-turn growth. Single-attempt sends can
+  // silently fail on Agent pages (text typed, never submitted) — this is
+  // what made results vanish while the model waited forever.
+  async function verifiedSend(text, images, tries){
+    const max = Math.max(1, tries || 3);
+    let pre = 0;
+    try{ pre = (P.userCount && P.userCount()) || 0; }catch{}
+    for(let t = 0; t < max && !A.stopping; t++){
+      if(document.hidden){
+        const ok = await waitForVisible();
+        if(!ok || A.stopping) return false;
+      }
+      try{ await P.typeAndSend(text, images || []); }catch{ await sleep(400); continue; }
+      const landed = await waitFor(() => {
+        try{
+          if(P.editorText && P.editorText().trim() === "") return true;
+          if(P.userCount && P.userCount() > pre) return true;
+        }catch{}
+        return false;
+      }, 3000);
+      if(landed) return true;
+      await sleep(400);
+    }
+    return false;
   }
 
   // ── the main agent loop ───────────────────────────────────────────────────
@@ -2337,8 +2374,19 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       const ctx = P.scanError && P.scanError();
       if(ctx) return {kind:"context_limit", detail: ctx};
 
+      // Complete-payload tracking runs BEFORE the stop grace so a finished
+      // block shortens the wait (thresholds provider-tunable; arena faster).
+      // Volatile chrome around the payload must never gate execution.
+      let blockKey = "";
+      try{ blockKey = (ZSParse.stableBlockKey && ZSParse.stableBlockKey(replyText)) || ""; }catch{}
+      if(blockKey){
+        if(blockKey === lastBlockKey){ if(!blockStableSince) blockStableSince = Date.now(); }
+        else { lastBlockKey = blockKey; blockStableSince = Date.now(); }
+      } else { lastBlockKey = ""; blockStableSince = 0; }
+
       const blockActive = ZSParse.hasOpenToolBlock(replyText) && Date.now() - lastChange < 6000;
-      const genStopped = !gen && genFalseSince && Date.now() - genFalseSince > GEN_STOP_GRACE_MS;
+      const stopGrace = blockKey ? ((T && T.BLOCK_GEN_GRACE_MS) || GEN_STOP_GRACE_MS) : GEN_STOP_GRACE_MS;
+      const genStopped = !gen && genFalseSince && Date.now() - genFalseSince > stopGrace;
       const effectiveBlock = blockActive && !genStopped;
 
       const stuckDone = started && replyText && Date.now() - lastChange > STABLE_MS &&
@@ -2349,13 +2397,8 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       // Agent page keeps reporting generating. Without this, ticking
       // thought-timers and perpetual busy UI hold the turn open until timeout
       // and the emitted block is never dispatched.
-      let blockKey = "";
-      try{ blockKey = (ZSParse.stableBlockKey && ZSParse.stableBlockKey(replyText)) || ""; }catch{}
-      if(blockKey){
-        if(blockKey === lastBlockKey){ if(!blockStableSince) blockStableSince = Date.now(); }
-        else { lastBlockKey = blockKey; blockStableSince = Date.now(); }
-      } else { lastBlockKey = ""; blockStableSince = 0; }
-      const blockSettled = !!(blockKey && blockStableSince && Date.now() - blockStableSince > 4000);
+      const blockSettleMs = (T && T.BLOCK_SETTLE_MS) || 4000;
+      const blockSettled = !!(blockKey && blockStableSince && Date.now() - blockStableSince > blockSettleMs);
 
       // Last-resort dispatch: a tool signature has been visible for >30s but
       // the turn won't settle (slow stream / perpetual busy UI). If a COMPLETE
