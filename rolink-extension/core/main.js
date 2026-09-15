@@ -226,6 +226,7 @@
     nudgesLeft: 1,            // Q2: only self-heal cantRun once, free chat after greeting
     intentNudgesLeft: 2,      // prose-intent net: model named a tool without emitting its block (max 2 per session)
     refusalNudgesLeft: 2,     // identity-refusal net: model denies the Studio channel (Arena Agent Mode) — rebut with live proof (max 2, toolCount may be 0)
+    clipNudgesLeft: 1,          // clip watchdog: DOM-clipped fence re-emit ask (max 1 per session)
     toolNames: new Set(),     // known tool names from the live tool list
     turnedStopped: false,     // the AI's own stop button was clicked
     stoppedAt: 0,             // timestamp of stop (for grace windows)
@@ -1465,25 +1466,38 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
     try{ inputCover(true); }catch{}
     if(fsm) try{ fsm.transition("FEEDING_RESULT", "feed"); }catch{}
     if(__trace) __trace.push({ ts: Date.now(), level:"info", msg:`FEEDING_RESULT ${String(text).slice(0,80)}` });
-    await sendParked(text, images || []);
-    // Wait for AI to actually start generating
-    const started = await waitForGenerationStart(3500);
-    if(!started){
-      diag("feed.no_generation", { text: String(text).slice(0,80) });
-      if(__trace) __trace.push({ ts: Date.now(), level:"warn", msg:"AI did not resume after feed — retrying once" });
-      await sleep(800);
-      try{ await sendParked(text, images || []); }catch{}
-      const started2 = await waitForGenerationStart(3000);
-      if(!started2){
-        pushFeed("nudge", "⚠", "AI did not resume after tool result — type a short message to nudge it.");
-        showBanner("AI did not resume — send a short message", "warn", 5000);
-        if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "no-gen"); }catch{}
-      } else {
-        if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "retried"); }catch{}
+    // Re-attach a previously undelivered result first — results must never
+    // silently drop (bounded: latest stashed only).
+    try{
+      if(A.pendingResult && A.pendingResult.text && A.pendingResult.text !== text){
+        text = A.pendingResult.text + "\n\n---\n\n" + text;
+        images = (A.pendingResult.images || []).concat(images || []);
+        A.pendingResult = null;
+        pushFeed("nudge", "↻", "Re-attaching previously undelivered tool result");
       }
+    }catch{}
+    await sendParked(text, images || []);
+    // Delivery verification: the ONLY ground truth that the result landed is
+    // userCount growth (the injected message renders as a user bubble).
+    // Generation-start is NOT proof — always-busy Agent pages report
+    // generating even when the send silently failed. Retry submit-grade.
+    let posted = false;
+    for(let attempt = 0; attempt < 3 && !posted && !A.stopping; attempt++){
+      if(attempt > 0){ await sleep(800); try{ await sendParked(text, images || []); }catch{} }
+      await sleep(600);
+      try{ posted = (P.userCount && P.userCount() || 0) > preUser; }catch{ posted = false; }
+    }
+    if(!posted){
+      try{ A.pendingResult = { text, images: images || [] }; }catch{}
+      diag("feed.post_failed", { text: String(text).slice(0, 80) });
+      if(__trace) __trace.push({ ts: Date.now(), level:"error", msg:"tool result FAILED to post after 3 attempts — stashed" });
+      pushFeed("err", "✗", "Tool result FAILED to post into chat after 3 attempts — stashed, will re-attach next turn. Type a short message to resume.");
+      showBanner("Result failed to post — type a short message", "warn", 6000);
+      if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "post-failed"); }catch{}
     } else {
-      if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "ok"); }catch{}
-      if(__trace) __trace.push({ ts: Date.now(), level:"ok", msg:"AI generation resumed" });
+      try{ A.pendingResult = null; }catch{}
+      if(fsm) try{ fsm.transition("WAITING_FOR_RESUME", "posted"); }catch{}
+      if(__trace) __trace.push({ ts: Date.now(), level:"ok", msg:"tool result posted (user turn grew)" });
     }
     // verify AI actually received result via turn growth
     await sleep(300);
@@ -1624,6 +1638,10 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
     // Determine timeout: layered timeouts
     let timeout = 120000;
     if(name === "execute_luau") timeout = 20000;
+    // Fast proof: Studio-state probes must resolve in seconds — Arena task
+    // patience is short, so fail fast with a self-correctable error instead
+    // of holding the model past task abandonment.
+    if(name === "get_studio_state" || name === "list_roblox_studios") timeout = 15000;
     if(fsm) try{ fsm.transition("EXECUTING_TOOL", name); }catch{}
 
     let res;
@@ -1869,7 +1887,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
       A.feedStreak = 0;
       A.nudgesLeft = 1;
       A.intentNudgesLeft = 2;
-      A.refusalNudgesLeft = 2;
+      A.refusalNudgesLeft = 2; A.clipNudgesLeft = 1;
       A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
       pushFeed("info", "▶", "Agent loop started. Greeting — then free chat…");
       showBanner("Agent running. Waiting for greeting — then free chat.", "ok", 5000);
@@ -2001,7 +2019,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
           A.feedStreak = 0;
           A.nudgesLeft = 1;
           A.intentNudgesLeft = 2;
-          A.refusalNudgesLeft = 2;
+          A.refusalNudgesLeft = 2; A.clipNudgesLeft = 1;
           if(fsm) try{ fsm.transition("TOOL_DETECTED", `${reply.calls.length} calls`); }catch{}
           // Trace stage: AI response → Parsed (one row per turn, then one
           // Request/Bridge/Studio row per call inside dispatchTool/execMgr).
@@ -2046,6 +2064,21 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
             const dr = await dispatchTool(c.tool, c.args, null, reply.item, undefined, prevChip, c.eventId);
             if(dr && (dr.tail || dr.chip)) prevChip = dr.tail || dr.chip;
           }
+        } else if(reply.kind === "clip_stuck"){
+          // DOM-clipped fence: only a fragment is visible after 45s. Ask for a
+          // compact re-emit (bounded 1 per session), then keep waiting.
+          if(A.clipNudgesLeft > 0){
+            A.clipNudgesLeft--;
+            pushFeed("nudge", "↻", "Tool block looks cut off in chat — asking for a compact re-emit (1/1)");
+            A.injecting = true;
+            try{ inputCover(true); }catch{}
+            await sendParked("Your tool block looks cut off in this chat (only a fragment is visible). Re-emit the COMPLETE call compactly in a single fence with the full {\"tool\":…} object — no truncation, no placeholder.", []);
+            try{ inputCover(false); }catch{}
+            A.injecting = false;
+          } else {
+            pushFeed("warn", "⚠", "Tool block still clipped — type a short message to resume.");
+          }
+          continue;
         } else if(reply.kind === "text"){
           // Identity-refusal net (Arena Agent Mode): the model denies the CHANNEL,
           // not its ability — rebut with fresh live proof. Deliberately allowed at
@@ -2236,6 +2269,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     let warmSince = 0, reasonSince = 0, noTurnSince = 0, unsettledSince = 0;
     let curItem = null, lastGoodReply = "";
     let lastBlockKey = "", blockStableSince = 0;
+    let sigSince = 0, openSince = 0;
     const lastSeenAssistantId = A.sentToken;
     const baseline = (typeof base === "number") ? base : (A.bootstrapBase || 0);
 
@@ -2322,6 +2356,45 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         else { lastBlockKey = blockKey; blockStableSince = Date.now(); }
       } else { lastBlockKey = ""; blockStableSince = 0; }
       const blockSettled = !!(blockKey && blockStableSince && Date.now() - blockStableSince > 4000);
+
+      // Last-resort dispatch: a tool signature has been visible for >30s but
+      // the turn won't settle (slow stream / perpetual busy UI). If a COMPLETE
+      // payload exists and this exact call hasn't run yet, dispatch it instead
+      // of waiting out the 5-minute cap while the model waits on us.
+      // Evaluated BEFORE the gen-hold gate so perpetual "generating" can't
+      // starve a committed model intent.
+      try{
+        if(ZSParse.hasToolSignature(replyText)){ if(!sigSince) sigSince = Date.now(); }
+        else sigSince = 0;
+      }catch{ sigSince = 0; }
+      if(sigSince && Date.now() - sigSince > 30000){
+        try{
+          const bk2 = (ZSParse.stableBlockKey && ZSParse.stableBlockKey(replyText)) || "";
+          if(bk2){
+            const fcalls = (ZSParse.extractAll(replyText) || []).filter(Boolean);
+            const fresh = fcalls.filter(c => {
+              try{
+                const nm = c.tool || c.name;
+                return !historyHasSettled(nm, normCmdKey(nm, c.args || c.arguments));
+              }catch{ return true; }
+            });
+            if(fresh.length){
+              pushFeed("nudge", "↻", "Complete call visible too long unsettled — dispatching settled payload");
+              return {kind:"tool", calls: fresh, item: d.item, lastId: curTok};
+            }
+          }
+        }catch{}
+      }
+
+      // Clip watchdog: an OPEN (incomplete) block persisting >45s means the DOM
+      // is clipping the fence or the stream died mid-block. Ask for a compact
+      // re-emit instead of holding the turn open (bounded, 1 per session).
+      try{
+        if(ZSParse.hasOpenToolBlock(replyText) && !((ZSParse.stableBlockKey && ZSParse.stableBlockKey(replyText)) || "")){
+          if(!openSince) openSince = Date.now();
+          if(Date.now() - openSince > 45000) return {kind:"clip_stuck", text: replyText, item: d.item};
+        } else openSince = 0;
+      }catch{ openSince = 0; }
 
       if((gen || effectiveBlock) && !stuckDone && !blockSettled){
         doneSince = 0;
@@ -2448,7 +2521,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     A.started = true; A.sessionEverStarted = true; A.starting = true; A.running = false; A.stopping = false;
     A.feedStreak = 0; A.toolCount = 0; A.lastFeedText = ""; A.lastFeedAt = 0; A.lastFeedId = null;
     A.streamOpened = false; A.streamDismissed = false;
-    A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.refusalNudgesLeft = 2; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
+    A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.refusalNudgesLeft = 2; A.clipNudgesLeft = 1; A.strippedBlocks = new WeakSet(); A.dispatchedItems = new WeakSet();
     A.driftRegrounded = false; A.thinkingDriftMs = 45000;
     setCounter(0);
     // Fresh HUD: stale rows from prior sessions must not masquerade as
@@ -2463,7 +2536,9 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     launcher.classList.add("is-active", "is-starting");
     launcher.innerHTML = `<span class="rl-spinner-inline"></span><span class="rl-label">Starting up…</span>`;
     document.getElementById("rl-stop-btn").style.display = "inline-flex";
-    pushFeed("info", "⏳", `Agent starting up on ${location.hostname} — waiting for AI greeting…`);
+    let rlVer = "";
+    try{ rlVer = (typeof ROLINK_VERSION === "string" && ROLINK_VERSION) ? (" (RoLink v" + ROLINK_VERSION + ")") : ""; }catch{}
+    pushFeed("info", "⏳", `Agent starting up${rlVer} on ${location.hostname} — waiting for AI greeting…`);
     showBanner("Starting up — AI will say I'm ready…", "ok", 3500);
     placeBar();
     try{
@@ -2919,7 +2994,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         setTimeout(() => {
           if(A.stopping || A.userStopped) return;
           if(!A.running && !A.injecting){
-            A.feedStreak = 0; A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.refusalNudgesLeft = 2; A.toolCount = 0;
+            A.feedStreak = 0; A.nudgesLeft = 1; A.intentNudgesLeft = 2; A.refusalNudgesLeft = 2; A.clipNudgesLeft = 1; A.toolCount = 0;
             A.strippedBlocks = new WeakSet();
             A.dispatchedItems = new WeakSet();
             A.loopKey = P.conversationKey ? P.conversationKey() : location.pathname;

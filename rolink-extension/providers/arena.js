@@ -186,6 +186,17 @@
                   if(st != null && st.trim() !== "") txt = st;
                 }
               }catch(e){}
+              // Clipped-fence fallback: virtualized code nodes render a
+              // placeholder via innerText while full JSON sits collapsed.
+              try{
+                if(typeof ZSParse !== "undefined" && ZSParse.hasToolSignature && ZSParse.stableBlockKey){
+                  if(ZSParse.hasToolSignature(txt) && !ZSParse.stableBlockKey(txt)){
+                    var ft = "";
+                    try{ ft = el.textContent || ""; }catch(ee){}
+                    if(ft && ft.length > txt.length && ZSParse.stableBlockKey(ft)) txt = ft;
+                  }
+                }
+              }catch(e){}
               if(txt && txt.trim().length > 5) return { present: true, reply: txt, thinking: "", item: el };
             }
           }

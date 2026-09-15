@@ -1,4 +1,16 @@
 # Changelog
+## 5.15.0 - trusted execution end to end: last-resort dispatch, verified feed-back, fast proof
+
+**Symptom.** Arena Agent complies, yet nothing executes: 54s+ thinks, hollow `{}` fence renders, DeepSeek works on the same bridge (bridge/Studio healthy — fault isolated to the Agent-page loop and feed path).
+
+**Settle hardening** (`main.js` `waitForReply`): last-resort dispatch — signature visible >30s + complete payload + not already run (double-fire guarded) dispatches instead of riding the 5-min cap; clip watchdog — open block >45s returns `clip_stuck`, loop asks for one compact re-emit (1/session). **Full-text fallback** (`generic.js` `fullText`, arena step path): when the visible fence is a clipped placeholder but collapsed DOM holds complete JSON, read the full text.
+
+**Trusted feed-back** (`feedToolResultTransactional`): delivery verified by `userCount` growth — generation-start is no longer accepted as proof (always-true on busy Agent pages); 3 submit-grade retries; explicit `FAILED to post` feed + banner; undelivered results stashed (`A.pendingResult`) and re-attached next turn, never silently dropped.
+
+**Fast proof + version log**: `get_studio_state`/`list_roblox_studios` tool timeout clamped to 15s (probe parity — fail fast, beat Arena task abandonment); startup feed logs `RoLink vX` so stale-extension reports are instant to spot.
+
+**Tests**: new `tests/proof-feed.test.js` (8). All 18 suites green.
+
 ## 5.14.0 - settle emitted turns + end-to-end event identity (no more stuck "queued")
 
 **Symptom.** On `arena.ai/agent` the model emitted a clean block, yet zero dispatches happened (`· 0 tools`) while it "thought" for 1m38s. Two defects: the turn never settled, and queued rows could never resolve.

@@ -158,6 +158,20 @@ window.makeGenericProvider = function(opts){
       const s = i ? stripVolatile(i) : null;
       if(s != null && s.trim() !== "") reply = s;
     }catch{}
+    // Clipped-fence fallback: some pages render code fences through
+    // virtualized/collapsed nodes so innerText shows a placeholder while the
+    // full JSON sits in the DOM. textContent sees hidden/collapsed text — if
+    // the visible read has a tool signature but no COMPLETE payload while the
+    // full text does, prefer the full text (stability is handled downstream
+    // by payload-stability, not raw text).
+    try{
+      if(i && typeof ZSParse !== "undefined" && ZSParse.hasToolSignature && ZSParse.stableBlockKey){
+        if(ZSParse.hasToolSignature(reply) && !ZSParse.stableBlockKey(reply)){
+          const ft = fullText(i);
+          if(ft && ft.length > reply.length && ZSParse.stableBlockKey(ft)) reply = ft;
+        }
+      }
+    }catch{}
     return {present: !!i, reply, thinking: "", item: i};
   }
   // Remove volatile descendants (thought counters, progress bars) from a
@@ -172,6 +186,10 @@ window.makeGenericProvider = function(opts){
       for(const b of bad){ try{ b.remove(); }catch{} }
       return visibleText(c);
     }catch{ return null; }
+  }
+  // Raw DOM text including hidden/collapsed nodes (innerText drops those).
+  function fullText(item){
+    try{ return (item && item.textContent) || ""; }catch{ return ""; }
   }
   function turnHalted(){ return false; }
   function scanError(){ if(!getEditor()) return "Input box gone."; return null; }
@@ -374,7 +392,7 @@ window.makeGenericProvider = function(opts){
     attachImages, clearAttachments, conversationKey,
     installSendHooks, findToolBlockSpot,
     capResult, overlayBlocking, replyUnsettled, hasStreamingLabel,
-    stripVolatile, volatileSel: VOLATILE_SEL,
+    stripVolatile, fullText, volatileSel: VOLATILE_SEL,
   };
 
   // Allow per-site providers to patch the instance before exposing it.
