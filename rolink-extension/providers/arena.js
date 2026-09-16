@@ -29,14 +29,16 @@
   window.ZSProvider = window.makeGenericProvider({
     id: "arena", displayName: "Arena",
     selectors: {
-      chatItem: "[data-testid*='message' i], [data-testid*='agent-step' i], [data-testid*='task' i], [data-testid*='plan' i], [class*='message' i], [class*='response' i]",
+      chatItem: "[data-testid*='message' i], [data-testid*='agent-step' i], [data-testid*='task' i], [data-testid*='plan' i], [data-testid*='run' i], [data-testid*='step' i], [class*='message' i], [class*='response' i], [class*='turn' i]",
       editor: "textarea, [contenteditable='true'], [role='textbox']",
       sendBtn: "button[aria-label*='Send' i], button[data-testid*='send' i], button[type='submit']"
     },
     // Volatile chrome on the Agent page: thought-duration counters, progress
     // bars and live status regions tick inside observed replies and would
     // defeat the loop's text-stability gate (see generic stripVolatile).
-    volatileSel: "[data-testid*='thought' i], [class*='thought' i], [data-testid*='timer' i], [class*='timer' i], [class*='progress' i], [role='progressbar']",
+    // LMArena variants render elapsed-time footers and streaming status lines;
+    // strip those too so payload stability (not chrome churn) gates execution.
+    volatileSel: "[data-testid*='thought' i], [class*='thought' i], [data-testid*='timer' i], [class*='timer' i], [data-testid*='elapsed' i], [class*='elapsed' i], [data-testid*='duration' i], [class*='duration' i], [data-testid*='status' i][class*='live' i], [class*='progress' i], [class*='streaming' i], [role='progressbar'], [aria-live='polite'][class*='status' i]",
     // Agent tasks die fast (the platform may rate/end the task seconds after
     // the model stops), so settle thresholds run tighter here than on
     // persistent chats. Direct-chat providers keep generic defaults.
@@ -46,14 +48,28 @@
       var BLOCKED_RE = /battle|side[\s_-]?by[\s_-]?side/i;
       function comboText(){
         try{
-          var el = document.querySelector("[class*='mode' i] button, [class*='conversation-mode' i], [role='combobox']");
-          return ((el && (el.textContent || "")) || "").trim();
+          var el = document.querySelector("[class*='mode' i] button, [class*='conversation-mode' i], [role='combobox'], [data-testid*='mode' i], [aria-label*='mode' i]");
+          var t = ((el && (el.textContent || "")) || "").trim();
+          if(t) return t;
+          // Fallback: checked radio / selected option in a mode switcher.
+          var checked = document.querySelector("[role='radiogroup'] [aria-checked='true'], [data-testid*='mode'] [aria-selected='true']");
+          return ((checked && (checked.textContent || "")) || "").trim();
         }catch(e){ return ""; }
       }
       function pathMode(){
         try{
           var p = (location && location.pathname) || "";
           if(/\/agent\b/i.test(p)) return "agent";
+          // Hash routers (#/agent), locale prefixes (/en/agent), query (?mode=agent).
+          var h = (location && location.hash) || "";
+          if(/agent/i.test(h)) return "agent";
+          var s = (location && location.search) || "";
+          if(/[?&](mode|view|tab)=agent\b/i.test(s)) return "agent";
+          if(/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?agent\b/i.test(p)) return "agent";
+          // Markup-driven: an explicit agent root marker anywhere on the page.
+          if(typeof document !== "undefined" && document.querySelector){
+            if(document.querySelector("[data-mode='agent' i], [data-view='agent' i], main[data-agent]")) return "agent";
+          }
         }catch(e){}
         return "";
       }
@@ -62,7 +78,9 @@
           if(typeof document === "undefined" || !document.querySelector) return false;
           return !!(document.querySelector(
             "[data-testid*='agent' i], [data-testid*='plan-step' i], [data-testid*='task-run' i]," +
-            " [data-dropzone], [class*='agent-plan' i], [class*='task-trace' i]"
+            " [data-testid*='run-step' i], [data-testid*='tool-call' i]," +
+            " [data-dropzone], [class*='agent-plan' i], [class*='task-trace' i]," +
+            " [class*='agent-timeline' i], [class*='run-timeline' i], main [class*='agent' i]"
           ));
         }catch(e){ return false; }
       }
@@ -165,43 +183,50 @@
         try{ if(baseHard && baseHard()) return true; }catch(e){}
         return agentBusy();
       };
-      // Agent-aware read: prefer the latest settled plan-step/task node so a
-      // multi-step trace feeds one ###MCP_TOOL### per turn; fall back to the
-      // generic last-assistant read. Never throws without DOM.
+      // Agent-aware read: join ALL settled plan-step/task nodes in document
+      // order so tool blocks split across sibling steps are never dropped;
+      // single-step traces behave exactly as before. Falls back to the generic
+      // last-assistant read. Never throws without DOM.
       var baseRead = P.readAssistant;
       P.readAssistant = function(){
         try{
           if(P.isAgentMode() && typeof document !== "undefined" && document.querySelectorAll){
             var steps = document.querySelectorAll(
-              "[data-testid*='plan-step' i], [data-testid*='task-run' i], [data-testid*='agent-step' i]"
+              "[data-testid*='plan-step' i], [data-testid*='task-run' i], [data-testid*='agent-step' i]," +
+              " [data-testid*='run-step' i], [data-testid*='tool-call' i]"
             );
-            for(var i = steps.length - 1; i >= 0; i--){
-              var el = steps[i];
-              var busy = false;
-              try{ busy = el.getAttribute && el.getAttribute("aria-busy") === "true"; }catch(e){}
-              if(busy) continue;
-              var txt = "";
-              try{ txt = (el.innerText || el.textContent) || ""; }catch(e){}
-              // Strip volatile descendants (thought timers) so the loop's
-              // stability gate sees content, not ticking chrome.
-              try{
-                if(P.stripVolatile){
-                  var st = P.stripVolatile(el);
-                  if(st != null && st.trim() !== "") txt = st;
-                }
-              }catch(e){}
-              // Clipped-fence fallback: virtualized code nodes render a
-              // placeholder via innerText while full JSON sits collapsed.
-              try{
-                if(typeof ZSParse !== "undefined" && ZSParse.hasToolSignature && ZSParse.stableBlockKey){
-                  if(ZSParse.hasToolSignature(txt) && !ZSParse.stableBlockKey(txt)){
-                    var ft = "";
-                    try{ ft = el.textContent || ""; }catch(ee){}
-                    if(ft && ft.length > txt.length && ZSParse.stableBlockKey(ft)) txt = ft;
+            if(steps && steps.length){
+              var parts = [];
+              var lastEl = null;
+              for(var i = 0; i < steps.length; i++){
+                var el = steps[i];
+                var busy = false;
+                try{ busy = el.getAttribute && el.getAttribute("aria-busy") === "true"; }catch(e){}
+                if(busy) continue;
+                var txt = "";
+                try{ txt = (el.innerText || el.textContent) || ""; }catch(e){}
+                // Strip volatile descendants (thought timers) so the loop's
+                // stability gate sees content, not ticking chrome.
+                try{
+                  if(P.stripVolatile){
+                    var st = P.stripVolatile(el);
+                    if(st != null && st.trim() !== "") txt = st;
                   }
-                }
-              }catch(e){}
-              if(txt && txt.trim().length > 5) return { present: true, reply: txt, thinking: "", item: el };
+                }catch(e){}
+                // Clipped-fence fallback: virtualized code nodes render a
+                // placeholder via innerText while full JSON sits collapsed.
+                try{
+                  if(typeof ZSParse !== "undefined" && ZSParse.hasToolSignature && ZSParse.stableBlockKey){
+                    if(ZSParse.hasToolSignature(txt) && !ZSParse.stableBlockKey(txt)){
+                      var ft = "";
+                      try{ ft = el.textContent || ""; }catch(ee){}
+                      if(ft && ft.length > txt.length && ZSParse.stableBlockKey(ft)) txt = ft;
+                    }
+                  }
+                }catch(e){}
+                if(txt && txt.trim().length > 5){ parts.push(txt); lastEl = el; }
+              }
+              if(parts.length) return { present: true, reply: parts.join("\n\n"), thinking: "", item: lastEl };
             }
           }
         }catch(e){}
@@ -219,7 +244,8 @@
           if(P.isAgentMode() && typeof document !== "undefined" && document.querySelectorAll){
             var cands = document.querySelectorAll(
               "[data-testid*='agent-composer' i] textarea, [data-testid*='agent-composer' i] [contenteditable='true']," +
-              " [data-testid*='task-input' i], [data-testid*='prompt-input' i], [data-testid*='composer-input' i]"
+              " [data-testid*='task-input' i], [data-testid*='prompt-input' i], [data-testid*='composer-input' i]," +
+              " [data-testid*='agent-input' i], [data-testid*='chat-input' i], form textarea, main textarea"
             );
             for(var i = 0; i < cands.length; i++){
               var c = cands[i];

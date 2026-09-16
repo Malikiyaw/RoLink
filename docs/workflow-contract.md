@@ -49,3 +49,28 @@ AI chat DOM
   `matchBrace`/`scanBalancedObject`, `salvageCutOff` max 2 closers never mid-string.
 - `normalize` returns null on ambiguous input (never execute guesses). All
   rejections flow back to the model via `feedToolResultTransactional`.
+
+## Agent-Mode contract (arena.ai + lmarena.ai /agent)
+
+- Mode detect (`providers/arena.js`): `/agent` path + hash (`#/agent`) +
+  locale prefix + `?mode=agent` + `[data-mode='agent']` + Agent DOM markers
+  (plan-step / task-run / run-step / tool-call / timeline). `unknown` passes
+  the composer gate; only Battle / Side-by-Side refuse.
+- Prompt routing (`core/main.js` dispatcher → `core/config.js`
+  `buildAgentModePrompt`): claims NO identity, bans NOTHING, frames RoLink as
+  the user's own extension→Studio channel, demands verify-first
+  `get_studio_state`. The Direct prompt (`buildDirectPrompt`) and the agent
+  reminder rider never re-inject identity claims on agent turns.
+- Read (`providers/arena.js`): join ALL settled step nodes in document order
+  (multi-step traces), skip `aria-busy`, strip volatile
+  (thought/timer/elapsed/duration/progress/streaming), `textContent` fallback
+  for clipped fences. One `###MCP_TOOL###` per turn; `batch_queue` (max 20,
+  no nesting) allowed for multi-step builds.
+- Send (`core/main.js`): `verifiedSend` acceptance gate (editor-clear OR
+  `userCount` growth; 2s gate in agent mode, 3s elsewhere) + `sendCritical`
+  for clip/refusal/cantRun/intent/truncated/dialect nudges. Result feed is
+  transactional with `A.pendingResult` re-attach; `FAILED to post` + popup
+  Events tab is the recovery ceiling when the platform ends the task.
+- Loop budgets: refusal 2, intent 2, cantRun 1 (agent bootstrap allowed at
+  `toolCount 0`), clip 1, last-resort dispatch at 30s visible signature,
+  block settle 1.5s on arena.

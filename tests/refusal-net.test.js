@@ -154,6 +154,27 @@ const SCREENSHOT_REFUSAL = "I need to be straight with you here: I'm not RoLink 
       "no toolCount gate on refusal path");
   });
 
+  // ── 5: P0 regression — dispatcher routes agentMode to config.js ───────
+  // A local zero-arg buildSystemPrompt() once shadowed the config.js builder,
+  // so Agent Mode received the identity-claim prompt and refused every run.
+  // This pins the dispatcher shape: direct builder renamed, dispatcher takes
+  // (p, opts) and delegates {agentMode:true} to the window-level builder.
+  await run("main.js dispatcher routes agentMode (no shadowing)", async () => {
+    const src = fs.readFileSync(
+      path.join(__dirname, "..", "rolink-extension", "core", "main.js"), "utf8");
+    assert(src.includes("function buildDirectPrompt("), "direct builder renamed");
+    assert(src.includes("function buildSystemPrompt(p, opts)"), "dispatcher takes (p, opts)");
+    assert(src.includes("opts.agentMode"), "dispatcher checks agentMode");
+    assert(src.includes("window.buildSystemPrompt"), "dispatcher delegates to config.js builder");
+    assert(src.includes("return buildDirectPrompt()"), "dispatcher falls back to direct");
+    // The direct builder must still claim identity (Direct chat unchanged).
+    assert(/function buildDirectPrompt\(\)[\s\S]{0,8000}You are RoLink Agent/.test(src),
+      "direct builder keeps identity claim");
+    // Agent rider must not re-inject identity claims.
+    assert(src.includes("Emit one ###MCP_TOOL### block for the next Studio step"),
+      "agent rider present");
+  });
+
   console.log(`\nRefusal-net tests: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
 })();

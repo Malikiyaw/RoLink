@@ -100,6 +100,10 @@ function assert(cond, msg){ if(!cond) throw new Error(msg); }
       "isAgentMode", "aria-busy", "plan-step", "/agent",
       "Battle / Side-by-Side", "execCommand", "describeComposer",
       "requestSubmit", "lastSendLeg",
+      // LMArena hardening (full agent-mode phase): hash/query/path markers,
+      // multi-node step join, lmarena composer + volatile selectors.
+      "location.hash", "location.search", "run-step", "tool-call",
+      "parts.join", "agent-input", "chat-input", "elapsed",
     ]) assert(code.includes(needle), "arena.js contains " + needle);
     ok("arena agent-mode contract (no-DOM safe)");
   } catch (e) { bad("arena contract", e); }

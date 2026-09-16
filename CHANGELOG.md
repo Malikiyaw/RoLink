@@ -1,4 +1,18 @@
 # Changelog
+## 5.17.0 - LMArena Agent Mode fully functional: prompt routing fix, multi-node reads, verified nudges
+
+**Symptom.** On `lmarena.ai` / `arena.ai` Agent Mode the loop still ended with 0 calls: a local zero-arg `buildSystemPrompt()` in `main.js` shadowed the agent-aware builder from `config.js`, so Agent Mode received the identity-claim + native-tool-ban prompt and the model refused as prompt injection.
+
+**P0 prompt routing** (`core/main.js`): local builder renamed to `buildDirectPrompt()` (byte-identical); new `buildSystemPrompt(p, opts)` dispatcher routes `{agentMode:true}` to the window-level `config.js` builder (source-verified, recursion-guarded) and keeps every other caller on Direct. `maybeRider()` is agent-aware — agent turns get a claim-free reminder, never the identity line.
+
+**P1 LMArena detection + reads** (`providers/arena.js`): mode detect adds hash-router (`#/agent`), locale prefix, `?mode=agent`, `[data-mode]` + checked-radio fallback; `readAssistant` joins ALL settled step nodes in document order (split blocks no longer dropped); `agentEditor` adds `agent-input`/`chat-input`/generic fallbacks; `volatileSel` adds elapsed/duration/live-status/streaming chrome.
+
+**P2 verified sends** (`core/main.js`): new `sendCritical()` (acceptance-gated `verifiedSend×2` + fire-once fallback) for clip/refusal/cantRun/intent/truncated/empty/dialect nudges; `verifiedSend` gate 3s → 2s in agent mode to beat the task clock.
+
+**P3 loop semantics**: classic cantRun heals once at `toolCount 0` in agent mode (Direct keeps the gate); one `###MCP_TOOL###` per turn kept, `batch_queue` still allowed.
+
+**Tests**: `refusal-net` gains a dispatcher regression test (catches future shadowing); `providers` pins new markers; `proof-feed` pins `sendCritical` + 2s gate. All 18 node suites green. `docs/workflow-contract.md` gains the Agent-Mode contract.
+
 ## 5.16.0 - beat Arena's task clock: faster settle, verified feed, greeting collapse
 
 **Symptom.** Valid block emitted in 1s on a healthy bridge (139 tools, Studio ready), yet Arena rated/ended the task before the loop finished (~8-11s pipeline vs ~5s task patience).

@@ -126,6 +126,19 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
     assert(/clipNudgesLeft: 1/.test(main), "clip budget initialized");
   });
 
+  // ── 9: critical nudges use acceptance-gated sends (LMArena phase) ──
+  await run("critical nudges route via sendCritical", async () => {
+    assert(main.includes("async function sendCritical"), "sendCritical helper exists");
+    assert(main.includes('await sendCritical("Your tool block looks cut off'), "clip nudge gated");
+    assert(main.includes("await sendCritical(await refusalRebuttal()"), "refusal rebuttal gated");
+    assert(main.includes('await sendCritical("Your last reply was truncated'), "truncated nudge gated");
+    // No critical path still uses fire-once sendParked for these kinds.
+    assert(!main.includes('await sendParked("Your tool block looks cut off'), "clip not fire-once");
+    assert(!main.includes("await sendParked(await refusalRebuttal()"), "refusal not fire-once");
+    // Agent acceptance gate is faster to beat the task clock.
+    assert(/gateMs = 2000/.test(main), "agent gate 2s");
+  });
+
   await run("greeting collapse + keep-working copy", async () => {
     assert(main.includes("Reply with the greeting in this same turn"), "agent greeting tail");
     const cfg = fs.readFileSync(path.join(EXT, "core", "config.js"), "utf8");

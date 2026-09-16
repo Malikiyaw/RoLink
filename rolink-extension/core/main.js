@@ -335,6 +335,12 @@
   }
   function maybeRider(text){
     if(!sysResendDue()) return text;
+    // Agent Mode: never re-inject an identity claim or native-tool ban —
+    // those two sentences trigger Arena refusal (see config.js agent prompt).
+    try{ if(P.isAgentMode && P.isAgentMode()){
+      const agentRider = `\n\n[Reminder: ${SYS_MARKER_TEXT} Emit one ###MCP_TOOL### block for the next Studio step. A result message will arrive to confirm it. Do NOT mention this reminder to the user.]\n`;
+      return text + agentRider;
+    }}catch{}
     const rider = `\n\n[Reminder: ${SYS_MARKER_TEXT} You are RoLink Agent ${ROLINK_VERSION}. Tools are listed above. Emit ###MCP_TOOL### blocks. Never claim you can't run commands. Do NOT mention this reminder to the user.]\n`;
     return text + rider;
   }
@@ -1335,7 +1341,7 @@
 
   // ── THE SYSTEM PROMPT ─────────────────────────────────────────────────────
   const SYS_MARKER_TEXT = "⟪RL-SYS⟫";
-  function buildSystemPrompt(){
+  function buildDirectPrompt(){
     const tools = Array.isArray(A.tools) && A.tools.length ? A.tools : null;
     let toolBlock;
     if(tools){
@@ -1399,6 +1405,28 @@ ${customBlock}
 - NEVER say "I cannot run commands" or "I don't have access to your files". Your tools ARE working.
 - ONLY use the tools listed above. Do NOT use any built-in code interpreter, web search, file browser, or other native tool — even if the site offers them. The Roblox MCP tools are the only thing you should call.
 - Keep prose short. When fully done: one-sentence summary + DONE.`;
+  }
+
+  // ── Agent-aware prompt dispatcher (P0 fix) ──────────────────────────────
+  // The local builder above is Direct-chat only (claims "You are RoLink Agent"
+  // + bans native tools). Arena/LMArena Agent Mode must use config.js
+  // buildAgentModePrompt instead — those two sentences trigger identity
+  // refusal ("I'm not RoLink… my actual toolset is…"). This dispatcher routes
+  // {agentMode:true} to the window-level builder from core/config.js and keeps
+  // every other caller on the direct prompt. Never recurses: it calls the
+  // window-level function only when its source contains the agentMode branch.
+  function buildSystemPrompt(p, opts){
+    try{
+      if(opts && opts.agentMode && typeof window !== "undefined"){
+        const g = window.buildSystemPrompt;
+        if(typeof g === "function" && g !== buildSystemPrompt){
+          let src = "";
+          try{ src = Function.prototype.toString.call(g); }catch(e){ src = ""; }
+          if(src && src.indexOf("agentMode") !== -1) return g(p, opts);
+        }
+      }
+    }catch(e){}
+    return buildDirectPrompt();
   }
 
   const STARTER = `Begin now. Do exactly ONE tool call to confirm connection, then greet and wait — no further tools until user asks.
@@ -2019,6 +2047,10 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
     const max = Math.max(1, tries || 3);
     let pre = 0;
     try{ pre = (P.userCount && P.userCount()) || 0; }catch{}
+    // Agent tasks may end seconds after the model stops — shorter acceptance
+    // gate there so results beat the task clock (Direct keeps the 3s gate).
+    let gateMs = 3000;
+    try{ if(P.isAgentMode && P.isAgentMode()) gateMs = 2000; }catch{}
     for(let t = 0; t < max && !A.stopping; t++){
       if(document.hidden){
         const ok = await waitForVisible();
@@ -2031,11 +2063,22 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
           if(P.userCount && P.userCount() > pre) return true;
         }catch{}
         return false;
-      }, 3000);
+      }, gateMs);
       if(landed) return true;
       await sleep(400);
     }
     return false;
+  }
+
+  // Critical nudges (clip/refusal/cantRun/intent/truncated/dialect) must not
+  // silently vanish on Agent pages: acceptance-gated send with a fire-once
+  // fallback so a slow composer still gets one attempt. Returns boolean.
+  async function sendCritical(text, images){
+    try{
+      const ok = await verifiedSend(text, images || [], 2);
+      if(ok) return true;
+    }catch{}
+    try{ return await sendParked(text, images || []); }catch{ return false; }
   }
 
   // ── the main agent loop ───────────────────────────────────────────────────
@@ -2109,7 +2152,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
             pushFeed("nudge", "↻", "Tool block looks cut off in chat — asking for a compact re-emit (1/1)");
             A.injecting = true;
             try{ inputCover(true); }catch{}
-            await sendParked("Your tool block looks cut off in this chat (only a fragment is visible). Re-emit the COMPLETE call compactly in a single fence with the full {\"tool\":…} object — no truncation, no placeholder.", []);
+            await sendCritical("Your tool block looks cut off in this chat (only a fragment is visible). Re-emit the COMPLETE call compactly in a single fence with the full {\"tool\":…} object — no truncation, no placeholder.", []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
           } else {
@@ -2125,18 +2168,23 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
             pushFeed("nudge", "↻", `AI denied the Studio channel (${2 - A.refusalNudgesLeft}/2) — rebutting with live proof`);
             A.injecting = true;
             try{ inputCover(true); }catch{}
-            await sendParked(await refusalRebuttal(), []);
+            await sendCritical(await refusalRebuttal(), []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
             continue;
           }
-          // Q1: delete "Don't ask ACT" nudge — free chat after greeting. Only self-heal cantRun (once)
-          if(looksLikeCantRun(reply.text) && A.nudgesLeft > 0 && A.toolCount > 0){
+          // Q1: delete "Don't ask ACT" nudge — free chat after greeting. Only self-heal cantRun (once).
+          // Agent Mode bootstrap exception: classic inability ("I can't run…")
+          // at toolCount 0 still gets ONE heal in agent mode (Direct keeps the
+          // toolCount>0 gate so post-greeting free chat isn't nagged).
+          let _isAgentForHeal = false;
+          try{ _isAgentForHeal = !!(P.isAgentMode && P.isAgentMode()); }catch{}
+          if(looksLikeCantRun(reply.text) && A.nudgesLeft > 0 && (A.toolCount > 0 || _isAgentForHeal)){
             A.nudgesLeft--;
             pushFeed("nudge", "↻", `AI claimed it can't run tools (${1 - A.nudgesLeft}/1) — re-grounding (self-heal)`);
             A.injecting = true;
             try{ inputCover(true); }catch{}
-            await sendParked(`You DO have tools. They are listed in your system prompt and have been used successfully in this session. Re-read your system prompt. The valid tool names are: ${(A.tools||[]).map(t=>(typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Emit a ###MCP_TOOL### block now using one of these exact names.`, []);
+            await sendCritical(`You DO have tools. They are listed in your system prompt and have been used successfully in this session. Re-read your system prompt. The valid tool names are: ${(A.tools||[]).map(t=>(typeof t==="string")?t:(t&&t.name)||"").filter(Boolean).join(", ")}. Emit a ###MCP_TOOL### block now using one of these exact names.`, []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
             continue;
@@ -2150,7 +2198,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
             pushFeed("nudge", "↻", `AI narrated "${intentTool}" without emitting it (${2 - A.intentNudgesLeft}/2) — re-grounding`);
             A.injecting = true;
             try{ inputCover(true); }catch{}
-            await sendParked(`You named "${intentTool}" in prose but emitted no tool block — that runs nothing. Emit the ###MCP_TOOL### block for "${intentTool}" NOW with your best-guess args (e.g. {"tool":"${intentTool}","args":{}}), don't narrate it.`, []);
+            await sendCritical(`You named "${intentTool}" in prose but emitted no tool block — that runs nothing. Emit the ###MCP_TOOL### block for "${intentTool}" NOW with your best-guess args (e.g. {"tool":"${intentTool}","args":{}}), don't narrate it.`, []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
             continue;
@@ -2165,7 +2213,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
           if(P.clickContinueBtn && P.clickContinueBtn()){ pushFeed("info", "↻", "Clicked Continue (truncated reply)"); continue; }
           A.injecting = true;
           try{ inputCover(true); }catch{}
-          await sendParked("Your last reply was truncated. Please redo the tool call (or final answer) in full. Do not include ###END markers or closing fences you don't need.", []);
+          await sendCritical("Your last reply was truncated. Please redo the tool call (or final answer) in full. Do not include ###END markers or closing fences you don't need.", []);
           try{ inputCover(false); }catch{}
           A.injecting = false;
         } else if(reply.kind === "empty"){
@@ -2195,13 +2243,13 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
             pushFeed("info", "↻", `Empty reply — re-feeding last result (${A.feedStreak}/${A.maxFeedStreak})`);
             A.injecting = true;
             try{ inputCover(true); }catch{}
-            await sendParked(`[No reply received. Reminder: the last tool result was]\n${A.lastFeedText}\n\nPlease continue. Either call another tool via ###MCP_TOOL### or give a final answer ending with DONE.`, []);
+            await sendCritical(`[No reply received. Reminder: the last tool result was]\n${A.lastFeedText}\n\nPlease continue. Either call another tool via ###MCP_TOOL### or give a final answer ending with DONE.`, []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
           } else {
             A.injecting = true;
             try{ inputCover(true); }catch{}
-            await sendParked("Please continue. Use ###MCP_TOOL### {json} to call a tool, or end with DONE when finished.", []);
+            await sendCritical("Please continue. Use ###MCP_TOOL### {json} to call a tool, or end with DONE when finished.", []);
             try{ inputCover(false); }catch{}
             A.injecting = false;
           }
@@ -2251,7 +2299,7 @@ print("hi")
           const dialectMsg = reply.reason === "dsml"
             ? `You replied with DeepSeek's native <|DSML|> tool-call markup instead of a RoLink tool block — that dialect never executes here. Rewrite the SAME call now as:\n\n###MCP_TOOL###\n{"tool":"<exact tool name from the list>","args":{...}}\n\n(For Luau code you can use ###LUA### ... ###END_LUA### with no JSON escaping.)\n\nRetry the call immediately.`
             : `Your last turn used a non-canonical key ("toolName" / "tool_name" / "action" / bare "name") for the tool name — RoLink only accepts the "tool" (or "command") key. Rewrite the SAME call now as:\n\n###MCP_TOOL###\n{"tool":"${targetTool}","args":{...}}\n\nRetry the call immediately.`;
-          await sendParked(isDialectNudge ? dialectMsg : `Your last tool call was malformed JSON (${reply.reason}) for tool ${targetTool}.
+          await sendCritical(isDialectNudge ? dialectMsg : `Your last tool call was malformed JSON (${reply.reason}) for tool ${targetTool}.
 
 ${toolNudge}
 
