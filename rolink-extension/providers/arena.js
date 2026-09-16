@@ -285,28 +285,37 @@
                   if(ht && hasSig(ht)) return { present: true, reply: ht, thinking: "", item: host };
                 }
               }catch(e){}
-              // Escalation 2: bounded page scan — find any visible marker
-              // text node under main and return its enclosing block.
+              // Escalation 2: end-first bounded scan — new content appends at
+              // the END, so scan last elements first. The old top-down
+              // TreeWalker died on its node cap before reaching fresh replies
+              // on long traces. Element-agnostic (any tag), rl-root skipped,
+              // fragment-tolerant via hasSig.
               try{
-                var scope = null;
-                try{ scope = document.querySelector("main") || document.body; }catch(e){ scope = null; }
-                if(scope && document.createTreeWalker && typeof NodeFilter !== "undefined"){
-                  var walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
-                  var n = null, found = null, guard = 0;
-                  while((n = walker.nextNode()) && guard++ < 4000){
-                    var v = "";
-                    try{ v = n.nodeValue || ""; }catch(e){}
-                    if(v.length > 8 && v.length < 200000 && hasSig(v)){ found = n.parentElement; break; }
-                  }
-                  if(found){
-                    var blk = found;
-                    try{
-                      while(blk && blk.parentElement && blk.parentElement !== scope &&
-                            !/^(PRE|CODE|DIV|P|LI|ARTICLE)$/.test(blk.tagName)) blk = blk.parentElement;
-                    }catch(e){}
-                    var bt = "";
-                    try{ bt = (blk.innerText || blk.textContent) || ""; }catch(e){}
-                    if(bt && hasSig(bt)) return { present: true, reply: bt, thinking: "", item: blk };
+                var scope2 = null;
+                try{ scope2 = document.querySelector("main") || document.body; }catch(e){ scope2 = null; }
+                if(scope2 && scope2.querySelectorAll){
+                  var els = scope2.querySelectorAll("div, section, article, li, p, h1, h2, h3, h4, pre, code, blockquote, td");
+                  var checked = 0;
+                  for(var ei = els.length - 1; ei >= 0 && checked < 300; ei--){
+                    var cand = els[ei];
+                    var cskip = false;
+                    try{ if(cand.closest && cand.closest("#rl-root")) cskip = true; }catch(e){}
+                    if(cskip) continue;
+                    var ct = "";
+                    try{ ct = cand.textContent || ""; }catch(e){}
+                    if(!ct || ct.length < 8 || ct.length > 200000) continue;
+                    checked++;
+                    if(hasSig(ct)){
+                      var blk2 = cand;
+                      try{
+                        while(blk2 && blk2.parentElement && blk2.parentElement !== scope2 &&
+                              !/^(PRE|CODE|DIV|P|LI|ARTICLE|H1|H2|H3|BLOCKQUOTE)$/.test(blk2.tagName)) blk2 = blk2.parentElement;
+                      }catch(e){}
+                      var bt2 = "";
+                      try{ bt2 = (blk2.innerText || blk2.textContent) || ""; }catch(e){}
+                      if(bt2 && hasSig(bt2)) return { present: true, reply: bt2, thinking: "", item: blk2 };
+                      return { present: true, reply: ct, thinking: "", item: cand };
+                    }
                   }
                 }
               }catch(e){}

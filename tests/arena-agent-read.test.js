@@ -53,8 +53,9 @@ const BLOCK = '###MCP_TOOL###\n{"tool":"get_studio_state","args":{}}';
   await run("source: escalation helpers present", async () => {
     for (const needle of [
       "fenceTexts", "hasSig", "Escalation 1", "Escalation 2",
-      "createTreeWalker", "guard++ < 4000", "parts.join",
+      "els.length - 1", "checked < 300", "parts.join",
     ]) assert(arenaSrc.includes(needle), "arena.js contains " + needle);
+    assert(!arenaSrc.includes("guard++ < 4000"), "top-down guard retired");
   });
 
   await run("joins settled steps in order, skips busy", async () => {
@@ -96,26 +97,32 @@ const BLOCK = '###MCP_TOOL###\n{"tool":"get_studio_state","args":{}}';
     const codeEl = {
       tagName: "CODE", parentElement: null,
       innerText: "", textContent: BLOCK,
-      querySelector: () => null, querySelectorAll: () => [],
+      querySelector: () => null, querySelectorAll: () => [], closest: () => null,
     };
-    const turnEl = { tagName: "DIV", parentElement: null, querySelector: () => null, querySelectorAll: () => [] };
+    const turnEl = {
+      tagName: "DIV", parentElement: null,
+      innerText: "", textContent: "",
+      querySelector: () => null, querySelectorAll: () => [], closest: () => null,
+    };
+    const scope = {
+      tagName: "MAIN",
+      querySelectorAll: (s) => (s.indexOf("blockquote") !== -1 ? [turnEl, codeEl] : []),
+    };
     codeEl.parentElement = turnEl;
-    const scope = { tagName: "MAIN" };
     turnEl.parentElement = scope;
-    const textNode = { nodeValue: BLOCK, parentElement: codeEl };
-    let walked = false;
+    const steps = [el("progress working…")];
     const doc = {
-      querySelectorAll: (s) => (s.indexOf("plan-step") !== -1 ? [el("progress working…")] : []),
+      querySelectorAll: (s) => (s.indexOf("plan-step") !== -1 ? steps : []),
       querySelector: (s) => {
         if (s === "main") return scope;
         return (s.indexOf("agent") !== -1 || s.indexOf("data-mode") !== -1) ? {} : null;
       },
-      createTreeWalker: () => ({ nextNode: () => (walked ? null : (walked = true, textNode)) }),
     };
     const P = loadArena(doc, { SHOW_TEXT: 4 });
     const r = P.readAssistant();
     assert(r.present === true, "present");
     assert(r.reply.indexOf("###MCP_TOOL###") !== -1, "scanned block found");
+    assert(r.item === codeEl, "item is the end-most matching block");
   });
 
   await run("no-DOM safe: falls back without throwing", async () => {

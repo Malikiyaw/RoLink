@@ -508,10 +508,7 @@
     return parsed?.value ? normalize(parsed.value, { type: "fn", raw: candidate, repaired: true, repairReason: repaired.repairReason }) : null;
   }
 
-  function extract(text) {
-    const source = stripDSML(text);
-    if (!source) return null;
-    const allowed = getStringFields();
+  function extractPipeline(source, allowed) {
     const rawTool = parseRawTool(source, allowed);
     if (rawTool) return cleanLuaCall(rawTool);
     const mcp = parseMcp(source, allowed);
@@ -523,8 +520,34 @@
     return cleanLuaCall(parseBare(source));
   }
 
+  function extract(text) {
+    const source = stripDSML(text);
+    if (!source) return null;
+    const allowed = getStringFields();
+    const first = extractPipeline(source, allowed);
+    if (first) return first;
+    // Fragmented-marker second chance (span-split renders): the visible
+    // block is real, only its marker bytes are split across DOM nodes.
+    try {
+      const c = canonicalizeForScan(source);
+      if (c !== source) return extractPipeline(c, allowed);
+    } catch (e) {}
+    return null;
+  }
+
   function extractAll(text) {
     const source = stripDSML(text);
+    const out = extractAllOn(source);
+    if (out.length) return out;
+    // Fragmented-marker second chance (span-split renders): only when the
+    // raw pass found nothing, so clean inputs never double-publish.
+    try {
+      const c = canonicalizeForScan(source);
+      if (c !== source) return extractAllOn(c);
+    } catch (e) {}
+    return out;
+  }
+  function extractAllOn(source) {
     const out = [];
     let remaining = source;
     let guard = 0;
@@ -561,7 +584,19 @@
   // first COMPLETE ###MCP_TOOL### JSON payload in the text, or "" when none
   // is complete yet. Volatile chrome (thought timers, progress text) around
   // the block must never gate execution — only payload bytes matter.
+  // Fragment-tolerant: falls back to the canonicalized scan form when the
+  // visible marker is span-split.
   function stableBlockKey(text) {
+    try {
+      const key = stableBlockKeyRaw(text);
+      if (key) return key;
+      const src = String(text || "");
+      const c = canonicalizeForScan(src);
+      if (c !== src) return stableBlockKeyRaw(c);
+    } catch (e) {}
+    return "";
+  }
+  function stableBlockKeyRaw(text) {
     try {
       const src = String(text || "");
       const at = src.indexOf(START_M);
@@ -574,12 +609,52 @@
     } catch (e) { return ""; }
   }
 
+  // Fragment-tolerant canonicalization for DETECTION (5.17.2).
+  //
+  // Chat renderers tokenize replies into spans: a visible ###MCP_TOOL###
+  // block can arrive in the DOM as "### MCP_TOOL ###", "# # #MCP_TOOL# # #",
+  // or ZWSP/smart-quote variants. The JSON body survives span-splitting
+  // (whitespace between tokens is legal JSON), but the MARKER does not, so
+  // hasToolSignature / stableBlockKey / parseMcp go blind while the user
+  // plainly sees the block. canonicalizeForScan rejoins ONLY the marker
+  // runs (exact keywords MCP_TOOL / END_MCP_TOOL / TOOL:name) — prose
+  // headers like "### Summary ###" are never valid tool markers and stay
+  // inert. Idempotent; clean inputs pass through byte-identical.
+  const FRAG_MARKER_RE = /(#{3,})\s*(MCP_TOOL|END_MCP_TOOL)\s*(#{3,})/g;
+  const FRAG_TOOL_RE = /(#{3,}\s*TOOL\s*:\s*)([A-Za-z0-9_.-]+)(\s*#{3,})/gi;
+  function canonicalizeForScan(text) {
+    let s = String(text || "");
+    if (!s) return s;
+    s = s.replace(ZWSP_RE, "").replace(/^\uFEFF/, "");
+    s = s.replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/\u00a0/g, " ");
+    s = s.replace(/#\s*(?=#)/g, "#");
+    s = s.replace(FRAG_MARKER_RE, "$1$2$3");
+    s = s.replace(FRAG_TOOL_RE, function (m, a, b) { return "###TOOL:" + b + "###"; });
+    return s;
+  }
+
   function hasToolSignature(text) {    const source = String(text || "");
-    return source.includes(START_M) || LUA_START_RE.test(source) || /###RAW:[^#]+###/.test(source) || /###TOOL:[A-Za-z0-9_.-]+###/.test(source) || /\{[\s\S]*?"(?:tool|command|function)"\s*:\s*"[A-Za-z0-9_.-]+"/.test(source);
+    if (source.includes(START_M) || LUA_START_RE.test(source) || /###RAW:[^#]+###/.test(source) || /###TOOL:[A-Za-z0-9_.-]+###/.test(source) || /\{[\s\S]*?"(?:tool|command|function)"\s*:\s*"[A-Za-z0-9_.-]+"/.test(source)) return true;
+    // Fragmented-marker second chance (span-split renders).
+    try {
+      const c = canonicalizeForScan(source);
+      if (c !== source) return hasToolSignature(c);
+    } catch (e) {}
+    return false;
   }
 
   function hasOpenToolBlock(text) {
     const source = String(text || "");
+    if (hasOpenToolBlockRaw(source)) return true;
+    // Fragmented-marker second chance: an incomplete span-split block must
+    // still hold the turn open, never verdict premature `text`.
+    try {
+      const c = canonicalizeForScan(source);
+      if (c !== source) return hasOpenToolBlockRaw(c);
+    } catch (e) {}
+    return false;
+  }
+  function hasOpenToolBlockRaw(source) {
     if (/###RAW:[^#]+###/.test(source) && !/###END_RAW###/.test(source)) return true;
     if (/###TOOL:[A-Za-z0-9_.-]+###/.test(source) && !/###END_TOOL###/.test(source)) return true;
     // A streaming ###LUA### block without its ###END_LUA### is still open:
@@ -654,6 +729,7 @@
     parseMcp, parseLua, parseJsonFence, parseBare, parseRawTool,
     extract: extractInstrumented, extractAll,
     parse: extractInstrumented, normalize, hasToolSignature, hasOpenToolBlock, toolNameFromText, stableBlockKey,
+    canonicalizeForScan, stableBlockKeyRaw, hasOpenToolBlockRaw,
     repairJSONStringValues, getStringFields, getNudgeStats, resetNudgeStats,
     FALLBACK_STRING_FIELDS
   };

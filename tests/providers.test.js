@@ -105,7 +105,7 @@ function assert(cond, msg){ if(!cond) throw new Error(msg); }
       "location.hash", "location.search", "run-step", "tool-call",
       "parts.join", "agent-input", "chat-input", "elapsed",
       // Agent-page read escalation (visible block always found).
-      "fenceTexts", "Escalation 1", "Escalation 2", "createTreeWalker",
+      "fenceTexts", "Escalation 1", "Escalation 2", "els.length - 1",
     ]) assert(code.includes(needle), "arena.js contains " + needle);
     ok("arena agent-mode contract (no-DOM safe)");
   } catch (e) { bad("arena contract", e); }

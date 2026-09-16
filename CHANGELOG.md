@@ -1,4 +1,16 @@
 # Changelog
+## 5.17.2 - visible blocks always execute: fragment-tolerant parser, text-driven sweeps
+
+**Symptom.** On `arena.ai/agent` the model emitted a valid block as plain-text lines, yet Timeline stayed at "no tools yet" — zero dispatches, zero chips. No code path ever saw the block: `scanToolBlocks` only scans `pre`/`code` nodes (the fence rendered as plain divs/spans), and span-split markers (`### MCP_TOOL ###`) defeat every signature check.
+
+**Fragment-tolerant parser** (`core/parser.js`): new `canonicalizeForScan` rejoins split marker runs (exact keywords only — prose headers stay inert) plus ZWSP/smart-quote normalization. `hasToolSignature`, `stableBlockKey`, `hasOpenToolBlock`, `extract`, and `extractAll` (second pass only when raw yields nothing — no double-publish) all use it.
+
+**Text-driven sweeps** (`core/main.js`): MutationObserver callback checks added-subtree text (canonicalized, one shadow level pierced) — element-agnostic; hits run `extractAll` (Timeline proof via `queued`); open blocks park in `_sweepPendingEl` and re-check every tick (streams complete via characterData); complete-but-broken markers raise an explicit warn feed instead of silence.
+
+**End-first page scan** (`providers/arena.js` escalation 2): scans last elements first (new content appends at the end — the old top-down TreeWalker died on its node cap on long traces), bounded 300 elements, `rl-root` skipped.
+
+**Tests**: new `tests/fragment-scan.test.js` (8: canonical round-trips, prose-inert, signature/key/extract on fragments, no double-publish, sweep + scan wiring); `arena-agent-read` + `providers` needles updated. All 20 node suites green.
+
 ## 5.17.1 - agent page executes: escalation reads, flicker-proof settle, anti-freeze
 
 **Symptom.** On `arena.ai/agent` the model emitted a valid `###MCP_TOOL###` block yet zero dispatches happened (no chip, bridge silent), plus a 32s main-thread stall. Two cooperating killers: the step-node read never captured the block (unknown wrapper/virtualized fence) so the turn held forever on perpetual busy UI, and full-DOM synchronous sweeps starved the event loop on the giant trace DOM.

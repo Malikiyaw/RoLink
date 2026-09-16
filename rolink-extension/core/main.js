@@ -2606,7 +2606,10 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
           return {kind:"tool", calls, item: d.item, lastId: curTok};
         }
         if(P.findContinueBtn && P.findContinueBtn()) return {kind:"truncated", text: r, item: d.item};
-        if(r.indexOf(ZSParse.START_M) !== -1 || (ZSParse.LUA_START_RE && ZSParse.LUA_START_RE.test(r))){
+        // Fragment-aware: the canonical scan form may hold the marker even
+        // when the raw reply text has it span-split.
+        const rc = (ZSParse.canonicalizeForScan) ? ZSParse.canonicalizeForScan(r) : r;
+        if(rc.indexOf(ZSParse.START_M) !== -1 || (ZSParse.LUA_START_RE && ZSParse.LUA_START_RE.test(r))){
           return {kind:"parse_error", reason:"malformed", raw: r, item: d.item};
         }
         if(ZSParse.hasOpenToolBlock(r)){
@@ -2644,7 +2647,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
 
       if(ZSParse.LUA_END_RE && ZSParse.LUA_END_RE.test(r) &&
          ZSParse.LUA_START_RE && !ZSParse.LUA_START_RE.test(r) &&
-         r.indexOf(ZSParse.START_M) === -1){
+         (ZSParse.canonicalizeForScan ? ZSParse.canonicalizeForScan(r) : r).indexOf(ZSParse.START_M) === -1){
         return {kind:"parse_error", reason:"luaOpener", raw: r, item: d.item};
       }
 
@@ -2811,6 +2814,10 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
   // However legacy onUserMessage re-arm still needs immediate dispatch when loop is idle — handled there.
   function scanToolBlocks(node){
     if(!node || node.nodeType !== 1) return;
+    // Element-agnostic pass first (5.17.2): fences rendered as plain
+    // divs/spans never reach the pre/code path below. Never hides: the
+    // agent loop's readAssistant needs the raw text for chips.
+    try{ scanAddedText(node); }catch(e){}
     const candidates = [];
     if(node.tagName === "PRE" || node.tagName === "CODE") candidates.push(node);
     if(node.querySelectorAll) candidates.push(...node.querySelectorAll("pre, code"));
@@ -2825,6 +2832,69 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       if(el.parentElement) el.parentElement.style.display = "none";
       // No direct dispatch here — agentLoop's waitForReply will detect and await execution
     }
+  }
+  // Text-driven marker scan (5.17.2): element-agnostic block discovery.
+  // The pre/code-only path misses fences rendered as plain divs/spans, and
+  // provider chatItem selectors can miss whole reply containers. This checks
+  // the added subtree's TEXT (canonicalized for span-split markers, one
+  // shadow level pierced). A hit runs extractAll, which publishes the queued
+  // event (Timeline proof) even before the agent loop settles the turn.
+  // Streaming completions arrive as characterData (no added elements), so an
+  // open block parks in _sweepPendingEl and is re-checked on every observer
+  // tick until it completes, detaches, or proves unparseable.
+  let _sweepPendingEl = null;
+  function subtreeText(root){
+    let t = "";
+    try{ t = (root && root.textContent) || ""; }catch(e){}
+    try{
+      if(root && root.shadowRoot && root.shadowRoot.textContent) t += "\n" + root.shadowRoot.textContent;
+      if(root && root.querySelectorAll && t.length < 500000){
+        const hosts = root.querySelectorAll("*");
+        for(let i = 0; i < hosts.length && t.length < 500000; i++){
+          try{
+            const sh = hosts[i].shadowRoot;
+            if(sh && sh.textContent) t += "\n" + sh.textContent;
+          }catch(e){}
+        }
+      }
+    }catch(e){}
+    return t;
+  }
+  function scanAddedText(node){
+    if(!node || node.nodeType !== 1) return;
+    try{
+      if(node.id === "rl-root" || (node.closest && node.closest("#rl-root"))) return;
+      if(A.strippedBlocks.has(node)) return;
+      const raw = subtreeText(node);
+      if(!raw || raw.length < 8 || raw.length > 500000) return;
+      if(!ZSParse.hasToolSignature(raw)) return;
+      if(ZSParse.hasOpenToolBlock(raw)){ _sweepPendingEl = node; return; }
+      const calls = ZSParse.extractAll(raw).filter(Boolean);
+      A.strippedBlocks.add(node);
+      _sweepPendingEl = null;
+      if(calls.length) return; // queued events published by extractAll
+      // Marker visible but unparseable: say so once per element instead of
+      // going quiet (never hides — the loop may still read it).
+      pushFeed("warn", "⚠", "Saw a tool marker in chat but could not parse it (" + String(raw).slice(0, 120).replace(/\s+/g, " ") + "…) — waiting for the full block.");
+    }catch(e){}
+  }
+  function rescanPending(){
+    // Re-check a parked open block: streams complete via characterData
+    // mutations that add no elements, so added-node scans alone stall.
+    const node = _sweepPendingEl;
+    if(!node) return;
+    try{
+      if(!node.isConnected){ _sweepPendingEl = null; return; }
+      if(node.id === "rl-root" || (node.closest && node.closest("#rl-root"))){ _sweepPendingEl = null; return; }
+      const raw = subtreeText(node);
+      if(!raw || !ZSParse.hasToolSignature(raw)){ _sweepPendingEl = null; return; }
+      if(ZSParse.hasOpenToolBlock(raw)) return; // still streaming — keep parked
+      const calls = ZSParse.extractAll(raw).filter(Boolean);
+      A.strippedBlocks.add(node);
+      _sweepPendingEl = null;
+      if(calls.length) return;
+      pushFeed("warn", "⚠", "Saw a tool marker in chat but could not parse it (" + String(raw).slice(0, 120).replace(/\s+/g, " ") + "…) — asking for a re-emit may be needed.");
+    }catch(e){ try{ _sweepPendingEl = null; }catch(ee){} }
   }
   // Whole-item text scan (ZeroScript decorate.sweep pattern). Critical for
   // sites that split a tool block across multiple <p>/<div> elements.
@@ -2986,7 +3056,8 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     if(A.observeTarget) return;
     A.observeTarget = document.documentElement;
     const obs = new MutationObserver(muts=>{
-      for(const m of muts) for(const n of m.addedNodes) scanToolBlocks(n);
+      try{ rescanPending(); }catch(e){}
+      for(const m of muts) for(const n of m.addedNodes){ scanToolBlocks(n); }
       // Coalesce: streaming pages fire mutations dozens of times per second;
       // a full sweep per burst freezes the tab.
       try{
@@ -3131,7 +3202,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
           for(const it of items){
             if(!it) continue;
             const text = joinItemText(it);
-            if(!text || text.indexOf("###MCP_TOOL###") === -1) continue;
+            if(!text || !ZSParse.hasToolSignature(text)) continue;
             if(ZSParse.hasOpenToolBlock(text)) continue;
             const calls = ZSParse.extractAll(text).filter(Boolean);
             if(!calls.length) continue;
@@ -3139,7 +3210,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
             it.querySelectorAll("pre, code, p, div").forEach(el => {
               if(A.strippedBlocks.has(el)) return;
               const t = (el.innerText || el.textContent || "");
-              if(t.indexOf("###MCP_TOOL###") !== -1 || ZSParse.hasOpenToolBlock(t)){
+              if(ZSParse.hasToolSignature(t) || ZSParse.hasOpenToolBlock(t)){
                 A.strippedBlocks.add(el);
                 el.style.display = "none";
               }
