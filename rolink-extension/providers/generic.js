@@ -180,6 +180,9 @@ window.makeGenericProvider = function(opts){
   const VOLATILE_SEL = opts.volatileSel || null;
   function stripVolatile(item){
     if(!VOLATILE_SEL || !item || !item.cloneNode || !item.querySelectorAll) return null;
+    // Fast path: no volatile descendants — skip the clone+layout entirely.
+    // (Clone + innerText on giant agent-trace subtrees costs seconds.)
+    try{ if(!item.querySelector(VOLATILE_SEL)) return null; }catch{}
     try{
       const c = item.cloneNode(true);
       const bad = c.querySelectorAll(VOLATILE_SEL);

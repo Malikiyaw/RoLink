@@ -185,9 +185,34 @@
       };
       // Agent-aware read: join ALL settled plan-step/task nodes in document
       // order so tool blocks split across sibling steps are never dropped;
-      // single-step traces behave exactly as before. Falls back to the generic
-      // last-assistant read. Never throws without DOM.
+      // single-step traces behave exactly as before. When the step join has
+      // no tool signature, escalate: turn-container read, then fence-direct
+      // extraction (virtualized code nodes), then a bounded page scan — so a
+      // VISIBLE block is always found even with unknown lmarena/arena node
+      // types. Falls back to the generic last-assistant read. Never throws.
       var baseRead = P.readAssistant;
+      function fenceTexts(root){
+        // Direct textContent pull from pre/code descendants: virtualized
+        // fences render placeholders via innerText while full JSON sits in
+        // the DOM. Returns concatenated texts not already covered.
+        var out = [];
+        try{
+          if(!root || !root.querySelectorAll) return out;
+          var nodes = root.querySelectorAll("pre, code");
+          for(var k = 0; k < nodes.length; k++){
+            var t = "";
+            try{ t = nodes[k].textContent || ""; }catch(e){}
+            if(t && t.length > 20) out.push(t);
+          }
+        }catch(e){}
+        return out;
+      }
+      function hasSig(s){
+        try{
+          if(typeof ZSParse !== "undefined" && ZSParse.hasToolSignature) return ZSParse.hasToolSignature(s);
+        }catch(e){}
+        return (s || "").indexOf("###MCP_TOOL###") !== -1;
+      }
       P.readAssistant = function(){
         try{
           if(P.isAgentMode() && typeof document !== "undefined" && document.querySelectorAll){
@@ -224,9 +249,70 @@
                     }
                   }
                 }catch(e){}
+                // Fence-direct pull: append pre/code textContent missing from
+                // the visible read (virtualized fences).
+                try{
+                  var fts = fenceTexts(el);
+                  for(var fi = 0; fi < fts.length; fi++){
+                    if(txt.indexOf(fts[fi].slice(0, 40)) === -1) txt += "\n" + fts[fi];
+                  }
+                }catch(e){}
                 if(txt && txt.trim().length > 5){ parts.push(txt); lastEl = el; }
               }
-              if(parts.length) return { present: true, reply: parts.join("\n\n"), thinking: "", item: lastEl };
+              var joined = parts.length ? parts.join("\n\n") : "";
+              if(joined && hasSig(joined)) return { present: true, reply: joined, thinking: "", item: lastEl };
+              // Escalation 1: turn-container read — climb from the last step
+              // to the enclosing turn and read the whole subtree (unknown
+              // wrapper node types live here).
+              try{
+                var anchor = lastEl || steps[steps.length - 1];
+                var host = (anchor && anchor.closest) ? anchor.closest("article, [data-testid*='turn' i], [data-testid*='message' i], [class*='turn' i], li") : null;
+                if(host){
+                  var ht = "";
+                  try{ ht = (host.innerText || host.textContent) || ""; }catch(e){}
+                  try{
+                    if(P.stripVolatile){
+                      var hst = P.stripVolatile(host);
+                      if(hst != null && hst.trim() !== "") ht = hst;
+                    }
+                  }catch(e){}
+                  try{
+                    var hfts = fenceTexts(host);
+                    for(var hi = 0; hi < hfts.length; hi++){
+                      if(ht.indexOf(hfts[hi].slice(0, 40)) === -1) ht += "\n" + hfts[hi];
+                    }
+                  }catch(e){}
+                  if(ht && hasSig(ht)) return { present: true, reply: ht, thinking: "", item: host };
+                }
+              }catch(e){}
+              // Escalation 2: bounded page scan — find any visible marker
+              // text node under main and return its enclosing block.
+              try{
+                var scope = null;
+                try{ scope = document.querySelector("main") || document.body; }catch(e){ scope = null; }
+                if(scope && document.createTreeWalker && typeof NodeFilter !== "undefined"){
+                  var walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+                  var n = null, found = null, guard = 0;
+                  while((n = walker.nextNode()) && guard++ < 4000){
+                    var v = "";
+                    try{ v = n.nodeValue || ""; }catch(e){}
+                    if(v.length > 8 && v.length < 200000 && hasSig(v)){ found = n.parentElement; break; }
+                  }
+                  if(found){
+                    var blk = found;
+                    try{
+                      while(blk && blk.parentElement && blk.parentElement !== scope &&
+                            !/^(PRE|CODE|DIV|P|LI|ARTICLE)$/.test(blk.tagName)) blk = blk.parentElement;
+                    }catch(e){}
+                    var bt = "";
+                    try{ bt = (blk.innerText || blk.textContent) || ""; }catch(e){}
+                    if(bt && hasSig(bt)) return { present: true, reply: bt, thinking: "", item: blk };
+                  }
+                }
+              }catch(e){}
+              // Steps existed but hold no block yet — return the joined text
+              // (may be thought/progress) so generation tracking stays honest.
+              if(joined) return { present: true, reply: joined, thinking: "", item: lastEl };
             }
           }
         }catch(e){}

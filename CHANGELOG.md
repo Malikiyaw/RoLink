@@ -1,4 +1,20 @@
 # Changelog
+## 5.17.1 - agent page executes: escalation reads, flicker-proof settle, anti-freeze
+
+**Symptom.** On `arena.ai/agent` the model emitted a valid `###MCP_TOOL###` block yet zero dispatches happened (no chip, bridge silent), plus a 32s main-thread stall. Two cooperating killers: the step-node read never captured the block (unknown wrapper/virtualized fence) so the turn held forever on perpetual busy UI, and full-DOM synchronous sweeps starved the event loop on the giant trace DOM.
+
+**Reads that always find a visible block** (`providers/arena.js`): step join + `pre/code` `textContent` fence pull per node, then turn-container escalation, then a bounded (4000-node) page-wide `TreeWalker` scan — all exception-guarded with generic fallback intact.
+
+**Settle guarantee** (`core/main.js` `waitForReply`): blank read ticks pause payload stability instead of resetting it (only a different complete payload restarts the clock); signature clock gains 5s absence grace; last-resort 30s → 20s on agent pages.
+
+**Watchdog rescue** (`core/main.js`): yields to generating only while text still changes (static + busy = rescue); boot-turn exclusion time-bound to 60s (`A.bootAt`); `fullText` fallback for collapsed fences.
+
+**Anti-freeze** (`core/main.js`, `providers/generic.js`): mutation-observer sweep coalesced (800ms); interval sweeps + watchdog run 1 of 4 ticks on >20k-node DOMs; `stripVolatile` skips clone+layout when no volatile descendants exist.
+
+**Silence impossible**: executed calls with no surviving chip now raise an explicit error feed + banner naming the stage.
+
+**Tests**: new `tests/arena-agent-read.test.js` (5: join/busy-skip, container + page-scan escalation, no-DOM safety); `proof-feed` +10 pins; `providers` needles. All 19 node suites green.
+
 ## 5.17.0 - LMArena Agent Mode fully functional: prompt routing fix, multi-node reads, verified nudges
 
 **Symptom.** On `lmarena.ai` / `arena.ai` Agent Mode the loop still ended with 0 calls: a local zero-arg `buildSystemPrompt()` in `main.js` shadowed the agent-aware builder from `config.js`, so Agent Mode received the identity-claim + native-tool-ban prompt and the model refused as prompt injection.

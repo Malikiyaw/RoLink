@@ -64,8 +64,8 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
   });
 
   // ── 4: last-resort dispatch ─────────────────────────────────────
-  await run("30s visible signature + complete payload -> guarded dispatch", async () => {
-    assert(/sigSince[\s\S]{0,60}30000/.test(main), "30s threshold");
+  await run("visible signature + complete payload -> guarded dispatch", async () => {
+    assert(/LAST_RESORT_MS = _isAgentTurn \? 20000 : 30000/.test(main), "20s agent / 30s direct");
     assert(main.includes("dispatching settled payload"), "last-resort feed line");
     assert(/historyHasSettled\(nm,\s*normCmdKey\(nm/.test(main), "double-fire guard consulted");
   });
@@ -143,6 +143,30 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
     assert(main.includes("Reply with the greeting in this same turn"), "agent greeting tail");
     const cfg = fs.readFileSync(path.join(EXT, "core", "config.js"), "utf8");
     assert(cfg.includes("keep working — the user is still here"), "keep-working line");
+  });
+
+  // ── 10: agent-page execution guarantee (5.17.1) ───────────────────
+  await run("stability survives read flicker + faster agent last-resort", async () => {
+    // Flicker-proof: blank ticks pause, only a different key resets.
+    assert(!/else\s*\{\s*lastBlockKey\s*=\s*"";\s*blockStableSince\s*=\s*0;\s*\}/.test(main),
+      "no stability reset on blank ticks");
+    assert(main.includes("sigAbsentSince"), "signature-absence grace tracked");
+    assert(/LAST_RESORT_MS = _isAgentTurn \? 20000 : 30000/.test(main), "agent last-resort 20s");
+  });
+
+  await run("watchdog rescues stuck-busy pages, boot exclusion time-bound", async () => {
+    assert(main.includes("A.bootAt = Date.now()"), "boot timestamp recorded");
+    assert(/Date\.now\(\) - \(A\.bootAt \|\| 0\) < 60000/.test(main), "boot exclusion 60s-bound");
+    assert(main.includes("P.fullText(item)"), "watchdog full-text fallback");
+    assert(main.includes("Static text + perpetual busy = stuck UI"), "stale-busy rescue");
+  });
+
+  await run("anti-freeze bounds + chip-attach proof", async () => {
+    assert(main.includes("shouldSkipSweep"), "adaptive sweep throttle");
+    assert(main.includes("querySelectorAll(\"*\").length > 20000"), "heavy-DOM probe");
+    assert(main.includes("chipPlaced"), "chip-attach verification");
+    assert(main.includes("no chip is attached in chat"), "explicit missing-chip error");
+    assert(generic.includes("Fast path: no volatile descendants"), "strip pre-check");
   });
 
   console.log(`\nProof/feed tests: ${passed} passed, ${failed} failed`);

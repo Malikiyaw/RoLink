@@ -85,6 +85,19 @@
     }, 1000);
   })();
 
+  // ── anti-freeze: giant agent-trace DOMs (>20k nodes) make full sweeps
+  // cost seconds each (seen: 32s main-thread stalls on agent pages).
+  // Probe node count cheaply once a minute; when heavy, run 1 of 4 sweep
+  // ticks. Normal pages behave exactly as before.
+  let _domHeavy = false, _sweepTick = 0, _obsLast = 0;
+  try{ _domHeavy = document.querySelectorAll("*").length > 20000; }catch{}
+  setInterval(()=>{ try{ _domHeavy = document.querySelectorAll("*").length > 20000; }catch{} }, 60000);
+  function shouldSkipSweep(){
+    if(!_domHeavy) return false;
+    _sweepTick++;
+    return (_sweepTick % 4) !== 0;
+  }
+
   // ── missed-turn watchdog (chip-rescue release) ─────────────────────────
   // If waitForReply ever finalizes a turn WITHOUT dispatching its complete
   // tool block (provider read the wrong node, viewer chrome poisoned the
@@ -100,15 +113,27 @@
       if(!A.started || A.running || A.starting || A.injecting) return;
       if(A.stopping || A.userStopped) return;
       if(document.hidden) return;
-      if(P.isGenerating && P.isGenerating()){ A.lastGenAt = Date.now(); _wdLastChange = Date.now(); return; }
+      if(shouldSkipSweep()) return;
+      if(P.isGenerating && P.isGenerating()){
+        A.lastGenAt = Date.now();
+        // Stale-busy pages report generating forever: only yield while the
+        // text is still changing. Static text + perpetual busy = stuck UI,
+        // and a complete block sitting there must still be rescued.
+        if(Date.now() - _wdLastChange < 10000) return;
+      }
       if(!P.lastAssistant || !P.allItems) return;
       const item = P.lastAssistant();
       if(!item || (item.dataset && item.dataset.rlResume)) return;
       const curKey = P.conversationKey ? P.conversationKey() : location.pathname;
       if(A.loopKey && curKey !== A.loopKey) return;
-      // Never resume the turn that predated this session (reload artefact).
+      // Never resume the turn that predated this session (reload artefact) —
+      // time-bound to the first 60s: index-based provider IDs stick under
+      // list virtualization, which made this exclusion permanent and killed
+      // first-call rescue on agent pages.
       try{
-        if(A.lastAssistantIdAtBoot != null && P.lastAssistantId && P.lastAssistantId() === A.lastAssistantIdAtBoot) return;
+        if(A.lastAssistantIdAtBoot != null && P.lastAssistantId &&
+           P.lastAssistantId() === A.lastAssistantIdAtBoot &&
+           Date.now() - (A.bootAt || 0) < 60000) return;
       }catch{}
       if(P.turnHalted && P.turnHalted(item)) return;
       // Result-below: an injected-feedback turn after this one means settled.
@@ -122,6 +147,15 @@
       }catch{}
       let txt = "";
       try{ txt = (P.itemText ? P.itemText(item) : "") || ""; }catch{}
+      // Collapsed/virtualized fences: visible text may lack the block while
+      // full DOM text (incl. hidden nodes) holds it. Cheap second chance
+      // before giving up on this turn.
+      try{
+        if((!txt || !ZSParse.hasToolSignature(txt)) && P.fullText){
+          const ftx = P.fullText(item) || "";
+          if(ftx && ZSParse.hasToolSignature(ftx)) txt = ftx;
+        }
+      }catch{}
       if(txt !== _wdLastText){ _wdLastText = txt; _wdLastChange = Date.now(); }
       if(!txt || !ZSParse.hasToolSignature(txt)) return;
       if(ZSParse.hasOpenToolBlock(txt)) return;
@@ -1926,6 +1960,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
       A.intentNudgesLeft = 2;
       A.refusalNudgesLeft = 2; A.clipNudgesLeft = 1;
       A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
+      A.bootAt = Date.now();
       pushFeed("info", "▶", "Agent loop started. Greeting — then free chat…");
       showBanner("Agent running. Waiting for greeting — then free chat.", "ok", 5000);
       agentLoop(base);
@@ -2107,6 +2142,7 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
           // SEQUENTIAL await — never concurrent chaos. Each tool must complete before next.
           // Chain chips in call order: each chip anchors after the previous one.
           let prevChip = null;
+          let chipPlaced = false;
           for(const c of reply.calls){
             if(A.stopping) break;
             // Visibility gate per-tool (skipped in background-run mode)
@@ -2143,6 +2179,13 @@ The arriving [Tool result …] message confirms the channel. If no result arrive
             }
             const dr = await dispatchTool(c.tool, c.args, null, reply.item, undefined, prevChip, c.eventId);
             if(dr && (dr.tail || dr.chip)) prevChip = dr.tail || dr.chip;
+            if(dr && (dr.chip || dr.tail)) chipPlaced = true;
+          }
+          // Silence is a bug: calls ran but no chip survived in the DOM.
+          // Name the stage explicitly instead of going quiet.
+          if(chipPlaced && (!prevChip || !prevChip.isConnected)){
+            pushFeed("err", "✗", `Executed ${reply.calls.length} tool call(s) but no chip is attached in chat — the page likely detached it. Results are in the Timeline/Events tab; type a short message to resume.`);
+            showBanner("Tools ran but the chat chip is missing — see Timeline", "warn", 6000);
           }
         } else if(reply.kind === "clip_stuck"){
           // DOM-clipped fence: only a fragment is visible after 45s. Ask for a
@@ -2354,7 +2397,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     let warmSince = 0, reasonSince = 0, noTurnSince = 0, unsettledSince = 0;
     let curItem = null, lastGoodReply = "";
     let lastBlockKey = "", blockStableSince = 0;
-    let sigSince = 0, openSince = 0;
+    let sigSince = 0, sigAbsentSince = 0, openSince = 0;
     const lastSeenAssistantId = A.sentToken;
     const baseline = (typeof base === "number") ? base : (A.bootstrapBase || 0);
 
@@ -2425,12 +2468,15 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       // Complete-payload tracking runs BEFORE the stop grace so a finished
       // block shortens the wait (thresholds provider-tunable; arena faster).
       // Volatile chrome around the payload must never gate execution.
+      // Flicker-proof: a tick WITHOUT the block (read instability between
+      // step nodes / fallback paths) pauses stability instead of resetting
+      // it — only a DIFFERENT complete payload restarts the clock.
       let blockKey = "";
       try{ blockKey = (ZSParse.stableBlockKey && ZSParse.stableBlockKey(replyText)) || ""; }catch{}
       if(blockKey){
         if(blockKey === lastBlockKey){ if(!blockStableSince) blockStableSince = Date.now(); }
         else { lastBlockKey = blockKey; blockStableSince = Date.now(); }
-      } else { lastBlockKey = ""; blockStableSince = 0; }
+      } // else: keep lastBlockKey/blockStableSince (paused, not reset)
 
       const blockActive = ZSParse.hasOpenToolBlock(replyText) && Date.now() - lastChange < 6000;
       const stopGrace = blockKey ? ((T && T.BLOCK_GEN_GRACE_MS) || GEN_STOP_GRACE_MS) : GEN_STOP_GRACE_MS;
@@ -2448,17 +2494,25 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
       const blockSettleMs = (T && T.BLOCK_SETTLE_MS) || 4000;
       const blockSettled = !!(blockKey && blockStableSince && Date.now() - blockStableSince > blockSettleMs);
 
-      // Last-resort dispatch: a tool signature has been visible for >30s but
-      // the turn won't settle (slow stream / perpetual busy UI). If a COMPLETE
-      // payload exists and this exact call hasn't run yet, dispatch it instead
-      // of waiting out the 5-minute cap while the model waits on us.
+      // Last-resort dispatch: a tool signature visible but the turn won't
+      // settle (slow stream / perpetual busy UI). If a COMPLETE payload
+      // exists and this exact call hasn't run yet, dispatch it instead of
+      // waiting out the 5-minute cap while the model waits on us.
       // Evaluated BEFORE the gen-hold gate so perpetual "generating" can't
-      // starve a committed model intent.
+      // starve a committed model intent. Flicker-proof like blockKey above:
+      // brief signature gaps pause the clock; only 5s of continuous absence
+      // resets it. Agent pages get 20s (task clock), Direct keeps 30s.
+      let _isAgentTurn = false;
+      try{ _isAgentTurn = !!(P.isAgentMode && P.isAgentMode()); }catch{}
+      const LAST_RESORT_MS = _isAgentTurn ? 20000 : 30000;
       try{
-        if(ZSParse.hasToolSignature(replyText)){ if(!sigSince) sigSince = Date.now(); }
-        else sigSince = 0;
+        if(ZSParse.hasToolSignature(replyText)){ if(!sigSince) sigSince = Date.now(); sigAbsentSince = 0; }
+        else {
+          if(!sigAbsentSince) sigAbsentSince = Date.now();
+          if(Date.now() - sigAbsentSince > 5000) sigSince = 0;
+        }
       }catch{ sigSince = 0; }
-      if(sigSince && Date.now() - sigSince > 30000){
+      if(sigSince && Date.now() - sigSince > LAST_RESORT_MS){
         try{
           const bk2 = (ZSParse.stableBlockKey && ZSParse.stableBlockKey(replyText)) || "";
           if(bk2){
@@ -2669,6 +2723,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     await loadSysCount();
     A.startingKey = P.conversationKey ? P.conversationKey() : location.pathname;
     A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
+    A.bootAt = Date.now();
     // Mandatory tool discovery before first build request (Phase 8)
     let discovered = [];
     try{ discovered = await refreshTools(); }catch{}
@@ -2932,11 +2987,19 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
     A.observeTarget = document.documentElement;
     const obs = new MutationObserver(muts=>{
       for(const m of muts) for(const n of m.addedNodes) scanToolBlocks(n);
+      // Coalesce: streaming pages fire mutations dozens of times per second;
+      // a full sweep per burst freezes the tab.
+      try{
+        const now = Date.now();
+        if(now - (_obsLast || 0) < 800) return;
+        _obsLast = now;
+      }catch{}
+      if(shouldSkipSweep()) return;
       camouflageSweep();
     });
     try{ obs.observe(document.documentElement, {childList:true, subtree:true, characterData:true}); }catch{}
-    setInterval(camouflageSweep, 1500);
-    setInterval(wholeItemScan, 1500);
+    setInterval(()=>{ if(!shouldSkipSweep()) camouflageSweep(); }, 1500);
+    setInterval(()=>{ if(!shouldSkipSweep()) wholeItemScan(); }, 1500);
     setInterval(()=>{
       try{
         const items = (P && P.allItems) ? P.allItems() : [];
@@ -3040,6 +3103,7 @@ Retry now with valid JSON (or use the ###LUA### form).`, []);
         pushFeed("info", "💬", "User sent a message — re-arming agent loop");
         A.userStopped = false;
         A.lastAssistantIdAtBoot = P.lastAssistantId ? P.lastAssistantId() : null;
+        A.bootAt = Date.now();
         captureSendToken();
         bumpSys("users");
         if(sysResendDue()){
