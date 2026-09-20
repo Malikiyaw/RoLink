@@ -83,6 +83,25 @@ class CompletenessTest(unittest.TestCase):
                         "Edit mode never renders animation playback"):
             self.assertIn(snippet, self.plugin, f"missing: {snippet}")
 
+    def test_plugin_version_handshake(self):
+        # Poll carries ?pv=PLUGIN_VERSION; bridge tracks + warns on mismatch.
+        # PLUGIN_VERSION must equal the repo VERSION (kept in sync by hand).
+        import re
+        m = re.search(r'local PLUGIN_VERSION = "([^"]+)"', self.plugin)
+        self.assertIsNotNone(m, "PLUGIN_VERSION missing in plugin")
+        repo_version = open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip()
+        self.assertEqual(m.group(1), repo_version,
+                         f"plugin {m.group(1)} != repo {repo_version}")
+        self.assertIn("pv=", self.plugin)
+        bridge_src = open(os.path.join(ROOT, "bridge.py"), encoding="utf-8").read()
+        self.assertIn("VERSION MISMATCH", bridge_src)
+
+    def test_plugin_sandbox_parity(self):
+        # The index-nil class dies here: datatype globals the model uses.
+        for g in ("Vector3=", "Vector2=", "CFrame=", "Color3=", "UDim2=",
+                  "BrickColor=", "TweenInfo=", "utf8=", "bit32=", "coroutine="):
+            self.assertIn(g, self.plugin, f"sandbox missing: {g}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

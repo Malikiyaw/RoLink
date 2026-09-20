@@ -48,6 +48,31 @@ class CatalogTest(unittest.TestCase):
             self.assertIn(want_hint, res["error"], (bad, res["error"]))
             self.assertLess(dt, 2.0, f"{bad} took {dt:.1f}s, must fail fast")
 
+    def test_plugin_status_three_states(self):
+        import time, json
+        # Never polled: must say so (install guidance), instantly.
+        bridge._queue_last_poll[0] = 0.0
+        res = bridge.safe_call("plugin_status", {}, 5)
+        self.assertTrue(res["ok"], res)
+        body = json.loads(res["text"])
+        self.assertFalse(body["ever_polled"])
+        self.assertIsNone(body["last_poll_age_s"])
+        # Stale poll: alive False, age present.
+        bridge._queue_last_poll[0] = time.time() - 120.0
+        body = json.loads(bridge.safe_call("plugin_status", {}, 5)["text"])
+        self.assertFalse(body["plugin_alive"])
+        self.assertGreater(body["last_poll_age_s"], 30)
+        # Fresh poll: alive True, version field present. (This suite never
+        # starts the queue HTTP server, so queue_up mirrors the flag.)
+        bridge._queue_last_poll[0] = time.time()
+        body = json.loads(bridge.safe_call("plugin_status", {}, 5)["text"])
+        self.assertTrue(body["plugin_alive"])
+        self.assertEqual(body["queue_up"], bridge._queue_server_on[0])
+        self.assertIn("plugin_version", body)
+        # Registry stays exactly 113: plugin_status is a built-in, not a tool.
+        self.assertEqual(len(self.registry), 113)
+        self.assertNotIn("plugin_status", self.registry)
+
     def test_list_tools_covers_registry(self):
         advertised = {t.get("name") for t in self.mgr.list_tools()}
         missing = sorted(set(self.registry) - advertised)

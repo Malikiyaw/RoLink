@@ -32,6 +32,19 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Studio loads plugins ONCE at startup: installing while it runs changes
+REM NOTHING until it fully quits. Detect that trap and say so loudly.
+tasklist /FI "IMAGENAME eq RobloxStudioBeta.exe" 2>nul | findstr /i "RobloxStudioBeta.exe" >nul
+if not errorlevel 1 (
+    echo.
+    echo   ############################################################
+    echo   ##  ROBLOX STUDIO IS RUNNING RIGHT NOW.                   ##
+    echo   ##  It keeps the OLD plugin in memory until it FULLY      ##
+    echo   ##  QUITS. Close EVERY Studio window now, then reopen.    ##
+    echo   ############################################################
+    echo.
+)
+
 echo.
 echo   RoLink plugin installed to:
 echo     %PLUGINDIR%\RoLink.lua

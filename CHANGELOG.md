@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.1.5] - 2026-09-20
+
+Plugin-not-answering, end to end.
+
+- **Sandbox parity**: datatype globals the model uses (`Vector3`, `CFrame`,
+  `Color3`, `UDim2`, `BrickColor`, `TweenInfo`, `utf8`, `bit32`, ...) added;
+  sandbox errors quote the offending code head.
+- **Version handshake**: polls carry `?pv=`; bridge logs VERSION MISMATCH
+  when plugin and bridge came from different zips.
+- **`plugin_status` instant tool** (bridge built-in, registry stays 113):
+  queue/plugin/version/pending state in milliseconds; prompt preflight rule
+  sends the model there first instead of hammering timeouts.
+- **Two not-answering messages**: never-polled (install steps) vs stale poll
+  (Studio closed?). Popup shows plugin state.
+- **Installer**: warns loudly if Studio is running (old plugin stays in
+  memory until full quit), cleans stray copies.
+
 ## [2.1.4] - 2026-09-20
 
 Speed + character fixes; no failure class may spin past seconds anymore.

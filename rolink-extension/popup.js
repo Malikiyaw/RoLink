@@ -29,6 +29,12 @@ function render(s) {
   if (s.connected && s.catalogWarn) {
     tools.textContent += ` (full catalog ${s.catalogTotal} — bridge folder incomplete or outdated, re-extract the zip clean)`;
   }
+  const plug = s.plugin;
+  if (s.connected && plug) {
+    const age = plug.age_s == null ? "never seen" : (plug.alive ? "polling" : `stale ${plug.age_s}s`);
+    const ver = plug.version ? ` v${plug.version}` : "";
+    tools.textContent += ` | Plugin${ver}: ${age}`;
+  }
   servers.textContent = s.connected
     ? list.map((x) => `${x.alive ? "●" : "○"} ${x.id} (${x.alive ? x.tools + " tools" : "down"})`).join("\n")
     : "";

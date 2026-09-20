@@ -57,6 +57,7 @@ let studioProc = null;
 // trap: the prompt names 113+ but list_commands returns only Studio-native).
 let catalogTotal = 0;
 let catalogLoaded = false;
+let pluginState = null;
 
 function log(...a) {
   console.log("[rl-bg]", ...a);
@@ -105,6 +106,7 @@ function connect() {
     serversCache = [];
     catalogTotal = 0;
     catalogLoaded = false;
+    pluginState = null;
     stopHeartbeat();
     failAllPending("bridge connection closed");
     broadcastStatus();
@@ -236,6 +238,7 @@ function handleBridgeMessage(msg) {
     if (Array.isArray(msg.servers)) serversCache = msg.servers;
     if (typeof msg.catalog_total === "number") catalogTotal = msg.catalog_total;
     if (typeof msg.catalog_loaded === "boolean") catalogLoaded = msg.catalog_loaded;
+    if (msg.plugin && typeof msg.plugin === "object") pluginState = msg.plugin;
     broadcastStatus();
     return;
   }
@@ -297,7 +300,7 @@ function failAllPending(reason) {
 // ── status push to any open DeepSeek tab + popup ─────────────────────────
 function statusObj() {
   const catalogWarn = connected && catalogTotal > 0 && toolsCache.length < catalogTotal;
-  return { type: "rl-status", connected, mcpAlive, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache, catalogTotal, catalogLoaded, catalogWarn };
+  return { type: "rl-status", connected, mcpAlive, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache, catalogTotal, catalogLoaded, catalogWarn, plugin: pluginState };
 }
 
 function broadcastStatus() {

@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.1.4"
+BRIDGE_VERSION = "2.1.5"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613"))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -199,6 +199,25 @@ def _local_list_sessions(args):
 def _local_session_users(args):
     return {"ok": True, "text": json.dumps([])}
 
+
+def _local_plugin_status(args):
+    """Instant, offline-capable plugin health for the model to call BEFORE
+    burning a timeout on a real Studio command."""
+    now = time.time()
+    last = _queue_last_poll[0]
+    age = (now - last) if last > 0 else None
+    with _queue_lock:
+        vals = list(_queue_cmds.values())
+    return {"ok": True, "text": json.dumps({
+        "queue_up": bool(_queue_server_on[0]),
+        "plugin_alive": _plugin_alive(),
+        "plugin_version": _plugin_version[0] or None,
+        "ever_polled": last > 0,
+        "last_poll_age_s": round(age, 1) if age is not None else None,
+        "pending": sum(1 for c in vals if c.get("status") in ("queued", "claimed")),
+        "consecutive_timeouts": _queue_consec_timeouts[0],
+    })}
+
 # Deterministic local handlers: work with no Studio, no MCP server alive.
 # Anything not listed here falls through to mgr.call (StudioMCP/addons) or a
 # structured unknown-tool error — never a hang, never an exception leak.
@@ -214,6 +233,7 @@ LOCAL_HANDLERS = {
     "set_performance_threshold": _local_set_performance_threshold,
     "list_sessions": _local_list_sessions,
     "session_users": _local_session_users,
+    "plugin_status": _local_plugin_status,
 }
 
 def _local_batch_queue(args, timeout):
@@ -1398,6 +1418,8 @@ class MCPManager:
         # Extended 113-tool catalog: advertise local/studio tools even when
         # Studio is offline, with param guidance so list_commands stays useful.
         # Never collides: names already advertised by a live server are skipped.
+        # Plus plugin_status (bridge built-in, NOT in the registry): instant
+        # plugin health the model calls before burning a timeout.
         try:
             _seen = {e.get("name") for e in out}
             for _n in ROLINK_TOOL_NAMES:
@@ -1406,6 +1428,12 @@ class MCPManager:
                     _desc = (_p.get("args_guide") or "").strip()
                     _desc = ("Tool. " + _desc)[:600] if _desc else "RoLink local/studio tool"
                     out.append({"name": _n, "description": _desc, "server": "local"})
+            if "plugin_status" not in _seen:
+                out.append({"name": "plugin_status",
+                            "description": ("Tool. Instant in-Studio plugin health "
+                                            "(queue up, polling, version, pending). Call FIRST when "
+                                            "a Studio command fails - never hammer a failing call."),
+                            "server": "local"})
         except Exception:
             pass
         return out
@@ -1599,7 +1627,8 @@ def safe_call(name, arguments, timeout):
     # locally or by live servers); everything else must appear in the
     # registry, the alias map, or a connected server's advertised set.
     _PASSTHROUGH = frozenset(("list_commands", "list_tools", "list_mcp_servers",
-                              "get_studio_state", "list_roblox_studios"))
+                              "get_studio_state", "list_roblox_studios",
+                              "plugin_status"))
     if name not in _PASSTHROUGH and canonical not in _PASSTHROUGH:
         try:
             _known = set(ROLINK_TOOL_NAMES) | set(_TOOL_ALIASES) | set(_TOOL_ALIASES.values())
@@ -1737,6 +1766,9 @@ async def broadcast_status():
             "port": PORT,
             "catalog_total": len(ROLINK_TOOL_NAMES),
             "catalog_loaded": _CATALOG_OK,
+            "plugin": {"alive": _plugin_alive(),
+                       "version": _plugin_version[0] or None,
+                       "age_s": round(time.time() - _queue_last_poll[0], 1) if _queue_last_poll[0] > 0 else None},
         })
     except Exception:
         return
@@ -1763,6 +1795,9 @@ async def handler(ws):
             "port": PORT,
             "catalog_total": len(ROLINK_TOOL_NAMES),
             "catalog_loaded": _CATALOG_OK,
+            "plugin": {"alive": _plugin_alive(),
+                       "version": _plugin_version[0] or None,
+                       "age_s": round(time.time() - _queue_last_poll[0], 1) if _queue_last_poll[0] > 0 else None},
         }))
         async for raw in ws:
             try:
@@ -2215,6 +2250,10 @@ _queue_lock = threading.Lock()
 _queue_seq = [0]
 _queue_last_poll = [0.0]
 _queue_server_on = [False]
+# Version handshake: the plugin sends ?pv= with every poll. A mismatch means
+# bridge and plugin came from different zips - the #1 cause of mystery
+# failures (old plugin + new bridge or vice versa).
+_plugin_version = [""]
 # Circuit breaker: consecutive queue timeouts fail fast until a FRESH poll
 # (newer than the last timeout) or a success resets the count.
 _queue_consec_timeouts = [0]
@@ -2351,6 +2390,14 @@ class _QueueHandler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"
                         "tools": len(ROLINK_TOOL_NAMES), "plugin": _plugin_alive()})
         elif u.path == "/queue/next":
             _queue_last_poll[0] = time.time()
+            _pv = (qs.get("pv") or [""])[0]
+            if _pv and _pv != _plugin_version[0]:
+                _plugin_version[0] = _pv
+                if _pv != BRIDGE_VERSION:
+                    log(f"VERSION MISMATCH: Studio plugin v{_pv} talking to bridge v{BRIDGE_VERSION} - "
+                        f"update both from the same release zip or expect strange failures.", "yl")
+                else:
+                    log(f"Studio plugin v{_pv} connected.", "gr", terminal=False)
             pid = (qs.get("projectId") or ["default"])[0]
             self._send({"ok": True, "command": queue_take(pid)})
         elif u.path == "/queue/status":
@@ -2454,10 +2501,16 @@ def _queue_call(name, args, timeout):
         return {"ok": False, "kind": "plugin_offline",
                 "error": _ai_readable_error("plugin_offline", "embedded queue not running", name)}
     if not _plugin_alive():
+        if _queue_last_poll[0] <= 0:
+            _why = ("the Studio plugin was never seen polling - install it "
+                    "(run install-plugin.bat), restart Studio fully, then in the "
+                    "command bar run game:GetService(\"HttpService\").HttpEnabled = true")
+        else:
+            _age = int(time.time() - _queue_last_poll[0])
+            _why = (f"the Studio plugin last polled {_age}s ago - it stopped "
+                    f"(Studio closed or place changed?). Reopen Studio with a place loaded")
         return {"ok": False, "kind": "plugin_offline",
-                "error": _ai_readable_error(
-                    "plugin_offline",
-                    "no Studio plugin poll in the last 30s (plugin not installed or Studio closed)", name)}
+                "error": _ai_readable_error("plugin_offline", _why, name)}
     project = (args.get("projectId", "default") if isinstance(args, dict) else "default") or "default"
     # Code-carrying tools: the plugin runs cmd.command as Luau (Node's
     # convention), so the code itself must travel as the command payload -

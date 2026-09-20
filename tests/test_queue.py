@@ -45,6 +45,16 @@ class QueueTest(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(body["tools"], 113)
 
+    def test_plugin_status_live(self):
+        import json as _json
+        bridge._queue_last_poll[0] = time.time()
+        res = bridge.safe_call("plugin_status", {}, 5)
+        self.assertTrue(res["ok"], res)
+        body = _json.loads(res["text"])
+        self.assertTrue(body["queue_up"])
+        self.assertTrue(body["plugin_alive"])
+        self.assertLess(body["last_poll_age_s"], 30)
+
     def test_next_empty_then_result_flow(self):
         code, body = http("GET", "/queue/next?projectId=default")
         self.assertEqual(code, 200)

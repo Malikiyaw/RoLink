@@ -7,6 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
+local PLUGIN_VERSION = "2.1.5"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (113 tools, poll 200ms)", "rbxassetid://0")
@@ -18,8 +19,14 @@ local function log(msg) print("[RoLink] "..msg) end
 local safeEnv = {
   print=print, warn=warn, error=error,
   pairs=pairs, ipairs=ipairs, next=next, type=type, tostring=tostring, tonumber=tonumber,
-  math=math, string=string, table=table, vector=vector,
+  math=math, string=string, table=table, vector=vector, utf8=utf8, bit32=bit32,
+  coroutine=coroutine,
   game=game, workspace=workspace, Instance=Instance, Enum=Enum, task=task, tick=tick, time=time,
+  Vector3=Vector3, Vector2=Vector2, CFrame=CFrame, Color3=Color3,
+  UDim=UDim, UDim2=UDim2, BrickColor=BrickColor, Rect=Rect,
+  TweenInfo=TweenInfo, NumberRange=NumberRange, NumberSequence=NumberSequence,
+  ColorSequence=ColorSequence, Random=Random, DateTime=DateTime,
+  RaycastParams=RaycastParams, OverlapParams=OverlapParams,
   os={clock=os.clock, date=os.date, time=os.time},
 }
 
@@ -48,10 +55,15 @@ local function sandboxRun(code:string): (boolean, any)
       local okH, resH = pcall(function() return loadstring(healed, "RoLinkHeal") end)
       if okH and resH then pcall(function() setfenv(resH, safeEnv) end); local ok2h, retH=pcall(resH); if ok2h then return true, retH end end
     end
-    return false, err
+    -- Error context: the model only sees a line number otherwise. Attach the
+    -- offending head so it can fix the actual expression.
+    local head = code:gsub("%s+", " "):sub(1, 120)
+    return false, err .. " [code: " .. head .. ( #code > 120 and "..." or "") .. "]"
   else
     local ok3, ret2=pcall(function() local m=Instance.new("ModuleScript"); m.Source=code.."\nreturn true"; local o1,o2=pcall(require,m); m:Destroy(); if not o1 then error(o2) end; return o2 end)
-    if ok3 then return true, ret2 end; return false, tostring(ret2)
+    if ok3 then return true, ret2 end
+    local head2 = code:gsub("%s+", " "):sub(1, 120)
+    return false, tostring(ret2) .. " [code: " .. head2 .. ( #code > 120 and "..." or "") .. "]"
   end
 end
 
@@ -404,7 +416,7 @@ end
 
 local function poll()
   if not enabled then return end
-  local ok, res=pcall(function() return HttpService:RequestAsync({Url=MCP_URL.."/queue/next?projectId=default", Method="GET"}) end)
+  local ok, res=pcall(function() return HttpService:RequestAsync({Url=MCP_URL.."/queue/next?projectId=default&pv="..PLUGIN_VERSION, Method="GET"}) end)
   if not ok then return end
   local ok2, data=pcall(function() return HttpService:JSONDecode(res.Body) end)
   if not ok2 then return end
@@ -422,4 +434,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.1 loaded — 113 tools ready, polling "..MCP_URL)
+log("RoLink 2.1.5 loaded - 113 tools ready, polling "..MCP_URL)
