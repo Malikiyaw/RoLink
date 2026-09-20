@@ -68,14 +68,53 @@ local function captureSnapshot(maxDepth:number?, filter:string?): string
 end
 
 local function findByPath(path:string): Instance?
-  if path=="workspace" then return workspace end
-  if path:sub(1,5)=="game." then path=path:sub(6) end
-  local ok, res=pcall(function() return game:FindFirstChild(path, true) end)
+  if not path or path == "" then return nil end
+  if path == "workspace" or path == "Workspace" then return workspace end
+  local p = path
+  if p:sub(1,5) == "game." then p = p:sub(6) end
+  -- slash-walk: "Workspace/ProofCube", "game.Workspace/Folder/X" (dots kept
+  -- for service names like "ServerScriptService")
+  if p:find("/") then
+    local cur: Instance? = game
+    local walked = false
+    for part in p:gmatch("[^/]+") do
+      if part == "game" and cur == game then continue end
+      if (part == "Workspace" or part == "workspace") and cur == game then
+        cur = workspace; walked = true; continue
+      end
+      if not cur then break end
+      local nxt = cur:FindFirstChild(part)
+      if not nxt then cur = nil; break end
+      cur = nxt; walked = true
+    end
+    if walked and cur then return cur end
+  end
+  -- legacy fallbacks (bare names, old single-segment behavior)
+  local ok, res = pcall(function() return game:FindFirstChild(p, true) end)
   if ok and res then return res end
-  -- fallback: find by name
   local found:Instance? = nil
-  pcall(function() for _,v in ipairs(game:GetDescendants()) do if v.Name==path then found=v; break end end end)
+  pcall(function() for _,v in ipairs(game:GetDescendants()) do if v.Name==p then found=v; break end end end)
   return found
+end
+
+-- Sibling names for "not found" errors, so the model can self-correct
+-- instead of guessing blindly a second time.
+local function siblingHint(path:any): string
+  local parts:{string} = {}
+  for p in tostring(path or ""):gmatch("[^/]+") do table.insert(parts, p) end
+  if #parts == 0 then return "" end
+  table.remove(parts) -- drop the missing leaf
+  local parent: Instance? = (#parts == 0) and workspace or findByPath(table.concat(parts, "/"))
+  if not parent then return "" end
+  local names:{string} = {}
+  pcall(function()
+    for _, c in ipairs(parent:GetChildren()) do
+      if #names >= 8 then break end
+      table.insert(names, c.Name .. "(" .. c.ClassName .. ")")
+    end
+  end)
+  if #names == 0 then return "" end
+  return " Siblings under " .. parent:GetFullName() .. ": " .. table.concat(names, ", ")
 end
 
 -- ── Animation track cache + builders (tools 47-48, 112-113) ─────────────
@@ -311,7 +350,13 @@ local function executeCommand(cmd:any): (any, string?)
       local ok2, ret2=sandboxRun(cmd.command or ""); if not ok2 then error(ret2) end; result={tool=tool, returned=ret2}
     end
   end)
-  if not ok then err=tostring(ret) end
+  if not ok then
+    err = tostring(ret)
+    if err:find("not found") then
+      local hint = siblingHint((cmd.args or {}).path or (cmd.args or {}).parent or "")
+      if hint ~= "" then err ..= hint end
+    end
+  end
   ChangeHistoryService:SetWaypoint("RoLink after "..tool)
   return result, err, os.clock()-start
 end

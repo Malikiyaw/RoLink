@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "RoLink Free × Roblox Studio Agent",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio agent that drives Studio through a local bridge.",
   "permissions": ["storage"],
   "host_permissions": [

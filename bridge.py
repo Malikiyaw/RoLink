@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.1.2"
+BRIDGE_VERSION = "2.1.3"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613"))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -2362,6 +2362,7 @@ _TOOL_ALIASES = {
     "translate_code": "validate_command",
     "validate_code": "validate_command",
     "run_sandbox_tests": "run_in_sandbox",
+    "run_sandbox_tests": "run_in_sandbox",
     "plan": "plan_game",
     "get_context": "get_context_summary",
     "use_template": "apply_template",
@@ -2405,7 +2406,14 @@ def _queue_call(name, args, timeout):
                     "plugin_offline",
                     "no Studio plugin poll in the last 30s (plugin not installed or Studio closed)", name)}
     project = (args.get("projectId", "default") if isinstance(args, dict) else "default") or "default"
-    cid = queue_enqueue(name, name, args, project)
+    # Code-carrying tools: the plugin runs cmd.command as Luau (Node's
+    # convention), so the code itself must travel as the command payload -
+    # sending the tool name would "succeed" without running anything.
+    _CODE_FIELDS = {"execute_luau": "code", "run_in_sandbox": "code",
+                    "refactor_code": "code"}
+    _cf = _CODE_FIELDS.get(name)
+    _payload = args.get(_cf) if (_cf and isinstance(args.get(_cf), str)) else name
+    cid = queue_enqueue(name, _payload, args, project)
     log(f"[{name}] queued for Studio plugin ({cid})", "cy", terminal=False)
     result, err = queue_wait(cid, timeout)
     if err == "timeout waiting for plugin result":

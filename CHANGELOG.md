@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.1.3] - 2026-09-20
+
+Execution correctness for the queue path.
+
+- **Code payload**: code-carrying tools (`execute_luau`, `run_in_sandbox`,
+  `refactor_code`) now send the code itself as the queue command (Node's
+  convention, which the plugin executes) instead of the tool name.
+- **Path resolution**: the plugin walks slash paths segment by segment
+  (`Workspace/ProofCube` works); "not found" errors now list up to 8 sibling
+  instances so the model self-corrects.
+- **Single-copy guard**: the installer removes stray duplicate plugin files
+  that would fight over queue claims.
+- Alias added: `run_sandbox_tests` -> `run_in_sandbox`.
+
 ## [2.1.2] - 2026-09-20
 
 HUD removal: the in-Studio hologram overlay is gone. Its per-execution chips

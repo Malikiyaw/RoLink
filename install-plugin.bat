@@ -15,6 +15,15 @@ if not exist "%~dp0studio-plugin\RoLink.lua" (
 
 set "PLUGINDIR=%LOCALAPPDATA%\Roblox\Plugins"
 if not exist "%PLUGINDIR%" mkdir "%PLUGINDIR%" >nul 2>nul
+REM Exactly ONE plugin copy may exist: two copies poll the same queue and
+REM fight over claims (one executes, the other reports confusing duplicates).
+REM Remove known strays from manual installs/renames (never touch other files).
+for %%F in ("%PLUGINDIR%\user_RoLink.lua" "%PLUGINDIR%\RoLink*.lua.bak") do (
+    if exist "%%~F" (
+        echo   Removing stray duplicate: %%~nxF
+        del "%%~F" >nul 2>nul
+    )
+)
 copy /y "%~dp0studio-plugin\RoLink.lua" "%PLUGINDIR%\RoLink.lua" >nul
 if errorlevel 1 (
     echo   ERROR: could not copy into %PLUGINDIR%.

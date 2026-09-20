@@ -137,6 +137,51 @@ class QueueTest(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertEqual(res["kind"], "plugin_offline")
 
+    def test_code_payload_round_trip(self):
+        # Code-carrying tools must travel with the CODE as the command payload
+        # (the plugin runs cmd.command as Luau); other tools send the name.
+        bridge._queue_last_poll[0] = time.time()
+        seen = {}
+
+        def run(tool, args):
+            seen[tool] = bridge.safe_call(tool, args, 10)
+
+        t1 = threading.Thread(target=run,
+                              args=("execute_luau", {"code": 'return 1+1'}), daemon=True)
+        t1.start()
+        deadline = time.time() + 8
+        cmd = None
+        while time.time() < deadline:
+            _, body = http("GET", "/queue/next?projectId=default")
+            if body["command"] and body["command"]["tool"] == "execute_luau":
+                cmd = body["command"]
+                break
+            time.sleep(0.1)
+        self.assertIsNotNone(cmd, "execute_luau never enqueued")
+        self.assertEqual(cmd["command"], "return 1+1")
+        self.assertEqual(cmd["args"], {"code": "return 1+1"})
+        http("POST", "/queue/result", {"id": cmd["id"], "result": 2})
+        t1.join(timeout=8)
+        self.assertTrue(seen["execute_luau"]["ok"], seen)
+        self.assertIn("2", seen["execute_luau"]["text"])
+
+        t2 = threading.Thread(target=run,
+                              args=("create_instance", {"className": "Part"}), daemon=True)
+        t2.start()
+        deadline = time.time() + 8
+        cmd2 = None
+        while time.time() < deadline:
+            _, body = http("GET", "/queue/next?projectId=default")
+            if body["command"] and body["command"]["tool"] == "create_instance":
+                cmd2 = body["command"]
+                break
+            time.sleep(0.1)
+        self.assertIsNotNone(cmd2, "create_instance never enqueued")
+        self.assertEqual(cmd2["command"], "create_instance")
+        http("POST", "/queue/result", {"id": cmd2["id"], "result": {"created": "x"}})
+        t2.join(timeout=8)
+        self.assertTrue(seen["create_instance"]["ok"], seen)
+
     def test_original_name_kept_for_studiomcp(self):
         # list_commands must NOT be rewritten: with no plugin and no MCP up,
         # it falls through to the StudioMCP path (mcp_offline), proving the
