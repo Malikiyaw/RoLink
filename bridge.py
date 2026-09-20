@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.1.7"
+BRIDGE_VERSION = "2.1.8"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613"))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -1444,6 +1444,9 @@ class MCPManager:
                                             "(queue up, polling, version, pending). Call FIRST when "
                                             "a Studio command fails - never hammer a failing call."),
                             "server": "local"})
+            for _x in sorted(_QUEUE_EXTRA_TOOLS):
+                if _x not in _seen:
+                    out.append({"name": _x, "description": _QUEUE_EXTRA_DESC[_x], "server": "local"})
         except Exception:
             pass
         return out
@@ -1641,7 +1644,8 @@ def safe_call(name, arguments, timeout):
                               "plugin_status"))
     if name not in _PASSTHROUGH and canonical not in _PASSTHROUGH:
         try:
-            _known = set(ROLINK_TOOL_NAMES) | set(_TOOL_ALIASES) | set(_TOOL_ALIASES.values())
+            _known = (set(ROLINK_TOOL_NAMES) | set(_QUEUE_EXTRA_TOOLS)
+                      | set(_TOOL_ALIASES) | set(_TOOL_ALIASES.values()))
             try:
                 _known |= set(getattr(mgr, "index", {}) or {})
                 for _c in (getattr(mgr, "clients", {}) or {}).values():
@@ -1681,7 +1685,7 @@ def safe_call(name, arguments, timeout):
     # StudioMCP below when the plugin is absent (graceful degradation).
     # Circuit breaker: after 2 consecutive queue timeouts, fail fast until a
     # poll NEWER than the last timeout arrives (the plugin recovered).
-    if canonical in STUDIO_QUEUE_TOOLS and _plugin_alive():
+    if (canonical in STUDIO_QUEUE_TOOLS or canonical in _QUEUE_EXTRA_TOOLS) and _plugin_alive():
         if (_queue_consec_timeouts[0] >= 2
                 and _queue_last_poll[0] <= _queue_last_timeout[0]):
             return {"ok": False, "kind": "plugin_offline",
@@ -2503,12 +2507,9 @@ _TOOL_ALIASES = {
     "collab_join": "session_users",
     "collab_list": "session_users",
     "collab_broadcast": "session_users",
-    "search_game_tree": "get_instances",
     "get_instance_tree": "get_instances",
-    "script_search": "get_script_content",
-    "script_grep": "search_by_attribute",
+    "search_scripts": "script_search",
     "inspect_instance": "get_instances",
-    "search_scripts": "search_by_attribute",
     "heal_code": "refactor_code",
     "rollback_list": "rollback",
 }
@@ -2518,6 +2519,19 @@ _TOOL_ALIASES = {
 STUDIO_QUEUE_TOOLS = frozenset(
     [t for t in ROLINK_TOOL_NAMES if t and t not in LOCAL_HANDLERS and t != "batch_queue"]
 )
+
+# Native plugin tools that live OUTSIDE the 113 registry (real search
+# implementations, not aliases): routed + advertised exactly like registry
+# tools, so the registry file and all 113-counts stay untouched.
+_QUEUE_EXTRA_TOOLS = frozenset(("script_search", "script_grep", "search_game_tree"))
+_QUEUE_EXTRA_DESC = {
+    "script_search": ("Tool. Full-text search across Script/ModuleScript/LocalScript "
+                      "sources. Args: pattern* (or query/keyword), path?/scope?, limit? (default 20)."),
+    "script_grep": ("Tool. Line-oriented content search like script_search. "
+                    "Args: pattern* (or query/keyword), path?/scope?, limit?."),
+    "search_game_tree": ("Tool. Find instances by name (default), class, or attribute. "
+                         "Args: query*, searchType? (name/class/attribute), mode?."),
+}
 
 
 def _queue_call(name, args, timeout):
@@ -2553,8 +2567,18 @@ def _queue_call(name, args, timeout):
     if err == "timeout waiting for plugin result":
         _queue_consec_timeouts[0] += 1
         _queue_last_timeout[0] = time.time()
+        try:
+            with _queue_lock:
+                _vals = list(_queue_cmds.values())
+            _pend = sum(1 for c in _vals if c.get("status") in ("queued", "claimed"))
+            _ages = [time.time() - c.get("claimed_at", time.time())
+                     for c in _vals if c.get("status") == "claimed" and c.get("claimed_at")]
+            _oldest = f", oldest claim {_ages and max(_ages):.0f}s" if _ages else ""
+            _snap = f" (queue: {_pend} pending{_oldest})"
+        except Exception:
+            _snap = ""
         return {"ok": False, "kind": "plugin_offline",
-                "error": _ai_readable_error("plugin_offline", f"no plugin answer in {_wait:.0f}s", name)}
+                "error": _ai_readable_error("plugin_offline", f"no plugin answer in {_wait:.0f}s{_snap}", name)}
     _queue_consec_timeouts[0] = 0
     if err:
         return {"ok": False, "error": str(err), "kind": "execution_error"}

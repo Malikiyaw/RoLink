@@ -108,6 +108,39 @@ class CompletenessTest(unittest.TestCase):
                         "do not resend the same code"):
             self.assertIn(snippet, self.plugin, f"missing: {snippet}")
 
+    def test_alias_audit_no_arg_mismatch(self):
+        # Every bridge alias target must exist in the registry, and the three
+        # search natives must exist as plugin branches (not aliases) with
+        # queue routing + advertised descriptions in the bridge.
+        import re
+        bridge_src = open(os.path.join(ROOT, "bridge.py"), encoding="utf-8").read()
+        m = re.search(r"_TOOL_ALIASES = \{(.*?)\n\}", bridge_src, re.S)
+        pairs = re.findall(r'"(\w+)":\s*"(\w+)"', m.group(1))
+        self.assertTrue(pairs, "no aliases parsed")
+        # Alias targets live in the registry - except search_scripts, which
+        # targets the native extra script_search (same rule as the bridge).
+        for src, dst in pairs:
+            self.assertIn(dst, self.registry + ["script_search"],
+                          f"alias {src} -> unknown {dst}")
+            self.assertNotIn(src, self.registry, f"alias {src} shadows a registry tool")
+        for native in ("script_search", "script_grep", "search_game_tree"):
+            self.assertNotIn(f'"{native}":', m.group(1), f"{native} must not be an alias")
+            self.assertIn(f'tool=="{native}"', self.plugin, f"no plugin branch: {native}")
+            self.assertIn(native, bridge_src, f"bridge does not route {native}")
+        # mcp-server parity: same alias keys except deliberate exclusions.
+        ts = open(os.path.join(ROOT, "mcp-server", "src", "tools", "registry.ts"),
+                  encoding="utf-8").read()
+        m2 = re.search(r"aliasMap[^{]*\{(.*?)\};", ts, re.S)
+        node_keys = set(re.findall(r"^\s{2}(\w+):", m2.group(1), re.M))
+        bridge_keys = {s for s, _ in pairs}
+        # Deliberate divergences: list_commands must never rewrite (catalog
+        # flow), list_templates is a self-map, and the three search natives
+        # are real plugin tools in the bridge (aliases in node's map only).
+        allowed = {"list_commands", "list_templates",
+                   "script_search", "script_grep", "search_game_tree"}
+        self.assertEqual(node_keys - bridge_keys - allowed, set(),
+                         "node aliases missing from bridge")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

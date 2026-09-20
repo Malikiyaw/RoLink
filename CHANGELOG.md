@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.1.8] - 2026-09-20
+
+No dead ends: every search spelling now executes natively.
+
+- **Native search tools**: `script_search`/`script_grep` do real full-text
+  search across Script sources (`path:line` hits); `search_game_tree` does
+  real name/class/attribute search. Previously they aliased to path-taking
+  tools whose args they don't carry, so every call died with bare "not found".
+  `search_scripts` maps to the native search. Registry stays 113; the three
+  ride the queue + advertisement as extras.
+- **Unknown-name guard covers the extras** (no repeat of the exclusion bug).
+- **Timeout text carries its own diagnosis**: pending count + oldest claim
+  age, so model and user see the jam without a follow-up call.
+
 ## [2.1.7] - 2026-09-20
 
 Stuck-execution visibility: polls flowing with zero answers now names the

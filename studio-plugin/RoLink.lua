@@ -7,7 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.1.7"
+local PLUGIN_VERSION = "2.1.8"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (113 tools, poll 200ms)", "rbxassetid://0")
@@ -283,6 +283,51 @@ local function executeCommand(cmd:any): (any, string?)
       local code:string=cmd.command; local ok2, ret2=sandboxRun(code); if not ok2 then error(ret2) end; result={returned=ret2, preview=code:sub(1,200)}
     elseif tool=="get_script_content" then
       local inst=findByPath(args.path or ""); if not inst then error("not found") end; result={content=(inst::any).Source or ""}
+    elseif tool=="script_search" or tool=="search_scripts" or tool=="script_grep" then
+      -- native content search: pattern (or query/keyword/text) across script sources
+      local pat=tostring(args.pattern or args.query or args.keyword or args.text or "")
+      if pat=="" then error("pattern is required (or query/keyword)") end
+      local scope=args.path or args.scope or ""
+      local lim=math.min(tonumber(args.limit) or 20, 50)
+      local hits={}; local scanned=0
+      pcall(function()
+        local roots = game:GetDescendants()
+        if scope~="" then local s=findByPath(scope); if s then roots=s:GetDescendants() end end
+        for _,d in ipairs(roots) do
+          if #hits>=lim then break end
+          if d:IsA("Script") or d:IsA("ModuleScript") or d:IsA("LocalScript") then
+            scanned+=1
+            local src=""; pcall(function() src=(d::any).Source or "" end)
+            if src:find(pat,1,true) then
+              local lines={}; local ln=1
+              for line in (src.."\n"):gmatch("([^\n]*)\n") do
+                if #lines>=5 then break end
+                if line:find(pat,1,true) then table.insert(lines,{n=ln,text=line:sub(1,160)}) end
+                ln+=1
+              end
+              table.insert(hits,{path=d:GetFullName(),lines=lines})
+            end
+          end
+        end
+      end)
+      result={pattern=pat,hits=hits,searched=scanned}
+    elseif tool=="search_game_tree" then
+      -- native tree search: name (default), class, or attribute mode
+      local q=tostring(args.query or args.pattern or args.name or "")
+      if q=="" then error("query is required") end
+      local mode=tostring(args.searchType or args.mode or "name")
+      local out={}
+      pcall(function()
+        for _,v in ipairs(game:GetDescendants()) do
+          if #out>=50 then break end
+          local hit=false
+          if mode=="class" then hit=(v.ClassName==q)
+          elseif mode=="attribute" then hit=(v:GetAttribute(q)~=nil)
+          else hit=(v.Name:lower():find(q:lower(),1,true)~=nil) end
+          if hit then table.insert(out,v:GetFullName().." ("..v.ClassName..")") end
+        end
+      end)
+      result={query=q,found=out}
     elseif tool=="set_script_content" then
       local inst=findByPath(args.path or ""); if not inst then error("not found") end; (inst::any).Source=args.content; result={set=true}
     elseif tool=="create_module" then
@@ -439,4 +484,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.1.7 loaded - 113 tools ready, polling "..MCP_URL)
+log("RoLink 2.1.8 loaded - 113 tools ready, polling "..MCP_URL)

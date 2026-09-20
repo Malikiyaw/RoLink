@@ -115,11 +115,13 @@ class QueueTest(unittest.TestCase):
         self.assertIn("workspace/Part", out["res"]["text"])
 
     def test_alias_routes_to_queue(self):
+        # inspect_instance is a pure alias of get_instances (same args): it
+        # must canonicalize and ride the queue as get_instances.
         mark_polled()
         out = {}
 
         def run():
-            out["res"] = bridge.safe_call("search_game_tree", {"query": "x"}, 10)
+            out["res"] = bridge.safe_call("inspect_instance", {"path": "workspace"}, 10)
 
         t = threading.Thread(target=run, daemon=True)
         t.start()
@@ -212,10 +214,63 @@ class QueueTest(unittest.TestCase):
         # it falls through to the StudioMCP path (mcp_offline), proving the
         # original spelling survived alias handling.
         bridge._queue_last_poll[0] = 0.0
-        bridge._queue_last_poll[0] = 0.0
         res = bridge.safe_call("list_commands", {}, 5)
         self.assertFalse(res["ok"])
         self.assertEqual(res["kind"], "mcp_offline")
+
+    def _drain_queue(self, tool, timeout=8):
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            _, body = http("GET", "/queue/next?projectId=default")
+            if body["command"] and body["command"]["tool"] == tool:
+                return body["command"]
+            time.sleep(0.1)
+        return None
+
+    def test_extra_natives_route_via_queue(self):
+        import time
+        for tool, args in (("script_search", {"pattern": "x"}),
+                           ("script_grep", {"pattern": "y"}),
+                           ("search_game_tree", {"query": "z"})):
+            bridge._queue_last_poll[0] = time.time()
+            out = {}
+
+            def run(t=tool, a=args):
+                out[t] = bridge.safe_call(t, a, 10)
+
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+            cmd = self._drain_queue(tool)
+            self.assertIsNotNone(cmd, f"{tool} never enqueued")
+            self.assertEqual(cmd["tool"], tool)
+            http("POST", "/queue/result", {"id": cmd["id"], "result": {"ok": True}})
+            t.join(timeout=8)
+            self.assertTrue(out[tool]["ok"], (tool, out[tool]))
+
+    def test_search_scripts_alias_maps_to_native(self):
+        import time
+        bridge._queue_last_poll[0] = time.time()
+        out = {}
+
+        def run():
+            out["res"] = bridge.safe_call("search_scripts", {"query": "q"}, 10)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        cmd = self._drain_queue("script_search")
+        self.assertIsNotNone(cmd, "search_scripts did not canonicalize to script_search")
+        http("POST", "/queue/result", {"id": cmd["id"], "result": {"hits": []}})
+        t.join(timeout=8)
+        self.assertTrue(out["res"]["ok"], out)
+
+    def test_timeout_text_carries_queue_snapshot(self):
+        import time
+        bridge._queue_last_poll[0] = time.time()
+        res = bridge.safe_call("get_instances", {"path": "workspace"}, 0.3)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["kind"], "plugin_offline")
+        self.assertIn("queue:", res["error"], res["error"])
 
 
 if __name__ == "__main__":
