@@ -51,6 +51,12 @@ let studioApp = null;
 // Assistant Settings > MCP Servers inside Studio (validated live 3x), which
 // "open Roblox Studio" wording completely fails to convey.
 let studioProc = null;
+// Catalog the bridge advertises (113 when its tests/__registry__.json loaded).
+// If the live list is shorter, the bridge is old or its folder is incomplete -
+// surface it instead of silently serving a stale short list (the "27 tools"
+// trap: the prompt names 113+ but list_commands returns only Studio-native).
+let catalogTotal = 0;
+let catalogLoaded = false;
 
 function log(...a) {
   console.log("[rl-bg]", ...a);
@@ -97,6 +103,8 @@ function connect() {
     studioApp = null;
     studioProc = null;
     serversCache = [];
+    catalogTotal = 0;
+    catalogLoaded = false;
     stopHeartbeat();
     failAllPending("bridge connection closed");
     broadcastStatus();
@@ -226,6 +234,8 @@ function handleBridgeMessage(msg) {
     mcpAlive = !!msg.mcp_alive;
     if (Array.isArray(msg.tools)) toolsCache = msg.tools;
     if (Array.isArray(msg.servers)) serversCache = msg.servers;
+    if (typeof msg.catalog_total === "number") catalogTotal = msg.catalog_total;
+    if (typeof msg.catalog_loaded === "boolean") catalogLoaded = msg.catalog_loaded;
     broadcastStatus();
     return;
   }
@@ -286,7 +296,8 @@ function failAllPending(reason) {
 
 // ── status push to any open DeepSeek tab + popup ─────────────────────────
 function statusObj() {
-  return { type: "rl-status", connected, mcpAlive, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache };
+  const catalogWarn = connected && catalogTotal > 0 && toolsCache.length < catalogTotal;
+  return { type: "rl-status", connected, mcpAlive, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache, catalogTotal, catalogLoaded, catalogWarn };
 }
 
 function broadcastStatus() {

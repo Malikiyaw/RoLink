@@ -26,6 +26,9 @@ function render(s) {
         : "Bridge OK · open Roblox Studio")
     : "Bridge offline";
   tools.textContent = s.connected ? `${s.tools || 0} tools available` : "Run bridge.py";
+  if (s.connected && s.catalogWarn) {
+    tools.textContent += ` (full catalog ${s.catalogTotal} — bridge folder incomplete or outdated, re-extract the zip clean)`;
+  }
   servers.textContent = s.connected
     ? list.map((x) => `${x.alive ? "●" : "○"} ${x.id} (${x.alive ? x.tools + " tools" : "down"})`).join("\n")
     : "";

@@ -97,8 +97,11 @@ try:
         ROLINK_TOOL_NAMES = _json_catalog.load(_f)
     if not isinstance(ROLINK_TOOL_NAMES, list):
         ROLINK_TOOL_NAMES = []
-except Exception:
+    _CATALOG_ERROR = "" if ROLINK_TOOL_NAMES else "registry file is empty"
+except Exception as e:
     ROLINK_TOOL_NAMES = []
+    _CATALOG_ERROR = str(e) or "load failed"
+_CATALOG_OK = not _CATALOG_ERROR and bool(ROLINK_TOOL_NAMES)
 
 # Tools that MUST be routed to StudioMCP/addons (they mutate or read Studio).
 # Derived from mcp-server/src/tools/registry.ts provider:"roblox" execution:"studio".
@@ -1683,6 +1686,8 @@ async def broadcast_status():
             "servers": mgr.health(),
             "tools": mgr.list_tools(),
             "port": PORT,
+            "catalog_total": len(ROLINK_TOOL_NAMES),
+            "catalog_loaded": _CATALOG_OK,
         })
     except Exception:
         return
@@ -1707,6 +1712,8 @@ async def handler(ws):
             "servers": mgr.health(),
             "tools": mgr.list_tools(),
             "port": PORT,
+            "catalog_total": len(ROLINK_TOOL_NAMES),
+            "catalog_loaded": _CATALOG_OK,
         }))
         async for raw in ws:
             try:
@@ -2149,6 +2156,14 @@ async def _supervised(name, coro_factory):
 async def main():
     print(f"\n{C['cy']}  RoLink Bridge v{BRIDGE_VERSION}{C['reset']}  {C['dim']}- Roblox Studio - ws://{HOST}:{PORT}{C['reset']}\n")
     log(f"===== BRIDGE START  v{BRIDGE_VERSION}  pid={os.getpid()}  log={LOG_PATH} =====", "cy")
+    if _CATALOG_OK:
+        log(f"tool catalog: {len(ROLINK_TOOL_NAMES)} extended tools loaded", "gr")
+    else:
+        action_banner([
+            "The 113-tool catalog did NOT load - only live Studio tools",
+            "will be listed. Re-extract the release zip into a CLEAN",
+            f"folder (this run: {_CATALOG_ERROR or 'empty catalog'}).",
+        ])
     await asyncio.to_thread(_kill_orphan_studio_mcp)
     killed_squatter = await asyncio.to_thread(check_studio_port)
     mgr.load_config()
