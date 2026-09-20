@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.1] - 2026-09-20
+
+Listing fix: `list_commands` (and the boot chip + periodic reminder) scoped the
+default `roblox` view to `server === "roblox"` only, hiding the 111 padded
+`server: "local"` catalog tools — the model saw 27 of 139. The default scope
+now includes both; explicit `{"server": "<id>"}` filtering is unchanged.
+No bridge changes; extension only.
+
 ## [2.1.0] - 2026-09-20
 
 Third-party MCP path: all 113 registry tools now execute, not just list.

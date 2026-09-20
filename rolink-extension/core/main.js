@@ -965,8 +965,13 @@
       const known = new Set(A.toolList.map((t) => t.server).filter(Boolean));
       // Tools from a bridge that doesn't tag "server" yet (old version) have no
       // .server field at all - treat those as the primary server rather than
-      // hiding everything.
-      const scoped = A.toolList.filter((t) => (t.server || "roblox") === requested);
+      // hiding everything. The "local" padded catalog (offline + queue tools)
+      // belongs to the Roblox workflow, so the default roblox scope includes it.
+      const inScope = (t) => {
+        const srv = t.server || "roblox";
+        return requested === "roblox" ? (srv === "roblox" || srv === "local") : srv === requested;
+      };
+      const scoped = A.toolList.filter(inScope);
       if (!A.toolList.length) return `Output of '${name}':\nNo commands available - the bridge or Roblox Studio may be offline.`;
       if (!scoped.length) {
         return `Output of '${name}':\nERROR: no server named "${requested}" is connected. Connected servers: ${[...known].join(", ") || "roblox"}. Call list_mcp_servers to check.`;
@@ -1459,8 +1464,12 @@
               // etc.) merged flat would bloat the model's context - the opposite of
               // what the model gets when it lists commands itself. Anti-drift only
               // needs the primary Roblox set; addon commands were listed on demand
-              // and the bridge routes by name regardless.
-              const roblox = A.toolList.filter((t) => (t.server || "roblox") === "roblox");
+              // and the bridge routes by name regardless. The "local" padded
+              // catalog is part of the Roblox scope, so it stays in.
+              const roblox = A.toolList.filter((t) => {
+                const srv = t.server || "roblox";
+                return srv === "roblox" || srv === "local";
+              });
               toSend += RL.toolsReminder(roblox) + "\n" + RL.memoryNudge();
               diag("tools.reminder", { after: REMIND_TOOLS_EVERY });
             }
@@ -1878,8 +1887,12 @@
           // primary Roblox server (main.js ~629), so showing A.toolList.length (every
           // connected server merged - Roblox + Blender + addons) overstated the boot
           // count and made it look like all servers were loaded at once. Count the
-          // Roblox-scoped tools instead, matching the real result.
-          const robloxCount = A.toolList.filter((t) => (t.server || "roblox") === "roblox").length;
+          // Roblox-scoped tools instead, matching the real result. The "local"
+          // padded catalog belongs to that scope, so it counts too.
+          const robloxCount = A.toolList.filter((t) => {
+            const srv = t.server || "roblox";
+            return srv === "roblox" || srv === "local";
+          }).length;
           decorate.toolBox(startRes.item, "Loading commands", "done", `${robloxCount} commands`, true);
         }
         const base2 = await submitAndGetBase(toolFeedback);
