@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.1.0] - 2026-09-20
+
+Third-party MCP path: all 113 registry tools now execute, not just list.
+
+- **Embedded Studio queue** (`bridge.py`, stdlib only, `:3001`, API-compatible
+  with `mcp-server`): the Studio plugin polls `/queue/next` and posts
+  `/queue/result`; the bridge enqueues registry calls and waits. No Node needed.
+- **Plugin packaging**: `studio-plugin/RoLink.lua` + `install-plugin.bat`,
+  README step 2b (incl. the one-line `HttpEnabled` command-bar step).
+- **Smart routing**: Studio-native spellings alias to registry names for the
+  queue route only; the StudioMCP path always keeps the original spelling, so
+  `list_commands` and friends can never break. Plugin absent = instant
+  `plugin_offline` guidance (no burnt timeouts); port busy = loud warning.
+- **Proof**: `tests/test_queue.py` (9: HTTP shapes, simulated-plugin
+  round-trip, alias + offline paths) and `tests/test_tool_completeness.py`
+  (5: every tool in registry.ts, RoLink.lua, prompts, samples/fixtures).
+
 ## [2.0.0] - 2026-09-20
 
 Reboot on the free-edition codebase: the 1.5.5 foundation plus the full 113-tool

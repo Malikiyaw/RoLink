@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.0.0"
+BRIDGE_VERSION = "2.1.0"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613"))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -1547,6 +1547,11 @@ def _ai_readable_error(kind: str, raw: str, tool: str) -> str:
                 f"Retry with smaller command or inspect Studio state. Raw: {raw}")
     if kind == "validation_error":
         return f"ERROR calling {tool}: {raw}\nCheck tool name and required arguments from the system prompt list."
+    if kind == "plugin_offline":
+        return (f"ERROR calling {tool}: the RoLink Studio plugin did not answer.\n"
+                f"Fix: in Roblox Studio, install studio-plugin/RoLink.lua into the Plugins folder "
+                f"(run install-plugin.bat), then in the command bar run "
+                f"game:GetService(\"HttpService\").HttpEnabled = true, and keep a place open.\nRaw: {raw}")
     return raw
 
 # ── P0 ToolEvent spine ──────────────────────────────────────────────────
@@ -1584,6 +1589,10 @@ def safe_call(name, arguments, timeout):
             log(f"dispatch id=? name={name} args_keys={sorted(arguments.keys())}", "dim", terminal=False)
         except Exception:
             pass
+    # Canonical name for Studio-native/legacy spellings. The StudioMCP path
+    # below ALWAYS keeps the original name; only the plugin-queue route uses
+    # the canonical form (so list_commands and friends never break).
+    canonical = _TOOL_ALIASES.get(name, name)
     # Local fast-path: pure-local tools work with no Studio and no MCP alive.
     # This is what makes the 111-catalog usable offline and is the Option-A
     # routing agreed in docs/workflow-contract.md.
@@ -1598,10 +1607,15 @@ def safe_call(name, arguments, timeout):
     # Luau pre-flight: reject code Studio's loadstring is guaranteed to fail
     # ("Failed to parse command code") with a structured error the model can
     # fix, instead of forwarding it. Mirrors mcp-server validateLuau.
-    if name in ("execute_luau", "run_in_sandbox") and isinstance(arguments.get("code"), str):
+    if canonical in ("execute_luau", "run_in_sandbox") and isinstance(arguments.get("code"), str):
         _pre = _luau_preflight(arguments["code"])
         if _pre:
             return {"ok": False, "error": _ai_readable_error("validation_error", _pre, name), "kind": "validation_error"}
+    # Third-party MCP path: our Studio plugin answers registry tools through
+    # the embedded :3001 queue whenever it is polling. Falls through to
+    # StudioMCP below when the plugin is absent (graceful degradation).
+    if canonical in STUDIO_QUEUE_TOOLS and _plugin_alive():
+        return _queue_call(canonical, arguments, timeout)
     if not mgr.any_alive():
         return {"ok": False, "error": _ai_readable_error("mcp_offline", "no MCP server alive", name), "kind": "mcp_offline"}
     # Studio usability check before calling studio tools
@@ -2153,6 +2167,250 @@ async def _supervised(name, coro_factory):
             await asyncio.sleep(5)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  EMBEDDED STUDIO QUEUE  (third-party MCP path, :3001)
+#  The Studio plugin (studio-plugin/RoLink.lua) polls GET /queue/next and
+#  POSTs /queue/result. Endpoint shapes mirror mcp-server's queue API so the
+#  plugin works against either server. Pure stdlib: no Node needed. If :3001
+#  is already taken, this disables itself loudly instead of fighting.
+# ══════════════════════════════════════════════════════════════════════════
+QUEUE_PORT = int(os.environ.get("ROLINK_QUEUE_PORT", "3001"))
+_queue_cmds = {}  # id -> {id, tool, command, args, projectId, status, result, error, event, created}
+_queue_lock = threading.Lock()
+_queue_seq = [0]
+_queue_last_poll = [0.0]
+_queue_server_on = [False]
+
+
+def _queue_new_id():
+    with _queue_lock:
+        _queue_seq[0] += 1
+        return f"q{_queue_seq[0]}_{int(time.time() * 1000) % 100000}"
+
+
+def queue_enqueue(tool, command, args, projectId="default"):
+    cid = _queue_new_id()
+    with _queue_lock:
+        _queue_cmds[cid] = {
+            "id": cid, "tool": tool, "command": command,
+            "args": args if isinstance(args, dict) else {},
+            "projectId": projectId or "default",
+            "status": "queued", "result": None, "error": None,
+            "event": threading.Event(), "created": time.time(),
+        }
+    return cid
+
+
+def queue_take(projectId=None):
+    now = time.time()
+    with _queue_lock:
+        for cid, cmd in _queue_cmds.items():
+            if cmd["status"] == "done":
+                continue
+            if projectId and cmd.get("projectId") not in (None, projectId):
+                continue
+            if cmd["status"] == "claimed" and now - cmd.get("claimed_at", 0) < 60.0:
+                continue
+            cmd["status"] = "claimed"
+            cmd["claimed_at"] = now
+            return {k: cmd[k] for k in ("id", "tool", "command", "args", "projectId")}
+    return None
+
+
+def queue_complete(cid, result, error):
+    with _queue_lock:
+        cmd = _queue_cmds.get(cid)
+        if cmd is None:
+            return False
+        cmd["status"] = "failed" if error else "done"
+        cmd["result"] = result
+        cmd["error"] = error
+        try:
+            cmd["event"].set()
+        except Exception:
+            pass
+    return True
+
+
+def queue_wait(cid, timeout_s):
+    with _queue_lock:
+        cmd = _queue_cmds.get(cid)
+        if cmd is None:
+            return None, "unknown command id"
+        ev = cmd["event"]
+    if not ev.wait(timeout=max(0.1, float(timeout_s or 30))):
+        return None, "timeout waiting for plugin result"
+    with _queue_lock:
+        cmd = _queue_cmds.get(cid)
+    if cmd is None:
+        return None, "unknown command id"
+    return cmd.get("result"), cmd.get("error")
+
+
+def _plugin_alive():
+    return (time.time() - _queue_last_poll[0]) < 30.0
+
+
+class _QueueHandler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).BaseHTTPRequestHandler):
+    server_version = "RoLinkQueue/2.1"
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, obj, code=200):
+        try:
+            body = json.dumps(obj).encode("utf-8")
+        except Exception:
+            body = b'{"ok": false, "error": "serialize failed"}'
+            code = 500
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except Exception:
+            pass
+
+    def _body(self):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            n = 0
+        if n <= 0 or n > 10 * 1024 * 1024:
+            return {}
+        try:
+            return json.loads(self.rfile.read(n).decode("utf-8", "replace"))
+        except Exception:
+            return {}
+
+    def do_GET(self):
+        from urllib.parse import urlparse, parse_qs
+        u = urlparse(self.path)
+        qs = parse_qs(u.query or "")
+        if u.path == "/health":
+            self._send({"ok": True, "service": "rolink-queue",
+                        "tools": len(ROLINK_TOOL_NAMES), "plugin": _plugin_alive()})
+        elif u.path == "/queue/next":
+            _queue_last_poll[0] = time.time()
+            pid = (qs.get("projectId") or ["default"])[0]
+            self._send({"ok": True, "command": queue_take(pid)})
+        elif u.path == "/queue/status":
+            with _queue_lock:
+                vals = list(_queue_cmds.values())
+            self._send({"ok": True,
+                        "depth": sum(1 for c in vals if c["status"] == "queued"),
+                        "claimed": sum(1 for c in vals if c["status"] == "claimed"),
+                        "done": sum(1 for c in vals if c["status"] == "done"),
+                        "failed": sum(1 for c in vals if c["status"] == "failed"),
+                        "total": len(vals)})
+        else:
+            self._send({"ok": False, "error": "not found"}, 404)
+
+    def do_POST(self):
+        data = self._body()
+        if self.path == "/queue/result":
+            cid = data.get("id")
+            if not cid:
+                self._send({"ok": False, "error": "id required"}, 400)
+            elif queue_complete(cid, data.get("result"), data.get("error")):
+                self._send({"ok": True})
+            else:
+                self._send({"ok": False, "error": "not found"}, 404)
+        elif self.path == "/queue/enqueue":
+            body = data if isinstance(data, dict) else {}
+            cid = queue_enqueue(body.get("tool", ""), body.get("command", ""),
+                                body.get("args", {}), body.get("projectId", "default"))
+            self._send({"ok": True, "id": cid})
+        elif self.path == "/metrics":
+            self._send({"ok": True})
+        else:
+            self._send({"ok": False, "error": "not found"}, 404)
+
+
+def start_queue_server():
+    """Bind :3001 in a daemon thread. Returns True when WE own the port."""
+    try:
+        from http.server import ThreadingHTTPServer
+        srv = ThreadingHTTPServer(("127.0.0.1", QUEUE_PORT), _QueueHandler)
+    except OSError as e:
+        log(f"queue port {QUEUE_PORT} busy ({e}) - embedded Studio queue disabled; "
+            f"the Studio plugin needs a queue on :{QUEUE_PORT} (start mcp-server or free the port).", "yl")
+        return False
+    t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
+    t.start()
+    _queue_server_on[0] = True
+    log(f"Studio queue listening on http://127.0.0.1:{QUEUE_PORT} (plugin polls /queue/next)", "cy")
+    return True
+
+
+# Studio-native spellings the model may use -> canonical registry names.
+# Applied ONLY to decide the plugin-queue route; the StudioMCP path below
+# always keeps the ORIGINAL name (so list_commands and friends never break).
+_TOOL_ALIASES = {
+    "run_code": "execute_luau",
+    "get_snapshot": "take_snapshot",
+    "set_property": "set_properties",
+    "get_logs": "export_session_log",
+    "perf_stats": "get_performance_stats",
+    "translate_code": "validate_command",
+    "validate_code": "validate_command",
+    "run_sandbox_tests": "run_in_sandbox",
+    "plan": "plan_game",
+    "get_context": "get_context_summary",
+    "use_template": "apply_template",
+    "create_template": "add_template",
+    "style_profile": "train_model",
+    "personalize_code": "train_model",
+    "generate_tests": "generate_test",
+    "search_assets": "search_asset",
+    "generate_gdd": "plan_game",
+    "compile_visual": "compile_visual_graph",
+    "analytics_report": "report_analytics",
+    "analytics_suggestions": "suggest_design",
+    "collab_join": "session_users",
+    "collab_list": "session_users",
+    "collab_broadcast": "session_users",
+    "search_game_tree": "get_instances",
+    "get_instance_tree": "get_instances",
+    "script_search": "get_script_content",
+    "script_grep": "search_by_attribute",
+    "inspect_instance": "get_instances",
+    "search_scripts": "search_by_attribute",
+    "heal_code": "refactor_code",
+    "rollback_list": "rollback",
+}
+
+# Registry tools executed IN Studio via the queue (everything except the
+# bridge-local handlers and batch fan-out, which never leave this process).
+STUDIO_QUEUE_TOOLS = frozenset(
+    [t for t in ROLINK_TOOL_NAMES if t and t not in LOCAL_HANDLERS and t != "batch_queue"]
+)
+
+
+def _queue_call(name, args, timeout):
+    """Enqueue for the Studio plugin and wait. Never raises."""
+    if not _queue_server_on[0]:
+        return {"ok": False, "kind": "plugin_offline",
+                "error": _ai_readable_error("plugin_offline", "embedded queue not running", name)}
+    if not _plugin_alive():
+        return {"ok": False, "kind": "plugin_offline",
+                "error": _ai_readable_error(
+                    "plugin_offline",
+                    "no Studio plugin poll in the last 30s (plugin not installed or Studio closed)", name)}
+    project = (args.get("projectId", "default") if isinstance(args, dict) else "default") or "default"
+    cid = queue_enqueue(name, name, args, project)
+    log(f"[{name}] queued for Studio plugin ({cid})", "cy", terminal=False)
+    result, err = queue_wait(cid, timeout)
+    if err == "timeout waiting for plugin result":
+        return {"ok": False, "kind": "plugin_offline",
+                "error": _ai_readable_error("plugin_offline", f"no plugin answer in {timeout}s", name)}
+    if err:
+        return {"ok": False, "error": str(err), "kind": "execution_error"}
+    text = result if isinstance(result, str) else json.dumps(result, default=str)
+    return {"ok": True, "text": text[:12000], "images": []}
+
+
 async def main():
     print(f"\n{C['cy']}  RoLink Bridge v{BRIDGE_VERSION}{C['reset']}  {C['dim']}- Roblox Studio - ws://{HOST}:{PORT}{C['reset']}\n")
     log(f"===== BRIDGE START  v{BRIDGE_VERSION}  pid={os.getpid()}  log={LOG_PATH} =====", "cy")
@@ -2164,6 +2422,12 @@ async def main():
             "will be listed. Re-extract the release zip into a CLEAN",
             f"folder (this run: {_CATALOG_ERROR or 'empty catalog'}).",
         ])
+    # Third-party MCP path: embedded Studio queue for the RoLink Studio plugin
+    # (no Node needed). Started before the MCP servers so a poll arriving
+    # during boot already finds a live queue.
+    _queue_up = await asyncio.to_thread(start_queue_server)
+    if not _queue_up:
+        log("continuing without the embedded Studio queue (StudioMCP-only mode)", "yl")
     await asyncio.to_thread(_kill_orphan_studio_mcp)
     killed_squatter = await asyncio.to_thread(check_studio_port)
     mgr.load_config()
@@ -2343,6 +2607,9 @@ async def main():
                 ])
         elif _st["app"] is True:
             log(f"ready {total} tools available - Roblox Studio connected", "gr")
+            if _queue_server_on[0]:
+                log("Studio queue :3001 up" + (" - plugin polling (third-party MCP live)"
+                    if _plugin_alive() else " - waiting for the Studio plugin poll"), "gr" if _plugin_alive() else "yl")
         else:
             log(f"ready {total} tools available ({len(mgr.clients)} MCP server(s))", "gr")
         asyncio.create_task(_supervised(

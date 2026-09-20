@@ -1,4 +1,4 @@
-# RoLink 2.0.0 — AI → Roblox Studio
+# RoLink 2.1.0 — AI → Roblox Studio
 
 **Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio agent.** Browser extension + local bridge + MCP. Download through GitHub, no build needed.
 
@@ -45,6 +45,17 @@ Open Studio and load a Place, then enable MCP (first time only):
 - Click **...** (top right of the Assistant panel)
 - Click **Manage MCP Servers**
 - Click **Enable Studio as MCP Server**
+
+### 2b. Install the RoLink Studio plugin (unlocks all 113 tools)
+
+Roblox's built-in MCP only speaks ~27 commands. The rest of the catalog runs
+through our own plugin:
+
+- **Windows:** double-click `install-plugin.bat` inside the extracted folder.
+- **macOS:** copy `studio-plugin/RoLink.lua` to `~/Documents/Roblox/Plugins/` (create the folder if missing).
+- In Studio, open your place, press **View > Command Bar**, and run:
+  `game:GetService("HttpService").HttpEnabled = true` (once per place — lets the plugin reach the bridge).
+- Restart Studio if it was open. A **RoLink** toolbar button appears; the bridge prints `plugin polling` when it connects. Without this step, registry tools report a clear `plugin_offline` error instead of running.
 
 ### 3. Run the Bridge
 

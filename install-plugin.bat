@@ -1,0 +1,38 @@
+:: SPDX-License-Identifier: GPL-3.0-or-later
+:: install-plugin.bat - installs the RoLink Studio plugin (third-party MCP path).
+:: Copies studio-plugin\RoLink.lua into Roblox Studio's Plugins folder so the
+:: 113 registry tools execute inside Studio via the bridge's :3001 queue.
+@echo off
+setlocal
+cd /d "%~dp0"
+
+if not exist "%~dp0studio-plugin\RoLink.lua" (
+    echo   ERROR: studio-plugin\RoLink.lua not found next to this file.
+    echo   Extract the WHOLE download, then run this again.
+    pause
+    exit /b 1
+)
+
+set "PLUGINDIR=%LOCALAPPDATA%\Roblox\Plugins"
+if not exist "%PLUGINDIR%" mkdir "%PLUGINDIR%" >nul 2>nul
+copy /y "%~dp0studio-plugin\RoLink.lua" "%PLUGINDIR%\RoLink.lua" >nul
+if errorlevel 1 (
+    echo   ERROR: could not copy into %PLUGINDIR%.
+    echo   Copy studio-plugin\RoLink.lua there by hand.
+    pause
+    exit /b 1
+)
+
+echo.
+echo   RoLink plugin installed to:
+echo     %PLUGINDIR%\RoLink.lua
+echo.
+echo   TWO MORE STEPS INSIDE ROBLOX STUDIO (once per place):
+echo     1. Open your place, press View ^> Command Bar, run:
+echo          game:GetService("HttpService").HttpEnabled = true
+echo        (lets the plugin reach the bridge queue on :3001)
+echo     2. Restart Studio if it was open. A "RoLink" toolbar button
+echo        appears; the bridge prints "plugin polling" when it connects.
+echo.
+echo   Verify: start.bat shows "Studio queue :3001 up - plugin polling".
+pause
