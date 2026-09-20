@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.1.5"
+BRIDGE_VERSION = "2.1.6"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613"))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -212,6 +212,7 @@ def _local_plugin_status(args):
         "queue_up": bool(_queue_server_on[0]),
         "plugin_alive": _plugin_alive(),
         "plugin_version": _plugin_version[0] or None,
+        "stale": _queue_last_poll[0] > 0 and not _plugin_version[0],
         "ever_polled": last > 0,
         "last_poll_age_s": round(age, 1) if age is not None else None,
         "pending": sum(1 for c in vals if c.get("status") in ("queued", "claimed")),
@@ -1768,6 +1769,7 @@ async def broadcast_status():
             "catalog_loaded": _CATALOG_OK,
             "plugin": {"alive": _plugin_alive(),
                        "version": _plugin_version[0] or None,
+                       "stale": _queue_last_poll[0] > 0 and not _plugin_version[0],
                        "age_s": round(time.time() - _queue_last_poll[0], 1) if _queue_last_poll[0] > 0 else None},
         })
     except Exception:
@@ -1797,6 +1799,7 @@ async def handler(ws):
             "catalog_loaded": _CATALOG_OK,
             "plugin": {"alive": _plugin_alive(),
                        "version": _plugin_version[0] or None,
+                       "stale": _queue_last_poll[0] > 0 and not _plugin_version[0],
                        "age_s": round(time.time() - _queue_last_poll[0], 1) if _queue_last_poll[0] > 0 else None},
         }))
         async for raw in ws:
@@ -2254,6 +2257,10 @@ _queue_server_on = [False]
 # bridge and plugin came from different zips - the #1 cause of mystery
 # failures (old plugin + new bridge or vice versa).
 _plugin_version = [""]
+# Set the first time a poll arrives WITHOUT ?pv=: that plugin predates the
+# 2.1.5 handshake, so version-mismatch logic can never see it. Warn loudly
+# instead of letting it fail cryptically.
+_plugin_stale_warned = [False]
 # Circuit breaker: consecutive queue timeouts fail fast until a FRESH poll
 # (newer than the last timeout) or a success resets the count.
 _queue_consec_timeouts = [0]
@@ -2398,6 +2405,15 @@ class _QueueHandler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"
                         f"update both from the same release zip or expect strange failures.", "yl")
                 else:
                     log(f"Studio plugin v{_pv} connected.", "gr", terminal=False)
+            elif not _pv and not _plugin_stale_warned[0]:
+                # A poll with no version at all: plugin predates the handshake
+                # (older than 2.1.5). It will fail in confusing ways - say so now.
+                _plugin_stale_warned[0] = True
+                action_banner([
+                    "Your Studio plugin is OUTDATED (no version reported).",
+                    "Re-run install-plugin.bat, FULLY quit Studio, reopen it.",
+                    "Studio Output must print the NEW version on load.",
+                ])
             pid = (qs.get("projectId") or ["default"])[0]
             self._send({"ok": True, "command": queue_take(pid)})
         elif u.path == "/queue/status":

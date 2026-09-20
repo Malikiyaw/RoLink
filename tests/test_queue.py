@@ -55,6 +55,21 @@ class QueueTest(unittest.TestCase):
         self.assertTrue(body["plugin_alive"])
         self.assertLess(body["last_poll_age_s"], 30)
 
+    def test_versionless_poll_warns_once(self):
+        old_ver, old_warn = bridge._plugin_version[0], bridge._plugin_stale_warned[0]
+        bridge._plugin_version[0] = ""
+        bridge._plugin_stale_warned[0] = False
+        try:
+            code, _ = http("GET", "/queue/next?projectId=default")
+            self.assertEqual(code, 200)
+            self.assertTrue(bridge._plugin_stale_warned[0])
+            self.assertEqual(bridge._plugin_version[0], "")
+            code, _ = http("GET", "/queue/next?projectId=default&pv=9.9.9")
+            self.assertEqual(bridge._plugin_version[0], "9.9.9")
+        finally:
+            bridge._plugin_version[0] = old_ver
+            bridge._plugin_stale_warned[0] = old_warn
+
     def test_next_empty_then_result_flow(self):
         code, body = http("GET", "/queue/next?projectId=default")
         self.assertEqual(code, 200)

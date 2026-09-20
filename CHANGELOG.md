@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.6] - 2026-09-20
+
+No silent staleness: a polling plugin with no `?pv=` version is now called
+out immediately (ACTION banner: reinstall + full Studio restart), the popup
+flags version mismatch with the update step, and `plugin_status` reports a
+`stale` bit. Pre-2.1.5 plugins can no longer fail cryptically.
+
 ## [2.1.5] - 2026-09-20
 
 Plugin-not-answering, end to end.

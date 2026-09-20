@@ -33,7 +33,12 @@ function render(s) {
   if (s.connected && plug) {
     const age = plug.age_s == null ? "never seen" : (plug.alive ? "polling" : `stale ${plug.age_s}s`);
     const ver = plug.version ? ` v${plug.version}` : "";
-    tools.textContent += ` | Plugin${ver}: ${age}`;
+    let suffix = ` | Plugin${ver}: ${age}`;
+    const extVer = chrome.runtime.getManifest().version;
+    if (plug.age_s != null && (!plug.version || plug.version !== extVer)) {
+      suffix += " — update the Studio plugin (re-run install-plugin.bat, restart Studio)";
+    }
+    tools.textContent += suffix;
   }
   servers.textContent = s.connected
     ? list.map((x) => `${x.alive ? "●" : "○"} ${x.id} (${x.alive ? x.tools + " tools" : "down"})`).join("\n")
