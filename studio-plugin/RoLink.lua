@@ -7,7 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.1.9"
+local PLUGIN_VERSION = "2.1.10"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (113 tools, poll 200ms)", "rbxassetid://0")
@@ -90,6 +90,25 @@ local function findByPath(path:string): Instance?
     local cur: Instance? = game
     local walked = false
     for part in p:gmatch("[^/]+") do
+      if part == "game" and cur == game then continue end
+      if (part == "Workspace" or part == "workspace") and cur == game then
+        cur = workspace; walked = true; continue
+      end
+      if not cur then break end
+      local nxt = cur:FindFirstChild(part)
+      if not nxt then cur = nil; break end
+      cur = nxt; walked = true
+    end
+    if walked and cur then return cur end
+  end
+  -- dot-walk: "Workspace.Rig", "game.Workspace.Folder.X" (the shape models
+  -- actually write). Runs only without slashes; a failed walk falls through
+  -- to the legacy exact-name scan below, so names containing dots
+  -- ("My.Part") still resolve.
+  if p:find(".", 1, true) then
+    local cur: Instance? = game
+    local walked = false
+    for part in p:gmatch("[^.]+") do
       if part == "game" and cur == game then continue end
       if (part == "Workspace" or part == "workspace") and cur == game then
         cur = workspace; walked = true; continue
@@ -487,4 +506,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.1.9 loaded - 113 tools ready, polling "..MCP_URL)
+log("RoLink 2.1.10 loaded - 113 tools ready, polling "..MCP_URL)

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.10] - 2026-09-20
+
+Dot-path resolution: `findByPath` walks dot-separated paths
+(`game.Workspace.Rig`) after slash paths and before legacy exact-name scan,
+so both spellings resolve and dotted names (`My.Part`) still work. Every
+path-taking tool is fixed at once; misses still list real siblings.
+
 ## [2.1.9] - 2026-09-20
 
 One name, one owner; no starvation; no ghost replay.

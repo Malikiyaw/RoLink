@@ -108,6 +108,18 @@ class CompletenessTest(unittest.TestCase):
                         "do not resend the same code"):
             self.assertIn(snippet, self.plugin, f"missing: {snippet}")
 
+    def test_findbypath_walk_order(self):
+        # Slash-walk, then dot-walk, then legacy exact-name fallbacks. Order
+        # is the feature: dot paths ("Workspace.Rig") must resolve before the
+        # legacy scan, which must survive for dotted names ("My.Part").
+        slash = self.plugin.index("slash-walk")
+        dot = self.plugin.index("dot-walk")
+        legacy = self.plugin.index("legacy fallbacks")
+        self.assertLess(slash, dot)
+        self.assertLess(dot, legacy)
+        self.assertIn('gmatch("[^/]+")', self.plugin)
+        self.assertIn('gmatch("[^.]+")', self.plugin)
+
     def test_plugin_poll_unfiltered(self):
         # Project-scoped polls starved cross-project commands with zero
         # visible cause; the plugin must poll unfiltered (bridge scopes).
