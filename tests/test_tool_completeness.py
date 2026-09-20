@@ -76,6 +76,13 @@ class CompletenessTest(unittest.TestCase):
                         "/queue/next", "/queue/result"):
             self.assertIn(snippet, self.plugin, f"poll path broken, missing: {snippet}")
 
+    def test_plugin_character_help(self):
+        # CHARACTER errors must name real rigs; render honesty needs IsRunning.
+        for snippet in ("local function rigCandidates", "FindFirstChildOfClass(\"Humanoid\")",
+                        "Rigs with a Humanoid here", "IsRunning()",
+                        "Edit mode never renders animation playback"):
+            self.assertIn(snippet, self.plugin, f"missing: {snippet}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

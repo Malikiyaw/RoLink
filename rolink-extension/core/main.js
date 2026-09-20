@@ -1013,8 +1013,16 @@
       });
       return `Output of '${name}':\n${requested} commands (${scoped.length}):\n\n${lines.join("\n\n")}`;
     }
+    if (!A.toolNames.size) {
+      // Catalogue never loaded (bridge unreachable at boot): refetch once
+      // instead of waving any spelling through to a slow bridge path.
+      await ensureTools(true);
+    }
     if (A.toolNames.size && !A.toolNames.has(name)) {
       return RL.FEEDBACK.unknownTool(name, [...A.toolNames]);
+    }
+    if (!A.toolNames.size) {
+      return "ERROR: no commands are loaded - the bridge is unreachable. Reconnect from the extension popup and retry instead of guessing.";
     }
     // The Roblox MCP REQUIRES datamodel_type on execute_luau (enum Edit/Client/
     // Server). The ###LUA### parser already fills it in, but the model may also

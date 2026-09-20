@@ -35,6 +35,19 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(len(self.registry), 113, f"registry has {len(self.registry)} tools")
         self.assertEqual(len(set(self.registry)), 113, "registry has duplicates")
 
+    def test_unknown_names_fail_fast_with_suggestions(self):
+        import time
+        for bad, want_hint in (("create_animation", "create_animation_track"),
+                               ("execut_luau", "execute_luau"),
+                               ("set_proprety", "set_properties")):
+            t0 = time.monotonic()
+            res = bridge.safe_call(bad, {}, 5)
+            dt = time.monotonic() - t0
+            self.assertFalse(res["ok"], bad)
+            self.assertEqual(res["kind"], "validation_error", (bad, res))
+            self.assertIn(want_hint, res["error"], (bad, res["error"]))
+            self.assertLess(dt, 2.0, f"{bad} took {dt:.1f}s, must fail fast")
+
     def test_list_tools_covers_registry(self):
         advertised = {t.get("name") for t in self.mgr.list_tools()}
         missing = sorted(set(self.registry) - advertised)

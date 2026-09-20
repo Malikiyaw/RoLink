@@ -166,11 +166,32 @@ local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
   animCache[tostring(hashId)] = seq
   return { animationId = tostring(hashId), name = name, keyframes = #kfData }
 end
+-- Rigs the model can actually address: Models with a Humanoid, by full path.
+local function rigCandidates(): {string}
+  local out:{string} = {}
+  pcall(function()
+    for _, d in ipairs(workspace:GetDescendants()) do
+      if #out >= 5 then break end
+      if d:IsA("Model") and d:FindFirstChildOfClass("Humanoid") then
+        table.insert(out, d:GetFullName())
+      end
+    end
+  end)
+  return out
+end
 local function playAnimation(args:{ [string]: any }): { [string]: any }
   local char = findByPath(tostring(args.characterPath or args.target or "workspace"))
-  if not char then error("CHARACTER_NOT_FOUND: " .. tostring(args.characterPath or args.target)) end
+  if not char then
+    local rigs = rigCandidates()
+    local hint = #rigs > 0 and (" Rigs with a Humanoid here: " .. table.concat(rigs, ", ")) or " No Model with a Humanoid exists in workspace yet."
+    error("CHARACTER_NOT_FOUND: " .. tostring(args.characterPath or args.target) .. "." .. hint)
+  end
   local humanoid = char:FindFirstChildOfClass("Humanoid")
-  if not humanoid then error("HUMANOID_NOT_FOUND") end
+  if not humanoid then
+    local rigs = rigCandidates()
+    local hint = #rigs > 0 and (" Rigs with a Humanoid here: " .. table.concat(rigs, ", ")) or ""
+    error("HUMANOID_NOT_FOUND: " .. char:GetFullName() .. " has no Humanoid." .. hint)
+  end
   local animator = humanoid:FindFirstChildOfClass("Animator")
   if not animator then animator = Instance.new("Animator"); animator.Parent = humanoid end
   local animId = tostring(args.animationId or "")
@@ -182,7 +203,16 @@ local function playAnimation(args:{ [string]: any }): { [string]: any }
   local speed = num(args.speed, 1)
   if speed ~= 1 then track:AdjustSpeed(math.clamp(speed, 0.1, 8)) end
   if args.loop == true then track.Looped = true end
-  return { success = true, trackName = track.Name, animationId = animId }
+  -- Edit mode never renders animation playback: say so honestly instead of a
+  -- bare success the user then can't see. The track IS playing underneath.
+  local rendered = true
+  pcall(function() rendered = game:GetService("RunService"):IsRunning() end)
+  local ret:{ [string]: any } = { success = true, trackName = track.Name, animationId = animId }
+  if not rendered then
+    ret.rendered = false
+    ret.note = "Edit mode never renders animation playback - press Play to see it move."
+  end
+  return ret
 end
 local function getAnimationInfo(args:{ [string]: any }): { [string]: any }
   local animId = tostring(args.animationId or "")
@@ -352,8 +382,13 @@ local function executeCommand(cmd:any): (any, string?)
   end)
   if not ok then
     err = tostring(ret)
-    if err:find("not found") then
-      local hint = siblingHint((cmd.args or {}).path or (cmd.args or {}).parent or "")
+    -- Case-insensitive: CHARACTER_NOT_FOUND / HUMANOID_NOT_FOUND carry no
+    -- lowercase "not found" and would otherwise leave the model guessing.
+    local low = err:lower()
+    if low:find("not found", 1, true) or low:find("character_not_found", 1, true)
+      or low:find("humanoid_not_found", 1, true) then
+      local hint = siblingHint((cmd.args or {}).path or (cmd.args or {}).parent
+        or (cmd.args or {}).characterPath or (cmd.args or {}).target or "")
       if hint ~= "" then err ..= hint end
     end
   end

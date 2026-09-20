@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.1.3"
+BRIDGE_VERSION = "2.1.4"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613"))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -1589,10 +1589,36 @@ def safe_call(name, arguments, timeout):
             log(f"dispatch id=? name={name} args_keys={sorted(arguments.keys())}", "dim", terminal=False)
         except Exception:
             pass
-    # Canonical name for Studio-native/legacy spellings. The StudioMCP path
-    # below ALWAYS keeps the original name; only the plugin-queue route uses
-    # the canonical form (so list_commands and friends never break).
+    # Canonical name for Studio-native/legacy spellings. Computed first: the
+    # unknown-name check below needs it, and the StudioMCP path further down
+    # ALWAYS keeps the original name; only the plugin-queue route uses the
+    # canonical form (so list_commands and friends never break).
     canonical = _TOOL_ALIASES.get(name, name)
+    # Fast unknown-name rejection: a garbage spelling must never reach a
+    # network wait. Infrastructure names always pass (they are answered
+    # locally or by live servers); everything else must appear in the
+    # registry, the alias map, or a connected server's advertised set.
+    _PASSTHROUGH = frozenset(("list_commands", "list_tools", "list_mcp_servers",
+                              "get_studio_state", "list_roblox_studios"))
+    if name not in _PASSTHROUGH and canonical not in _PASSTHROUGH:
+        try:
+            _known = set(ROLINK_TOOL_NAMES) | set(_TOOL_ALIASES) | set(_TOOL_ALIASES.values())
+            try:
+                _known |= set(getattr(mgr, "index", {}) or {})
+                for _c in (getattr(mgr, "clients", {}) or {}).values():
+                    for _t in (_c.tools_cache or []):
+                        if isinstance(_t, dict) and _t.get("name"):
+                            _known.add(_t["name"])
+            except Exception:
+                pass
+            if name not in _known and canonical not in _known:
+                import difflib as _dl
+                _sug = _dl.get_close_matches(name, sorted(_known), n=3, cutoff=0.6)
+                _hint = (" Did you mean: " + ", ".join(_sug) + "?") if _sug else ""
+                return {"ok": False, "kind": "validation_error",
+                        "error": f'ERROR: unknown tool "{name}".{_hint} Use an exact name from list_commands.'}
+        except Exception:
+            pass
     # Local fast-path: pure-local tools work with no Studio and no MCP alive.
     # This is what makes the 111-catalog usable offline and is the Option-A
     # routing agreed in docs/workflow-contract.md.
@@ -1614,7 +1640,16 @@ def safe_call(name, arguments, timeout):
     # Third-party MCP path: our Studio plugin answers registry tools through
     # the embedded :3001 queue whenever it is polling. Falls through to
     # StudioMCP below when the plugin is absent (graceful degradation).
+    # Circuit breaker: after 2 consecutive queue timeouts, fail fast until a
+    # poll NEWER than the last timeout arrives (the plugin recovered).
     if canonical in STUDIO_QUEUE_TOOLS and _plugin_alive():
+        if (_queue_consec_timeouts[0] >= 2
+                and _queue_last_poll[0] <= _queue_last_timeout[0]):
+            return {"ok": False, "kind": "plugin_offline",
+                    "error": _ai_readable_error(
+                        "plugin_offline",
+                        "the last queue calls timed out - the Studio plugin stopped answering; "
+                        "restart Studio (or re-run install-plugin.bat) and retry", name)}
         return _queue_call(canonical, arguments, timeout)
     if not mgr.any_alive():
         return {"ok": False, "error": _ai_readable_error("mcp_offline", "no MCP server alive", name), "kind": "mcp_offline"}
@@ -2180,6 +2215,13 @@ _queue_lock = threading.Lock()
 _queue_seq = [0]
 _queue_last_poll = [0.0]
 _queue_server_on = [False]
+# Circuit breaker: consecutive queue timeouts fail fast until a FRESH poll
+# (newer than the last timeout) or a success resets the count.
+_queue_consec_timeouts = [0]
+_queue_last_timeout = [0.0]
+# Claim expiry: a poller that takes a command but never reports (crashed /
+# duplicate copy) must not wedge the queue for a minute.
+_CLAIM_TIMEOUT_S = 25.0
 
 
 def _queue_new_id():
@@ -2191,6 +2233,17 @@ def _queue_new_id():
 def queue_enqueue(tool, command, args, projectId="default"):
     cid = _queue_new_id()
     with _queue_lock:
+        # Hygiene: drop long-settled commands so a long session never degrades
+        # (dict scans + memory stay flat).
+        try:
+            now = time.time()
+            for k in [k for k, c in _queue_cmds.items()
+                      if c.get("status") in ("done", "failed") and now - c.get("created", now) > 300]:
+                _queue_cmds.pop(k, None)
+            while len(_queue_cmds) > 500:
+                _queue_cmds.pop(next(iter(_queue_cmds)), None)
+        except Exception:
+            pass
         _queue_cmds[cid] = {
             "id": cid, "tool": tool, "command": command,
             "args": args if isinstance(args, dict) else {},
@@ -2209,7 +2262,7 @@ def queue_take(projectId=None):
                 continue
             if projectId and cmd.get("projectId") not in (None, projectId):
                 continue
-            if cmd["status"] == "claimed" and now - cmd.get("claimed_at", 0) < 60.0:
+            if cmd["status"] == "claimed" and now - cmd.get("claimed_at", 0) < _CLAIM_TIMEOUT_S:
                 continue
             cmd["status"] = "claimed"
             cmd["claimed_at"] = now
@@ -2413,12 +2466,18 @@ def _queue_call(name, args, timeout):
                     "refactor_code": "code"}
     _cf = _CODE_FIELDS.get(name)
     _payload = args.get(_cf) if (_cf and isinstance(args.get(_cf), str)) else name
+    # Studio ops are local and fast: cap the wait well under the extension's
+    # 120s budget so a dead poller fails in a minute, not two.
+    _wait = max(1.0, min(float(timeout or 30), 60.0))
     cid = queue_enqueue(name, _payload, args, project)
     log(f"[{name}] queued for Studio plugin ({cid})", "cy", terminal=False)
-    result, err = queue_wait(cid, timeout)
+    result, err = queue_wait(cid, _wait)
     if err == "timeout waiting for plugin result":
+        _queue_consec_timeouts[0] += 1
+        _queue_last_timeout[0] = time.time()
         return {"ok": False, "kind": "plugin_offline",
-                "error": _ai_readable_error("plugin_offline", f"no plugin answer in {timeout}s", name)}
+                "error": _ai_readable_error("plugin_offline", f"no plugin answer in {_wait:.0f}s", name)}
+    _queue_consec_timeouts[0] = 0
     if err:
         return {"ok": False, "error": str(err), "kind": "execution_error"}
     with _queue_lock:

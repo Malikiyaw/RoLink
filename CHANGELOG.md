@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.1.4] - 2026-09-20
+
+Speed + character fixes; no failure class may spin past seconds anymore.
+
+- **Queue hygiene**: claim expiry 60s -> 25s, settled commands swept after
+  5 min, queue waits capped at 60s.
+- **Circuit breaker**: 2 consecutive queue timeouts fail fast with
+  `plugin_offline` until a fresh plugin poll arrives.
+- **Fast unknown names**: garbage spellings get an instant
+  `validation_error` with did-you-mean suggestions (stdlib difflib) instead
+  of any network wait; extension refetches once on an empty catalog rather
+  than firing blind.
+- **Character discovery**: `play_animation` misses name real rigs with
+  Humanoids; hint trigger is case-insensitive; Edit-mode playback reports
+  `rendered: false` honestly instead of bare success.
+
 ## [2.1.3] - 2026-09-20
 
 Execution correctness for the queue path.
