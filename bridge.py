@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.1.6"
+BRIDGE_VERSION = "2.1.7"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613"))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -208,6 +208,13 @@ def _local_plugin_status(args):
     age = (now - last) if last > 0 else None
     with _queue_lock:
         vals = list(_queue_cmds.values())
+    _flight = [c for c in vals if c.get("status") == "claimed"]
+    _oldest = None
+    if _flight:
+        try:
+            _oldest = round(now - min(c.get("claimed_at", now) for c in _flight), 1)
+        except Exception:
+            _oldest = None
     return {"ok": True, "text": json.dumps({
         "queue_up": bool(_queue_server_on[0]),
         "plugin_alive": _plugin_alive(),
@@ -216,6 +223,8 @@ def _local_plugin_status(args):
         "ever_polled": last > 0,
         "last_poll_age_s": round(age, 1) if age is not None else None,
         "pending": sum(1 for c in vals if c.get("status") in ("queued", "claimed")),
+        "in_flight": len(_flight),
+        "oldest_claim_age_s": _oldest,
         "consecutive_timeouts": _queue_consec_timeouts[0],
     })}
 

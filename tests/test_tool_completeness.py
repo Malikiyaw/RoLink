@@ -102,6 +102,12 @@ class CompletenessTest(unittest.TestCase):
                   "BrickColor=", "TweenInfo=", "utf8=", "bit32=", "coroutine="):
             self.assertIn(g, self.plugin, f"sandbox missing: {g}")
 
+    def test_plugin_stuck_watchdog(self):
+        # Hung executions must announce themselves in Studio Output.
+        for snippet in ("STILL RUNNING", "probable infinite loop",
+                        "do not resend the same code"):
+            self.assertIn(snippet, self.plugin, f"missing: {snippet}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

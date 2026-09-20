@@ -69,6 +69,8 @@ class CatalogTest(unittest.TestCase):
         self.assertTrue(body["plugin_alive"])
         self.assertEqual(body["queue_up"], bridge._queue_server_on[0])
         self.assertIn("plugin_version", body)
+        self.assertIn("in_flight", body)
+        self.assertIn("oldest_claim_age_s", body)
         # Registry stays exactly 113: plugin_status is a built-in, not a tool.
         self.assertEqual(len(self.registry), 113)
         self.assertNotIn("plugin_status", self.registry)

@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.7] - 2026-09-20
+
+Stuck-execution visibility: polls flowing with zero answers now names the
+cause instead of burning timeouts. `plugin_status` reports `in_flight` +
+`oldest_claim_age_s`; the plugin warns in Studio Output when one execution
+passes 30s (probable infinite loop); the prompt forbids resending hung code
+and says plainly a hung loop needs a Studio restart.
+
 ## [2.1.6] - 2026-09-20
 
 No silent staleness: a polling plugin with no `?pv=` version is now called
