@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.1.1"
+BRIDGE_VERSION = "2.1.2"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613"))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -2217,7 +2217,7 @@ def queue_take(projectId=None):
     return None
 
 
-def queue_complete(cid, result, error):
+def queue_complete(cid, result, error, timings=None):
     with _queue_lock:
         cmd = _queue_cmds.get(cid)
         if cmd is None:
@@ -2225,6 +2225,11 @@ def queue_complete(cid, result, error):
         cmd["status"] = "failed" if error else "done"
         cmd["result"] = result
         cmd["error"] = error
+        try:
+            el = (timings or {}).get("elapsed")
+            cmd["elapsed"] = float(el) if el is not None else None
+        except Exception:
+            cmd["elapsed"] = None
         try:
             cmd["event"].set()
         except Exception:
@@ -2313,7 +2318,8 @@ class _QueueHandler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"
             cid = data.get("id")
             if not cid:
                 self._send({"ok": False, "error": "id required"}, 400)
-            elif queue_complete(cid, data.get("result"), data.get("error")):
+            elif queue_complete(cid, data.get("result"), data.get("error"),
+                                data.get("timings") if isinstance(data.get("timings"), dict) else None):
                 self._send({"ok": True})
             else:
                 self._send({"ok": False, "error": "not found"}, 404)
@@ -2407,6 +2413,10 @@ def _queue_call(name, args, timeout):
                 "error": _ai_readable_error("plugin_offline", f"no plugin answer in {timeout}s", name)}
     if err:
         return {"ok": False, "error": str(err), "kind": "execution_error"}
+    with _queue_lock:
+        _el = (_queue_cmds.get(cid) or {}).get("elapsed")
+    if _el is not None:
+        log(f"[{name}] plugin executed in {_el:.2f}s", "dim", terminal=False)
     text = result if isinstance(result, str) else json.dumps(result, default=str)
     return {"ok": True, "text": text[:12000], "images": []}
 

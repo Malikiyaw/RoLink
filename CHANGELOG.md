@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.1.2] - 2026-09-20
+
+HUD removal: the in-Studio hologram overlay is gone. Its per-execution chips
+stacked without cleanup, and its unguarded claim hook could abort a poll so
+claimed commands were never reported (bridge timeouts). The bridge terminal is
+now the display: per-call lines plus plugin-reported execution time.
+`studio-plugin/RoLink.lua` keeps the toolbar toggle button, dispatcher,
+polling, and result reporting; Studio Output still logs each execution.
+
 ## [2.1.1] - 2026-09-20
 
 Listing fix: `list_commands` (and the boot chip + periodic reminder) scoped the

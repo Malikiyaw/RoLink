@@ -62,6 +62,20 @@ class CompletenessTest(unittest.TestCase):
                    if n not in self.samples and n not in self.fixtures]
         self.assertEqual(missing, [], f"no sample/fixture: {missing}")
 
+    def test_plugin_has_no_hud(self):
+        # The in-Studio hologram HUD is removed: a Visualizer throw inside
+        # poll() used to abort the whole poll, so claimed commands were never
+        # reported and the bridge timed out. The bridge terminal is the display.
+        for marker in ("Visualizer", "VHud", "VLog", "VStats", "hudBtn",
+                       "hologram", "RoLinkHUD"):
+            self.assertNotIn(marker, self.plugin, f"HUD remnant: {marker}")
+        # ...but the execution + reporting path must survive the removal.
+        for snippet in ("local function poll()", "executeCommand(cmd)",
+                        "reportResult(cmd.id, result, err, elapsed)",
+                        "local function executeCommand",
+                        "/queue/next", "/queue/result"):
+            self.assertIn(snippet, self.plugin, f"poll path broken, missing: {snippet}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
