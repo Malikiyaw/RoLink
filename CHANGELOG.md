@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.11] - 2026-09-20
+
+Bounded execution: synchronous Luau runs on a coroutine under an instruction
+step-hook (~10M instructions). Infinite loops die in seconds with
+"budget exceeded" instead of wedging the poll task forever; yields resume
+normally. Prompt rule: snippets must terminate, frame animation belongs to
+create_animation_track + play_animation.
+
 ## [2.1.10] - 2026-09-20
 
 Dot-path resolution: `findByPath` walks dot-separated paths

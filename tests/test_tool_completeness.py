@@ -108,6 +108,17 @@ class CompletenessTest(unittest.TestCase):
                         "do not resend the same code"):
             self.assertIn(snippet, self.plugin, f"missing: {snippet}")
 
+    def test_execution_budget(self):
+        # Unbounded synchronous code must die by instruction budget, never by
+        # frozen Studio: coroutine wrap + step hook + yield-tolerant resume
+        # loop, applied to both the main and heal-retry paths.
+        for snippet in ("local function runBudgeted", "debug.sethook(co",
+                        "HOOK_MAX_HITS", "coroutine.status(co)",
+                        "budget exceeded"):
+            self.assertIn(snippet, self.plugin, f"missing: {snippet}")
+        self.assertEqual(self.plugin.count("runBudgeted(res)"), 1)
+        self.assertEqual(self.plugin.count("runBudgeted(resH)"), 1)
+
     def test_findbypath_walk_order(self):
         # Slash-walk, then dot-walk, then legacy exact-name fallbacks. Order
         # is the feature: dot paths ("Workspace.Rig") must resolve before the

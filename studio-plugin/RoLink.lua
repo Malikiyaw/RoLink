@@ -7,7 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.1.10"
+local PLUGIN_VERSION = "2.1.11"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (113 tools, poll 200ms)", "rbxassetid://0")
@@ -42,18 +42,43 @@ local function healMissingEnds(code:string): string
   local ends=select(2, code:gsub("%f[%w]end%f[%W]", "")); if opens>ends then return code..string.rep("\nend", opens-ends) end; return code
 end
 
+-- Instruction budget: unbounded synchronous code (infinite loops, giant
+-- wait loops) would wedge the poll task forever with no remote kill. Run
+-- the chunk on its own coroutine under a step hook: past the budget it
+-- errors like any runtime failure, the poll survives, Studio never freezes.
+-- Yields (task.wait) resume normally - only raw instruction count is capped.
+local HOOK_EVERY = 100000
+local HOOK_MAX_HITS = 100 -- ~10M instructions ≈ a few seconds of CPU
+local function runBudgeted(fn: (...any) -> ...any, ...: any): (boolean, any)
+  local co = coroutine.create(fn)
+  local hits = 0
+  debug.sethook(co, function()
+    hits += 1
+    if hits > HOOK_MAX_HITS then
+      error("RoLink budget exceeded (~10M instructions) - split the work, yield regularly (task.wait), no infinite loops")
+    end
+  end, "", HOOK_EVERY)
+  local results = table.pack(coroutine.resume(co, ...))
+  while results[1] and coroutine.status(co) ~= "dead" do
+    results = table.pack(coroutine.resume(co))
+  end
+  -- A dead coroutine keeps no live hook; nothing to clear.
+  if results[1] then return true, table.unpack(results, 2, results.n) end
+  return false, results[2]
+end
+
 local function sandboxRun(code:string): (boolean, any)
   local ok, res = pcall(function() return loadstring(code, "RoLink") end)
   if ok and res then
     pcall(function() setfenv(res, safeEnv) end)
-    local ok2, ret = pcall(res)
+    local ok2, ret = runBudgeted(res)
     if ok2 then return true, ret end
     local err=tostring(ret); local healed=code
     if err:find("expected") or err:find("unfinished") then healed=balanceParens(healed); healed=healMissingEnds(healed) end
     healed=healed:gsub(":connect%(", ":Connect("):gsub("WatiForChild","WaitForChild"):gsub("Instnace","Instance")
     if healed~=code then
       local okH, resH = pcall(function() return loadstring(healed, "RoLinkHeal") end)
-      if okH and resH then pcall(function() setfenv(resH, safeEnv) end); local ok2h, retH=pcall(resH); if ok2h then return true, retH end end
+      if okH and resH then pcall(function() setfenv(resH, safeEnv) end); local ok2h, retH=runBudgeted(resH); if ok2h then return true, retH end end
     end
     -- Error context: the model only sees a line number otherwise. Attach the
     -- offending head so it can fix the actual expression.
@@ -506,4 +531,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.1.10 loaded - 113 tools ready, polling "..MCP_URL)
+log("RoLink 2.1.11 loaded - 113 tools ready, polling "..MCP_URL)
