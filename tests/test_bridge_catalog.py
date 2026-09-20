@@ -101,9 +101,72 @@ class CatalogTest(unittest.TestCase):
             if kind == "RuntimeError" or "unknown tool" in err.lower():
                 bad.append((name, f"{kind}: {err}"[:160]))
             elif kind not in ("validation_error", "mcp_offline", "studio_offline",
-                              "timeout", "execution_error", "cancelled"):
+                              "timeout", "execution_error", "cancelled",
+                              "plugin_offline"):
                 bad.append((name, f"unexpected kind {kind}: {err}"[:160]))
         self.assertEqual(bad, [], f"{len(bad)} tools do not route:\n" + "\n".join(f"{n}: {e}" for n, e in bad[:15]))
+
+    def test_single_ownership_on_collision(self):
+        # A name advertised BOTH live (Studio dialect) and by our catalog must
+        # list exactly once, with ours winning while the plugin polls.
+        import time
+
+        class FakeClient:
+            tools_cache = [{"name": "search_game_tree",
+                            "description": "STUDIO NATIVE dialect"}]
+
+            def is_alive(self):
+                return True
+
+        mgr = bridge.MCPManager()
+        mgr.clients = {"fake": FakeClient()}
+        try:
+            bridge._queue_last_poll[0] = time.time()  # plugin polling
+            ours = [t for t in mgr.list_tools() if t.get("name") == "search_game_tree"]
+            self.assertEqual(len(ours), 1, ours)
+            self.assertEqual(ours[0].get("server"), "local")
+            self.assertIn("query", ours[0].get("description", ""))
+            bridge._queue_last_poll[0] = 0.0  # plugin gone: Studio entry stands
+            theirs = [t for t in mgr.list_tools() if t.get("name") == "search_game_tree"]
+            self.assertEqual(len(theirs), 1, theirs)
+            self.assertEqual(theirs[0].get("server"), "fake")
+            self.assertIn("STUDIO NATIVE", theirs[0].get("description", ""))
+        finally:
+            bridge._queue_last_poll[0] = 0.0
+
+    def test_timeout_cancels_no_ghost_replay(self):
+        cid = bridge.queue_enqueue("get_instances", "get_instances", {})
+        res, err = bridge.queue_wait(cid, 0.2)
+        self.assertEqual(err, "timeout waiting for plugin result")
+        self.assertTrue(bridge.queue_cancel(cid))
+        # Cancelled commands are settled: take() skips them, complete is a no-op.
+        self.assertIsNone(bridge.queue_take())
+        self.assertTrue(bridge.queue_complete(cid, {"x": 1}, None))
+        with bridge._queue_lock:
+            self.assertEqual(bridge._queue_cmds[cid]["status"], "done")
+
+    def test_verdict_matrix(self):
+        import json as _json
+        import time
+        old_on = bridge._queue_server_on[0]
+        bridge._queue_server_on[0] = True
+        try:
+            bridge._queue_last_poll[0] = 0.0
+            v = _json.loads(bridge.safe_call("plugin_status", {}, 5)["text"])["verdict"]
+            self.assertEqual(v, "no-plugin")
+            bridge._queue_last_poll[0] = time.time()  # fresh poll, empty queue
+            for cid in list(bridge._queue_cmds):
+                bridge.queue_cancel(cid)
+            v = _json.loads(bridge.safe_call("plugin_status", {}, 5)["text"])["verdict"]
+            self.assertEqual(v, "healthy")
+            cid = bridge.queue_enqueue("get_instances", "get_instances", {}, "other")
+            v = _json.loads(bridge.safe_call("plugin_status", {}, 5)["text"])
+            self.assertEqual(v["verdict"], "routing-stall", v)
+            self.assertEqual(v["pending_by_project"], {"other": 1})
+            bridge.queue_cancel(cid)
+        finally:
+            bridge._queue_last_poll[0] = 0.0
+            bridge._queue_server_on[0] = old_on
 
 
 if __name__ == "__main__":

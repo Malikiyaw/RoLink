@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.1.9] - 2026-09-20
+
+One name, one owner; no starvation; no ghost replay.
+
+- **Single ownership**: colliding names (Studio-native vs ours) list exactly
+  one entry whose params match the backend that will execute it (ours while
+  the plugin polls, Studio's otherwise). List and execute agree by
+  construction; a test pins the rule.
+- **Timeout-cancel**: timed-out waits retire the command, so ghosts never
+  replay and fresh calls stop starving behind dead ones.
+- **Unfiltered plugin polls**: project-scoped starvation (pending, never
+  claimed, zero errors) is impossible now.
+- **`plugin_status` verdict**: healthy / executing / routing-stall /
+  stuck-execution / no-plugin / plugin-stale / no-queue, plus per-project
+  pending. The prompt follows the verdict instead of theorizing.
+
 ## [2.1.8] - 2026-09-20
 
 No dead ends: every search spelling now executes natively.

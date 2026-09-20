@@ -7,7 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.1.8"
+local PLUGIN_VERSION = "2.1.9"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (113 tools, poll 200ms)", "rbxassetid://0")
@@ -461,7 +461,10 @@ end
 
 local function poll()
   if not enabled then return end
-  local ok, res=pcall(function() return HttpService:RequestAsync({Url=MCP_URL.."/queue/next?projectId=default&pv="..PLUGIN_VERSION, Method="GET"}) end)
+  -- Unfiltered: project scoping happens bridge-side. A filtered poll would
+  -- starve commands enqueued under any other project id (pending forever,
+  -- full timeout burn, no error) with zero visible cause.
+  local ok, res=pcall(function() return HttpService:RequestAsync({Url=MCP_URL.."/queue/next?projectId=&pv="..PLUGIN_VERSION, Method="GET"}) end)
   if not ok then return end
   local ok2, data=pcall(function() return HttpService:JSONDecode(res.Body) end)
   if not ok2 then return end
@@ -484,4 +487,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.1.8 loaded - 113 tools ready, polling "..MCP_URL)
+log("RoLink 2.1.9 loaded - 113 tools ready, polling "..MCP_URL)

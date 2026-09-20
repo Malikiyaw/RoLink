@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.1.8"
+BRIDGE_VERSION = "2.1.9"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613"))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -215,6 +215,26 @@ def _local_plugin_status(args):
             _oldest = round(now - min(c.get("claimed_at", now) for c in _flight), 1)
         except Exception:
             _oldest = None
+    _by_proj = {}
+    for _c in vals:
+        if _c.get("status") in ("queued", "claimed"):
+            _pk = _c.get("projectId") or "default"
+            _by_proj[_pk] = _by_proj.get(_pk, 0) + 1
+    _alive = _plugin_alive()
+    if not bool(_queue_server_on[0]):
+        _verdict = "no-queue"
+    elif last <= 0:
+        _verdict = "no-plugin"
+    elif _oldest is not None and _oldest > 30:
+        _verdict = "stuck-execution"
+    elif _flight:
+        _verdict = "executing"
+    elif _by_proj and _alive and age is not None and age < 5:
+        _verdict = "routing-stall"
+    elif not _alive:
+        _verdict = "plugin-stale"
+    else:
+        _verdict = "healthy"
     return {"ok": True, "text": json.dumps({
         "queue_up": bool(_queue_server_on[0]),
         "plugin_alive": _plugin_alive(),
@@ -223,8 +243,10 @@ def _local_plugin_status(args):
         "ever_polled": last > 0,
         "last_poll_age_s": round(age, 1) if age is not None else None,
         "pending": sum(1 for c in vals if c.get("status") in ("queued", "claimed")),
+        "pending_by_project": _by_proj,
         "in_flight": len(_flight),
         "oldest_claim_age_s": _oldest,
+        "verdict": _verdict,
         "consecutive_timeouts": _queue_consec_timeouts[0],
     })}
 
@@ -1427,26 +1449,34 @@ class MCPManager:
                 out.append(tt)
         # Extended 113-tool catalog: advertise local/studio tools even when
         # Studio is offline, with param guidance so list_commands stays useful.
-        # Never collides: names already advertised by a live server are skipped.
-        # Plus plugin_status (bridge built-in, NOT in the registry): instant
-        # plugin health the model calls before burning a timeout.
+        # Never collides: names already advertised by a live server are skipped
+        # here (collisions are resolved by the ownership step below instead).
+        # Plus plugin_status (bridge built-in) and the native search extras.
         try:
             _seen = {e.get("name") for e in out}
-            for _n in ROLINK_TOOL_NAMES:
+            for _n in list(ROLINK_TOOL_NAMES) + ["plugin_status"] + sorted(_QUEUE_EXTRA_TOOLS):
                 if _n and _n not in _seen:
-                    _p = TOOL_PROMPTS.get(_n, {}) if isinstance(TOOL_PROMPTS, dict) else {}
-                    _desc = (_p.get("args_guide") or "").strip()
-                    _desc = ("Tool. " + _desc)[:600] if _desc else "RoLink local/studio tool"
-                    out.append({"name": _n, "description": _desc, "server": "local"})
-            if "plugin_status" not in _seen:
-                out.append({"name": "plugin_status",
-                            "description": ("Tool. Instant in-Studio plugin health "
-                                            "(queue up, polling, version, pending). Call FIRST when "
-                                            "a Studio command fails - never hammer a failing call."),
-                            "server": "local"})
-            for _x in sorted(_QUEUE_EXTRA_TOOLS):
-                if _x not in _seen:
-                    out.append({"name": _x, "description": _QUEUE_EXTRA_DESC[_x], "server": "local"})
+                    _e = _local_tool_entry(_n)
+                    if _e is not None:
+                        out.append(_e)
+                        _seen.add(_n)
+        except Exception:
+            pass
+        # Single ownership: where our catalog and a live server advertise the
+        # SAME name with different params (Studio-native search_game_tree vs
+        # ours), exactly one may speak. While the plugin polls, execution
+        # routes to the queue - so the LIST shows our params too. Otherwise
+        # Studio's entry stands. List and execute can never disagree again.
+        try:
+            if _plugin_alive():
+                _new = []
+                for _e in out:
+                    if (_e.get("server") not in (None, "local")
+                            and _local_tool_entry(_e.get("name")) is not None):
+                        _new.append(_local_tool_entry(_e["name"]))
+                    else:
+                        _new.append(_e)
+                out = _new
         except Exception:
             pass
         return out
@@ -2334,6 +2364,8 @@ def queue_complete(cid, result, error, timings=None):
         cmd = _queue_cmds.get(cid)
         if cmd is None:
             return False
+        if cmd.get("status") == "done":
+            return True  # already settled (e.g. client timeout cancelled it)
         cmd["status"] = "failed" if error else "done"
         cmd["result"] = result
         cmd["error"] = error
@@ -2362,6 +2394,22 @@ def queue_wait(cid, timeout_s):
     if cmd is None:
         return None, "unknown command id"
     return cmd.get("result"), cmd.get("error")
+
+
+def queue_cancel(cid, reason="client timeout - superseded"):
+    """Retire a command so it can never execute late (no ghost replay) and
+    never block fresher work. Returns True if it was still pending."""
+    with _queue_lock:
+        cmd = _queue_cmds.get(cid)
+        if cmd is None or cmd.get("status") == "done":
+            return False
+        cmd["status"] = "done"
+        cmd["error"] = reason
+        try:
+            cmd["event"].set()
+        except Exception:
+            pass
+    return True
 
 
 def _plugin_alive():
@@ -2532,6 +2580,26 @@ _QUEUE_EXTRA_DESC = {
     "search_game_tree": ("Tool. Find instances by name (default), class, or attribute. "
                          "Args: query*, searchType? (name/class/attribute), mode?."),
 }
+_PLUGIN_STATUS_DESC = ("Tool. Instant in-Studio plugin health "
+                       "(queue up, polling, version, pending). Call FIRST when "
+                       "a Studio command fails - never hammer a failing call.")
+
+
+def _local_tool_entry(name):
+    """Advertised form of a catalog/extra/built-in tool (server "local").
+    Returns None for names we do not own. Single source of truth for both
+    the padding below and the single-ownership override."""
+    if name == "plugin_status":
+        return {"name": name, "description": _PLUGIN_STATUS_DESC, "server": "local"}
+    if name in _QUEUE_EXTRA_TOOLS:
+        return {"name": name, "description": _QUEUE_EXTRA_DESC.get(name, "RoLink tool"),
+                "server": "local"}
+    if name in ROLINK_TOOL_NAMES:
+        _p = TOOL_PROMPTS.get(name, {}) if isinstance(TOOL_PROMPTS, dict) else {}
+        _desc = (_p.get("args_guide") or "").strip()
+        _desc = ("Tool. " + _desc)[:600] if _desc else "RoLink local/studio tool"
+        return {"name": name, "description": _desc, "server": "local"}
+    return None
 
 
 def _queue_call(name, args, timeout):
@@ -2567,6 +2635,7 @@ def _queue_call(name, args, timeout):
     if err == "timeout waiting for plugin result":
         _queue_consec_timeouts[0] += 1
         _queue_last_timeout[0] = time.time()
+        queue_cancel(cid)
         try:
             with _queue_lock:
                 _vals = list(_queue_cmds.values())

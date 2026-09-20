@@ -108,6 +108,11 @@ class CompletenessTest(unittest.TestCase):
                         "do not resend the same code"):
             self.assertIn(snippet, self.plugin, f"missing: {snippet}")
 
+    def test_plugin_poll_unfiltered(self):
+        # Project-scoped polls starved cross-project commands with zero
+        # visible cause; the plugin must poll unfiltered (bridge scopes).
+        self.assertIn("queue/next?projectId=&pv=", self.plugin)
+
     def test_alias_audit_no_arg_mismatch(self):
         # Every bridge alias target must exist in the registry, and the three
         # search natives must exist as plugin branches (not aliases) with
