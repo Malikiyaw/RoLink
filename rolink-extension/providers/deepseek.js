@@ -63,7 +63,7 @@ const ZSProvider = (() => {
   // controls can never be mistaken for send. Returns null when nothing matches
   // (same nullable contract as querySelector, so all readers keep working).
   function findSendBtn() {
-    const primary = findSendBtn();
+    const primary = document.querySelector(S.sendBtn);
     if (primary && primary.offsetParent !== null) return primary;
     try {
       const frame = (typeof composerFrame === "function" && composerFrame()) || document;

@@ -1,4 +1,4 @@
-# RoLink 2.2.1 — AI → Roblox Studio
+# RoLink 2.2.2 — AI → Roblox Studio
 
 **Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio agent.** Browser extension + local bridge + MCP. Download through GitHub, no build needed.
 

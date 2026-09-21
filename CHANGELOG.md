@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.2.2] - 2026-09-21
+
+Critical DeepSeek fix: the Start chip is back.
+
+- **Root cause**: 2.2.1's send-button fallback called itself (`findSendBtn`
+  → `findSendBtn`) — infinite recursion crashed the content script on sight,
+  so no bar ever mounted and the extension card showed Errors.
+- The fallback now queries the DOM as intended; a regression test pins it.
+
 ## [2.2.1] - 2026-09-21
 
 DeepSeek v4.1 composer support + count sync.

@@ -181,6 +181,11 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertIn("function findSendBtn", src)
         self.assertIn("needSearchOff", src)
         self.assertNotIn("composerFrame() || document", src)  # no recurse: frame scoping stays direct
+        # findSendBtn must query the DOM, never itself (self-recursion kills
+        # the content script: no bar, Errors button on the extension card).
+        body = src.split("function findSendBtn", 1)[1].split("\n  }\n", 1)[0]
+        self.assertNotIn("findSendBtn()", body)
+        self.assertIn("document.querySelector(S.sendBtn)", body)
         with open(os.path.join(ROOT, "rolink-extension", "core", "main.js"), encoding="utf-8") as f:
             main = f.read()
         self.assertIn("needSearchOff", main)
