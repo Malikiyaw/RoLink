@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.1] - 2026-09-21
+
+DeepSeek v4.1 composer support + count sync.
+
+- **Start works on the redesigned composer**: send-button lookup falls back
+  past `.ds-button--primary` to a labelled send button (never the model
+  picker or Direct dropdown), and unrecognized model pickers are treated
+  like the unified model instead of blocking Start.
+- **Clear blocker message**: a stuck-on Smart Search now says so instead of
+  a dead-end "mode not ready".
+- Count labels synced to the 119-tool catalog across bridge, plugin,
+  extension, and installer.
+
 ## [2.2.0] - 2026-09-21
 
 Public GitHub release: 119-tool catalog.

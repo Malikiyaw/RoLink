@@ -87,7 +87,7 @@
           root.postMessage({ type: "ROLINK_TOOL_EVENT", event: ev }, "*");
         }
       } catch (e) {}
-      // P0 verification: every one of the 117 tools logs here until the
+      // P0 verification: every one of the 119 tools logs here until the
       // Dock lands in P1.
       try {
         if (typeof console !== "undefined" && console.debug) {

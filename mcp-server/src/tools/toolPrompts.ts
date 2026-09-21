@@ -5,7 +5,7 @@
 // ships them on every tools/list). The model needs forgeGUI-style guidance —
 // when_to_use, exact arg formats, a copy-paste example, what the output means,
 // and the top pitfalls — to produce Studio output that works first try.
-// Full 117 inline in the system prompt would cost ~13k tokens/turn, so these
+// Full 119 inline in the system prompt would cost ~13k tokens/turn, so these
 // prompts are served LAZILY: the extension looks one up only on the
 // error-recovery path, and the server exposes GET /tools/:name/prompt.
 // Shipped artifacts (see generated/tool-prompts.json +

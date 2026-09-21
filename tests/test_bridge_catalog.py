@@ -31,7 +31,7 @@ class CatalogTest(unittest.TestCase):
         cls.mgr.load_config()
         bridge.mgr = cls.mgr
 
-    def test_registry_has_117(self):
+    def test_registry_has_119(self):
         self.assertEqual(len(self.registry), 119, f"registry has {len(self.registry)} tools")
         self.assertEqual(len(set(self.registry)), 119, "registry has duplicates")
 

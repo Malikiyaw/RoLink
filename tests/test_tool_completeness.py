@@ -35,7 +35,7 @@ class CompletenessTest(unittest.TestCase):
                             ROOT, "rolink-extension", "core", "__fixtures__",
                             "tool-calls", "*.txt"))}
 
-    def test_registry_is_117_unique(self):
+    def test_registry_is_119_unique(self):
         self.assertEqual(len(self.registry), 119)
         self.assertEqual(len(set(self.registry)), 119)
 

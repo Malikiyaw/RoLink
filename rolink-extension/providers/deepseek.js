@@ -56,6 +56,27 @@ const ZSProvider = (() => {
     deepThinkToggle: ".ds-toggle-button",
   };
 
+  // Send-button lookup with reskin fallback. DeepSeek's v4.1 composer restyles
+  // the footer button (the `.ds-button--primary` hook may be gone): fall back
+  // to a visible send/submit-labelled button inside the composer frame, matched
+  // by accessible name - never by position, so the "+" / model-picker / Direct
+  // controls can never be mistaken for send. Returns null when nothing matches
+  // (same nullable contract as querySelector, so all readers keep working).
+  function findSendBtn() {
+    const primary = findSendBtn();
+    if (primary && primary.offsetParent !== null) return primary;
+    try {
+      const frame = (typeof composerFrame === "function" && composerFrame()) || document;
+      const btns = [...frame.querySelectorAll('button, [role="button"]')];
+      const named = btns.find((b) => b.offsetParent !== null &&
+        /send|submit|enviar|envoyer|发送/i.test(
+          (b.getAttribute("aria-label") || "") + " " +
+          (b.getAttribute("title") || "") + " " + (b.innerText || "")));
+      if (named) return named;
+    } catch {}
+    return primary;
+  }
+
   // Error / state regexes (English + French - DeepSeek's UI follows the locale).
   const RE = {
     contextLimit: new RegExp(
@@ -431,10 +452,14 @@ const ZSProvider = (() => {
     }
     state = composerModeState();
     // Unified model (2026-09): no model tabs exist, so there is nothing to pick -
-    // ready once Search is off.
+    // ready once Search is off. Same for reskinned pickers (v4.1 model dropdown):
+    // unrecognized picker controls are never clicked - the agent runs on
+    // whatever the user picked.
     const unified = !state.expertFound && !state.visionFound && !state.instantFound;
     diag("mode_ready", { reason, unified, ...state });
-    return { ...state, unified, ready: state.expertOn || state.visionOn || state.instantOn || (unified && state.searchOff) };
+    return { ...state, unified,
+      needSearchOff: state.searchFound && !state.searchOff,
+      ready: state.expertOn || state.visionOn || state.instantOn || (unified && state.searchOff) };
   }
 
   // DeepSeek's footer button doubles as SEND (an upward arrow) and STOP (a
@@ -516,7 +541,7 @@ const ZSProvider = (() => {
   // Growth-tolerant "is a generation in progress?" - the response watcher's signal.
   function isGenerating() {
     if (document.querySelector(S.generating)) return true; // spin-up spinner
-    const btn = document.querySelector(S.sendBtn);
+    const btn = findSendBtn();
     if (isStopBtn(btn)) return true;                       // answer phase: stop square
     sampleStream();
     if (reasoningInProgress(lastAssistant())) return grewWithin(timings.REASON_IDLE_MS);
@@ -528,7 +553,7 @@ const ZSProvider = (() => {
   // linger after the answer ends.
   function isBusyNow() {
     if (document.querySelector(S.generating)) return true;
-    const btn = document.querySelector(S.sendBtn);
+    const btn = findSendBtn();
     if (isStopBtn(btn)) return true;
     sampleStream();
     if (!reasoningInProgress(lastAssistant())) return false; // answer present / stopped → free
@@ -538,7 +563,7 @@ const ZSProvider = (() => {
   // HARD signal only (the visible stop-square): never true just because a
   // conversation (re)loads or the user scrolls. Used for the Stop button.
   function isHardGenerating() {
-    return isStopBtn(document.querySelector(S.sendBtn));
+    return isStopBtn(findSendBtn());
   }
 
   // ── Diagnostic breakdown of isGenerating() ────────────────────────────────
@@ -557,7 +582,7 @@ const ZSProvider = (() => {
   function genDebug() {
     try {
       sampleStream();
-      const btn = document.querySelector(S.sendBtn);
+      const btn = findSendBtn();
       const path = btn && btn.querySelector("path");
       const rp = btn && btn.querySelector("rect");
       return {
@@ -646,7 +671,7 @@ const ZSProvider = (() => {
   // are the SAME button, so we refuse to click whenever a generation is live.
   function clickSendButton() {
     if (isBusyNow()) return false;
-    const btn = document.querySelector(S.sendBtn);
+    const btn = findSendBtn();
     if (btn && !isStopBtn(btn) && btn.getAttribute("aria-disabled") !== "true") {
       btn.click();
       return true;
@@ -701,7 +726,7 @@ const ZSProvider = (() => {
       // DOM node (the file-input path in attachImages does the real upload).
       const t0 = Date.now();
       while (Date.now() - t0 < 25000) {
-        const btn = document.querySelector(S.sendBtn);
+        const btn = findSendBtn();
         if (btn && !isStopBtn(btn) && btn.getAttribute("aria-disabled") !== "true") {
           try { btn.click(); } catch {}
         }
@@ -712,7 +737,7 @@ const ZSProvider = (() => {
     }
     // Text-only: wait for React to re-enable the send button, then click.
     await waitFor(() => {
-      const btn = document.querySelector(S.sendBtn);
+      const btn = findSendBtn();
       return btn && btn.getAttribute("aria-disabled") !== "true" && !isStopBtn(btn);
     }, 800);
     if (!clickSendButton() && !isBusyNow()) {
@@ -723,7 +748,7 @@ const ZSProvider = (() => {
   // Click DeepSeek's stop only if it is actually in the stop state (<rect>), so
   // we never accidentally re-trigger a send.
   function stopGeneration() {
-    const b = document.querySelector(S.stopBtn);
+    const b = findSendBtn();
     if (isStopBtn(b)) try { b.click(); } catch {}
   }
 

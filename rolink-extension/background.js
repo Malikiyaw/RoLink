@@ -51,10 +51,10 @@ let studioApp = null;
 // Assistant Settings > MCP Servers inside Studio (validated live 3x), which
 // "open Roblox Studio" wording completely fails to convey.
 let studioProc = null;
-// Catalog the bridge advertises (117 when its tests/__registry__.json loaded).
+// Catalog the bridge advertises (119 when its tests/__registry__.json loaded).
 // If the live list is shorter, the bridge is old or its folder is incomplete -
 // surface it instead of silently serving a stale short list (the "27 tools"
-// trap: the prompt names 117+ but list_commands returns only Studio-native).
+// trap: the prompt names 119+ but list_commands returns only Studio-native).
 let catalogTotal = 0;
 let catalogLoaded = false;
 let pluginState = null;

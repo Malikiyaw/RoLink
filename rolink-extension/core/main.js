@@ -1847,8 +1847,11 @@
       const modeState = await P.ensureComposerReady("startup");
       if (!alive()) return;
       if (!modeState.ready) {
+        const hint = modeState.needSearchOff
+          ? "Turn off Smart Search in the composer, then try again."
+          : "Start a new chat or reload the page, then try again.";
         ui.banner("warn", `${P.displayName} mode not ready`,
-          `Could not switch ${P.displayName} to the required mode. Start a new chat or reload the page, then try again.`);
+          `Could not switch ${P.displayName} to the required mode. ${hint}`);
         return;
       }
       const prompt = systemPrompt();

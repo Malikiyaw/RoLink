@@ -173,6 +173,19 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertIn(res["kind"], ("mcp_offline", "plugin_offline", "stuck-execution", "validation_error", "execution_error"))
         self.assertNotIn("unknown tool", str(res.get("error", "")).lower())
 
+    def test_deepseek_reskin_fallbacks(self):
+        with open(os.path.join(ROOT, "rolink-extension", "providers", "deepseek.js"), encoding="utf-8") as f:
+            src = f.read()
+        # v4.1 composer: send lookup survives a missing .ds-button--primary,
+        # unknown pickers are never clicked, search blocks explain themselves.
+        self.assertIn("function findSendBtn", src)
+        self.assertIn("needSearchOff", src)
+        self.assertNotIn("composerFrame() || document", src)  # no recurse: frame scoping stays direct
+        with open(os.path.join(ROOT, "rolink-extension", "core", "main.js"), encoding="utf-8") as f:
+            main = f.read()
+        self.assertIn("needSearchOff", main)
+        self.assertIn("Smart Search", main)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
