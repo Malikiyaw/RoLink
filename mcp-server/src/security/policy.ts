@@ -1,4 +1,4 @@
-// default-deny policy, allowlist handlers only — now allow all 113 canonical + legacy aliases for fully functional
+// default-deny policy, allowlist handlers only — now allow all 117 canonical + legacy aliases for fully functional
 export const ALLOWED_TOOLS = new Set([
   // Core 1-7
   "get_instances","create_instance","set_properties","set_property","delete_instance","clone_instance","move_instance","find_instance",
@@ -50,7 +50,7 @@ export function isToolAllowed(tool: string): boolean {
   // Fully functional: allow any canonical in registry (fallback true for execution studio)
   if(ALLOWED_TOOLS.has(tool)) return true;
   // Also allow any that looks like valid tool name (prevents stock Assistant parse fail from blocking RoLink)
-  if(/^[a-z_]+$/.test(tool)) return true; // permissive for 113 — security is via sandbox sanitizeCode, not allowlist
+  if(/^[a-z_]+$/.test(tool)) return true; // permissive for 117 — security is via sandbox sanitizeCode, not allowlist
   return false;
 }
 

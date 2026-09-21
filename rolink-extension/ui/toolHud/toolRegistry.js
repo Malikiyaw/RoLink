@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// ui/toolHud/toolRegistry.js — P0 visual identity for all 113 tools.
+// ui/toolHud/toolRegistry.js — P0 visual identity for all 119 tools.
 //
 // Category comes from config.js toolCategory() (extended in P0 to cover
 // the full registry). Colors/icons/preview-kinds are fixed per category
@@ -9,7 +9,7 @@
 (function (root) {
   "use strict";
 
-  // Full 113-tool catalogue (mirrors tests/__registry__.json).
+  // Full 119-tool catalogue (mirrors tests/__registry__.json).
   var TOOL_NAMES = [
     "get_instances", "create_instance", "set_properties", "delete_instance",
     "clone_instance", "move_instance", "find_instance", "execute_luau",
@@ -41,7 +41,9 @@
     "import_project", "generate_quest", "simulate_economy", "suggest_balance",
     "explain_code", "learning_mode", "adjust_difficulty",
     "set_difficulty_profile", "generate_sound", "generate_sound_pack",
-    "play_sound", "get_animation_info", "delete_animation"
+    "play_sound", "get_animation_info", "delete_animation",
+    "create_cutscene", "create_dialogue", "create_motion_effect", "create_vfx",
+    "export_animation_clip", "publish_animation"
   ];
 
   var CATEGORY_STYLE = {
@@ -58,7 +60,7 @@
   // P4 icon audit: per-tool glyph overrides where the category glyph
   // misleads (text-safe unicode only — no emoji-font dependency).
   // Everything else falls back to its category icon; iconFor() guarantees
-  // all 113 tools resolve a non-empty glyph (audited in tests/p4-polish).
+  // all 119 tools resolve a non-empty glyph (audited in tests/p4-polish).
   var ICON_OVERRIDES = {
     execute_luau: "➤", set_script_content: "✎", get_script_content: "⎙",
     create_module: "▦", run_function: "➤",
@@ -74,6 +76,8 @@
     search_asset: "⌕", import_asset: "⇩", apply_material: "⬣",
     git_commit: "⎘", git_log: "☰", git_rollback: "↻",
     batch_queue: "☰", cancel_command: "✖",
+    create_cutscene: "▷", create_dialogue: "❝", create_motion_effect: "〜", create_vfx: "✦",
+    export_animation_clip: "◫", publish_animation: "⇪",
     get_time: "◷", train_model: "◍", plan_game: "⚑",
     compile_visual_graph: "◈", review_code: "»", explain_code: "?",
     optimize_performance: "▲", simulate_economy: "◔"

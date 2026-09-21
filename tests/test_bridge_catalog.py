@@ -1,6 +1,6 @@
 # tests/test_bridge_catalog.py - every registry tool must resolve to a real path.
 #   python3 tests/test_bridge_catalog.py
-# With no Studio running and no MCP server started, each of the 113 tools must
+# With no Studio running and no MCP server started, each of the 119 tools must
 # return either ok (local handlers) or a precise offline kind (mcp_offline /
 # studio_offline / validation_error) - never "unknown tool". That proves the
 # full catalog is wired end to end (bridge routing), not just listed.
@@ -31,9 +31,9 @@ class CatalogTest(unittest.TestCase):
         cls.mgr.load_config()
         bridge.mgr = cls.mgr
 
-    def test_registry_has_113(self):
-        self.assertEqual(len(self.registry), 113, f"registry has {len(self.registry)} tools")
-        self.assertEqual(len(set(self.registry)), 113, "registry has duplicates")
+    def test_registry_has_117(self):
+        self.assertEqual(len(self.registry), 119, f"registry has {len(self.registry)} tools")
+        self.assertEqual(len(set(self.registry)), 119, "registry has duplicates")
 
     def test_unknown_names_fail_fast_with_suggestions(self):
         import time
@@ -71,8 +71,8 @@ class CatalogTest(unittest.TestCase):
         self.assertIn("plugin_version", body)
         self.assertIn("in_flight", body)
         self.assertIn("oldest_claim_age_s", body)
-        # Registry stays exactly 113: plugin_status is a built-in, not a tool.
-        self.assertEqual(len(self.registry), 113)
+        # Registry stays exactly 119: plugin_status is a built-in, not a tool.
+        self.assertEqual(len(self.registry), 119)
         self.assertNotIn("plugin_status", self.registry)
 
     def test_list_tools_covers_registry(self):
@@ -102,7 +102,7 @@ class CatalogTest(unittest.TestCase):
                 bad.append((name, f"{kind}: {err}"[:160]))
             elif kind not in ("validation_error", "mcp_offline", "studio_offline",
                               "timeout", "execution_error", "cancelled",
-                              "plugin_offline"):
+                              "plugin_offline", "stuck-execution"):
                 bad.append((name, f"unexpected kind {kind}: {err}"[:160]))
         self.assertEqual(bad, [], f"{len(bad)} tools do not route:\n" + "\n".join(f"{n}: {e}" for n, e in bad[:15]))
 

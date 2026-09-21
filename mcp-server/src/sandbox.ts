@@ -74,6 +74,8 @@ export function validateLuau(code: string): SandboxResult {
     return { ok: false, errors, warnings, sanitized: norm };
   }
   if (norm.length > 50000) errors.push("code too large (max 50k)");
+  if (norm.includes("###LUA") || norm.includes("###END_LUA"))
+    errors.push("render chrome: Luau transport markers (###LUA###) leaked into code - strip them before sending");
   if (norm.startsWith("```") || /^(?:copy\s+code|copy|json)(?![A-Za-z0-9_(])[\s]/i.test(norm))
     errors.push("render chrome prefix (Copy/fence) — strip before sending to Studio");
   if (norm.trimEnd().endsWith("```"))
@@ -91,6 +93,14 @@ export function validateLuau(code: string): SandboxResult {
   for (const b of BLOCKED) if (b.test(norm)) errors.push(`blocked pattern ${b}`);
 
   for (const w of WARN_PATTERNS) if (w.re.test(norm)) warnings.push(w.msg);
+
+  // Tight-loop guard: Studio has no preemptive kill (no debug.sethook), so a
+  // yield-less infinite loop hangs the plugin poll. Fail fast as an error.
+  const low = norm.toLowerCase();
+  if ((/while\s+true\s+do/.test(low) || /while\s+1\s+do/.test(low))
+    && !/task\.wait|task\.delay|heartbeat|:wait\s*\(|wait\s*\(/.test(low)) {
+    errors.push("probable infinite loop with no yield - add task.wait() inside the loop");
+  }
 
   return { ok: errors.length === 0, errors, warnings, sanitized: norm };
 }

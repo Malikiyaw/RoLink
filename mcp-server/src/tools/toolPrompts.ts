@@ -5,7 +5,7 @@
 // ships them on every tools/list). The model needs forgeGUI-style guidance —
 // when_to_use, exact arg formats, a copy-paste example, what the output means,
 // and the top pitfalls — to produce Studio output that works first try.
-// Full 113 inline in the system prompt would cost ~13k tokens/turn, so these
+// Full 117 inline in the system prompt would cost ~13k tokens/turn, so these
 // prompts are served LAZILY: the extension looks one up only on the
 // error-recovery path, and the server exposes GET /tools/:name/prompt.
 // Shipped artifacts (see generated/tool-prompts.json +
@@ -189,9 +189,9 @@ export const toolPrompts: Record<string, ToolPrompt> = {
   },
   batch_queue: {
     persona:
-      "You are a fan-out coordinator who packs up to twenty independent calls into one ordered batch. You sequence dependents explicitly, chain generation IDs across turns instead of inventing them, and fix only the indexed failures. You never nest batches or mix dependent steps out of order.",
-    when_to_use: "Run up to 20 independent commands in ONE call (scaffold a room: create 5 parts + set colors). Sequential fan-out — order is preserved. Studio equivalent: queueing several Explorer and Properties edits at once.",
-    args_guide: "commands* array of {tool,args}. Max 20, no nesting (a sub batch_queue is rejected). Studio gotcha: Studio applies queued edits in order, so sequence dependents.",
+      "You are a fan-out coordinator who packs up to ten independent calls into one ordered batch. You sequence dependents explicitly, chain generation IDs across turns instead of inventing them, and fix only the indexed failures. You never nest batches or mix dependent steps out of order.",
+    when_to_use: "Run up to 10 independent commands in ONE call (scaffold a room: create 5 parts + set colors). Strictly sequential — one Studio execution thread, order preserved. Studio equivalent: queueing several Explorer and Properties edits at once.",
+    args_guide: "commands* array of {tool,args}. Max 10, no nesting (a sub batch_queue is rejected). Prefer single commands for dependent chains; the batch stops at the first stuck failure. Studio gotcha: Studio applies queued edits in order, so sequence dependents.",
     example_call:
       '###MCP_TOOL###\n{"tool":"batch_queue","args":{"commands":[{"tool":"create_instance","args":{"className":"Part","name":"A"}},{"tool":"create_instance","args":{"className":"Part","name":"B"}}]}}',
     output: "{batched:N,succeeded:M,results:[...]} — inspect per-index results; fix only failures.",
@@ -480,7 +480,7 @@ export const toolPrompts: Record<string, ToolPrompt> = {
     persona:
       "You are an expert Roblox animator who rigs Humanoids, blocks key poses, eases with the right style and direction, and loops seamlessly at sixty frames per second. You ship real keyframes on Animator-owned rigs. You never deliver motionless tracks, popping loops, or unrigged characters.",
     when_to_use: "Define a keyframed animation track (walk cycles, emotes, zombie shamble). Studio equivalent: Animation Editor keyframe track.",
-    args_guide: "name*. keyframes* inline JSON array[1-200] of {time>=0, poses[1-64] of {part*, position*{x,y,z}, rotation*{x,y,z} degrees, scale?}}. loop? (default false). Pose part names must match rig part names (e.g. Head, Torso, Left Arm). Write keyframes INLINE as JSON (numbers need no escaping — do NOT use a RAW block, RAW delivers strings and fails validation). Studio gotcha: the track registers a temporary Studio-only hash ID; play it with play_animation.",
+    args_guide: "name*. keyframes* inline JSON array[1-200] of {time>=0 non-decreasing, easing? linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut (eased segments bake interpolated frames for realistic motion), poses[1-64] of {part*, position*{x,y,z}, rotation*{x,y,z} degrees, scale?}}. loop? (default false). Pose part names must match rig part names (e.g. Head, Torso, Left Arm). Write keyframes INLINE as JSON (numbers need no escaping — do NOT use a RAW block, RAW delivers strings and fails validation). Studio gotcha: the track registers a temporary Studio-only hash ID; play it with play_animation. For NPCs drive Motor6D from a server Script — never a LocalScript, never runtime registration live.",
     example_call: '###MCP_TOOL###\n{"tool":"create_animation_track","args":{"name":"Jump","loop":false,"keyframes":[{"time":0,"poses":[{"part":"Torso","position":{"x":0,"y":3,"z":0},"rotation":{"x":0,"y":0,"z":0}}]},{"time":0.5,"poses":[{"part":"Torso","position":{"x":0,"y":5,"z":0},"rotation":{"x":0,"y":0,"z":0}}]}]}}',
     output: "{queued:true,id} → {animationId (temp hash), name}. Play with play_animation.",
     pitfalls: "1) Empty keyframes are rejected — supply real frames. 2) Target rig must have a Humanoid/Animator. 3) Hash IDs are Studio-only; they cannot ship in a published game.",
@@ -488,20 +488,20 @@ export const toolPrompts: Record<string, ToolPrompt> = {
   play_animation: {
     persona:
       "You are an animation director who previews tracks on properly rigged characters with Humanoid and Animator present. You verify in a real playtest since Edit mode can lie. You never judge motion from a broken rig or call it done from a still frame.",
-    when_to_use: "Play an animation on a character (test a track, trigger an emote). Studio equivalent: Animation Editor preview playback.",
-    args_guide: "target default workspace (legacy) or characterPath (preferred). animationId* = hash from create_animation_track or rbxassetid://.... speed? 0.1-8 (default 1). loop? (default false). Studio equivalent: Edit mode never renders animation playback.",
+    when_to_use: "Verify animation wiring on a rig in Edit (never for Play visuals). Studio equivalent: Animator:LoadAnimation():Play() in Edit.",
+    args_guide: "Edit only: plugin runs in the Edit DataModel. characterPath*, animationId|path* (hash, rbxassetid://, or KeyframeSequence path auto-registered via KeyframeSequenceProvider — never pass a KeyframeSequence to LoadAnimation yourself), speed?, loop?. In Play returns playable:false + runtimeSnippet — stop Play, verify in Edit, then Play to view.",
     example_call: '###MCP_TOOL###\n{"tool":"play_animation","args":{"characterPath":"Workspace/Dummy","animationId":"rbxassetid://0","speed":1}}',
-    output: "{queued:true,id} → {success, trackName} async.",
-    pitfalls: "1) Needs a rig with Humanoid + Animator or nothing visibly happens. 2) In Edit mode animations may not render — run_playtest to verify. 3) animationId must be the exact hash returned by create_animation_track.",
+    output: "{queued:true,id} → {success, rendered:false} in Edit; {success:false, playable:false, runtimeSnippet} in Play.",
+    pitfalls: "1) Edit never renders — press Play to see motion. 2) Play Server rigs are not drivable from the plugin; use a real Script with the runtimeSnippet.",
   },
   get_animation_info: {
     persona:
       "You are an animation librarian who inventories every track before it ships. You read keyframe counts, durations, and rig part lists so directors know exactly what they have. You never guess at contents you have not inspected.",
-    when_to_use: "Inspect an animation asset or a cached track (verify a build before playing, list rig parts). Studio equivalent: Animation Editor track properties.",
-    args_guide: "animationId* (temp hash from create_animation_track or rbxassetid:// asset). Studio gotcha: temp hashes only resolve in the Studio session that created them.",
-    example_call: '###MCP_TOOL###\n{"tool":"get_animation_info","args":{"animationId":"rbxassetid://0"}}',
-    output: "{queued:true,id} → {name?, keyframeCount, duration, parts[]} async.",
-    pitfalls: "1) Unknown IDs return an error — create the track first. 2) Web asset fetches can take a few seconds.",
+    when_to_use: "Inspect an animation asset, a cached track, or an in-place KeyframeSequence by path (verify a build before playing, list rig parts). Studio equivalent: Animation Editor track properties.",
+    args_guide: "animationId? (temp hash from create_animation_track or rbxassetid:// asset) OR path? (e.g. Workspace/RoLinkAnimations/HelloWave for in-place sequences with duplicate Keyframe names). Pass one of the two. Studio gotcha: temp hashes only resolve in the Studio session that created them.",
+    example_call: '###MCP_TOOL###\n{"tool":"get_animation_info","args":{"path":"Workspace/RoLinkAnimations/HelloWave"}}',
+    output: "{queued:true,id} → {name?, keyframeCount, duration, parts[], keyframes[{index,name,time,poses[]}]} async.",
+    pitfalls: "1) Unknown IDs return an error — create the track first or pass path. 2) Web asset fetches can take a few seconds.",
   },
   delete_animation: {
     persona:
@@ -1060,6 +1060,60 @@ export const toolPrompts: Record<string, ToolPrompt> = {
     example_call: '###MCP_TOOL###\n{"tool":"play_sound","args":{"soundId":"rbxassetid://123"}}',
     output: "{queued:true,id} → playing async.",
     pitfalls: "1) No soundId plays a default — always pass the real ID to judge. 2) Edit-mode playback may differ from in-game mix.",
+  },
+  create_cutscene: {
+    persona:
+      "You are a film director who blocks camera shots with exact positions, look targets, and durations before anyone rolls. You keep shots short, ordered, and loop-safe, and you hand runtime the full shot list. You never guess a camera path or leave a cutscene unplayable.",
+    when_to_use: "Build a camera cutscene (intro pan, boss reveal, quest sting). Use instead of hand-tweening Camera in execute_luau. Studio equivalent: Camera sequencing plus TweenService at runtime.",
+    args_guide: "name*. shots* array[1-32] of {camera{position{x,y,z}, lookAt{x,y,z}}, duration 0.1-30s, easing? linear default}. loop? default false. Studio gotcha: Edit never renders camera playback — verify with get_animation_info-style re-reads, play via a server Script with the runtimeSnippet.",
+    example_call: '###MCP_TOOL###\n{"tool":"create_cutscene","args":{"name":"Intro","shots":[{"camera":{"position":{"x":0,"y":10,"z":20},"lookAt":{"x":0,"y":5,"z":0}},"duration":2}]}}',
+    output: "{queued:true,id} → {name, shots, duration, path, runtimeSnippet} async. Wire the snippet into a server Script for Play.",
+    pitfalls: "1) Edit never renders playback — press Play with a runtime Script to see it. 2) Keep total duration short; long shots belong in chapters, not one call.",
+  },
+  create_dialogue: {
+    persona:
+      "You are a narrative designer who writes tight NPC dialogue trees with named speakers, short lines, and at most four choices per beat. You keep every branch reachable and every speaker consistent. You never ship dead-end choices or unattributed lines.",
+    when_to_use: "Build an NPC dialogue tree (quest giver, shopkeeper, tutorial). Use instead of hardcoding chat strings in execute_luau. Studio equivalent: ProximityPrompt plus dialogue UI wired at runtime.",
+    args_guide: "npcPath* (Model with a head/part for the prompt). lines* array[1-50] of {speaker*, text* max 500, choices? max 4 strings}. Studio gotcha: dialogue only runs at Play via a server Script — Edit only stores the data.",
+    example_call: '###MCP_TOOL###\n{"tool":"create_dialogue","args":{"npcPath":"Workspace/QuestGiver","lines":[{"speaker":"Elder","text":"Welcome, traveler!"}]}}',
+    output: "{queued:true,id} → {lines, path, runtimeSnippet} async. Wire the snippet into a server Script for Play.",
+    pitfalls: "1) NPC path must exist — resolve_path first when unsure. 2) Keep choices ≤4; deeper trees belong in follow-up calls.",
+  },
+  create_motion_effect: {
+    persona:
+      "You are a motion designer who picks exactly one effect — tween, shake, fov, or pulse — with a bounded duration and explicit properties. You never stack effects blindly or leave durations open-ended.",
+    when_to_use: "Add camera/part motion (door slide tween, explosion shake, sprint FOV kick, pickup pulse). Use instead of busy loops in execute_luau. Studio equivalent: TweenService plus CameraOffset at runtime.",
+    args_guide: "path* (target part, model, or camera rig). effect tween|shake|fov|pulse default tween. duration 0.1-30 default 1. properties? map (e.g. {Magnitude: 2} for shake). Studio gotcha: motion only renders at Play via a server Script — Edit stores the setup.",
+    example_call: '###MCP_TOOL###\n{"tool":"create_motion_effect","args":{"path":"Workspace/Door","effect":"tween","duration":1.5}}',
+    output: "{queued:true,id} → {effect, path, runtimeSnippet} async. Wire the snippet into a server Script for Play.",
+    pitfalls: "1) Edit never renders motion — verify at Play. 2) One effect per call; chains go in sequence across turns.",
+  },
+  create_vfx: {
+    persona:
+      "You are a VFX artist who attaches exactly one readable effect — particles, fire, smoke, sparkles, beam, or light — parented to the target with sane rates. You verify it in the viewport immediately. You never flood the place with max-rate emitters.",
+    when_to_use: "Add visible effects (campfire, magic sparkles, laser beam, lamp glow). Unlike animation, VFX renders in the Edit viewport at once. Studio equivalent: ParticleEmitter/Fire/Smoke/Light instances under a part.",
+    args_guide: "parent default workspace. effect particles|fire|smoke|sparkles|beam|pointlight default particles. properties? map (Rate, Color, Size). Studio gotcha: high Rates lag — start low, raise after.",
+    example_call: '###MCP_TOOL###\n{"tool":"create_vfx","args":{"parent":"Workspace/Campfire","effect":"fire"}}',
+    output: "{queued:true,id} → {created:[paths]} async. Visible in the viewport immediately.",
+    pitfalls: "1) Parent must exist — resolve_path first when unsure. 2) Beams need two Attachment endpoints to render.",
+  },
+  export_animation_clip: {
+    persona:
+      "You are a pipeline engineer who converts blocked tracks into portable clip twins without losing a single pose. You preserve easing as curve data, name every curve by part, and label exactly what the twin is for. You never claim the twin plays back or opens an editor by itself.",
+    when_to_use: "Prepare a track for the Animation Editor round-trip or asset pipeline (clip twin of a sequence). Use after create_animation_track, before human editor work or publishing. Studio equivalent: clip export for external editing.",
+    args_guide: "trackPath? (e.g. Workspace/RoLinkAnimations/HelloWave) OR animationId? (cached hash). Pass one. Studio gotcha: the twin carries curve data for editors and our read-back — playback still uses the sequence hash or published ID.",
+    example_call: '###MCP_TOOL###\n{"tool":"export_animation_clip","args":{"trackPath":"Workspace/RoLinkAnimations/HelloWave"}}',
+    output: "{queued:true,id} → {clip, curves, keyframes} async. Then open/publish via the human step, or play via play_animation.",
+    pitfalls: "1) The clip twin does not play — LoadAnimation needs an Animation object. 2) Old Studio versions without AnimationClip get a clear version error, not a crash.",
+  },
+  publish_animation: {
+    persona:
+      "You are a release manager who ships animations in three honest stages: prepare the track, hand the human the exact publish clicks, then register the returned asset ID. You never claim you published anything yourself — publishing needs human auth.",
+    when_to_use: "Ship a track: prepare validates + refreshes the clip twin; register (after the human publishes) caches the asset ID for play/info. Studio equivalent: Publish to Roblox dialog, then asset-ID reuse.",
+    args_guide: "action* prepare|register. prepare: trackPath?|animationId? (one required). register: assetId* rbxassetid://.... Studio gotcha: publishing is human-only (auth + dialog); the model must ask the user to click it.",
+    example_call: '###MCP_TOOL###\n{"tool":"publish_animation","args":{"action":"prepare","trackPath":"Workspace/RoLinkAnimations/HelloWave"}}',
+    output: "prepare → {ready, checklist, publishSteps}. register → {animationId, cached:true}. Then play_animation/get_animation_info with the ID.",
+    pitfalls: "1) Never invent asset IDs — register only IDs the human pasted back. 2) Temp hashes die with the session; published IDs ship.",
   },
 };
 

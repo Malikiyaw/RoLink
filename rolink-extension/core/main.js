@@ -78,8 +78,6 @@
     }, EXPECT);
   }
 
-  // Ko-fi tip link.
-  const KOFI_URL = "https://ko-fi.com/sebattfg";
   // GitHub releases page - where users download the Bridge + start.bat.
   const GITHUB_URL = "https://github.com/sebattfg/RoLink-Free";
   // Shown in the panel instead of a static "Free" label, so a user's screenshot
@@ -88,17 +86,6 @@
   const EXT_VERSION = chrome.runtime.getManifest().version;
   // YouTube tutorial - how to set up the Bridge.
   const VIDEO_URL = "https://youtu.be/kPKiZLZ9_Ps";
-  // Work.ink locked link - free "watch an ad" support option. Set once the
-  // locker is created at https://work.ink; the button is hidden until then.
-  const WORKINK_URL = "https://work.ink/2JXi/rolink-free-roblox-ai-coding-tool";
-  // Roblox "tip" Game Passes - the native currency for the audience.
-  const ROBUX_PASSES = [
-    { robux: 30, id: 1865342947 },
-    { robux: 100, id: 1866782815 },
-    { robux: 300, id: 1869176990 },
-    { robux: 1000, id: 1865192973 },
-  ];
-  const passUrl = (id) => `https://www.roblox.com/game-pass/${id}`;
   // AI chat sites RoLink works on. Keep in sync with manifest.json
   // content_scripts and background.js PROVIDER_URLS when adding a provider.
   const AI_SITES = [
@@ -2751,7 +2738,7 @@
 
     // ── The "more" menu (⋯) ─────────────────────────────────────────────────
     // One popover holding every secondary control: other AI sites, the custom
-    // prompt, and support (Ko-fi + Robux). Opens above the bar.
+    // prompt, and addon MCP servers. Opens above the bar.
     function buildMenu() {
       const here = (P.displayName || "").toLowerCase();
       const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } };
@@ -2763,10 +2750,7 @@
           ? `<div class="rl-site-opt rl-site-here">${label}<span class="rl-site-badge">active</span></div>`
           : `<button class="rl-site-opt" data-u="${s.url}">${label}<span class="rl-site-go">&rarr;</span></button>`;
       }
-      let passes = "";
-      for (const p of ROBUX_PASSES) {
-        passes += `<button class="rl-tip-opt rl-tip-rbx" data-u="${passUrl(p.id)}"><span class="rl-rbx-cur">R$</span>${p.robux}</button>`;
-      }
+      let sites = "";
       const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
       const mergedServers = mergedMcpServers();
       // Roblox always heads the list - greyed out, no health dot (its own status
@@ -2788,17 +2772,6 @@
            ${sites}
          </section>
          <section class="rl-menu-sec">
-           <div class="rl-sec-label"><span>Free Support</span></div>
-           <button class="rl-tip-opt rl-tip-star" data-u="${GITHUB_URL}"><span>Star on GitHub</span><span class="rl-tip-sub">free, helps a lot</span></button>
-           ${WORKINK_URL ? `<button class="rl-tip-opt rl-tip-ad" data-u="${WORKINK_URL}"><span>Watch an ad to support</span><span class="rl-tip-sub">free, takes a minute</span></button>` : ""}
-         </section>
-         <section class="rl-menu-sec">
-           <div class="rl-sec-label"><span>Support with Robux / Ko-fi</span></div>
-           <button class="rl-tip-opt rl-tip-kofi" data-u="${KOFI_URL}"><span>Tip on Ko-fi</span><span class="rl-tip-sub">any amount</span></button>
-           <div class="rl-tip-sep">or tip in Robux</div>
-           <div class="rl-rbx-grid">${passes}</div>
-         </section>
-         <section class="rl-menu-sec">
            <div class="rl-sec-label"><span>Custom prompt</span></div>
            <div class="rl-menu-note">Added below the system prompt on every new session. The built-in prompt can't be edited.</div>
            <textarea id="rl-set-text" rows="4" placeholder="e.g. Always comment your Luau code. Prefer small modular scripts."></textarea>
@@ -2814,7 +2787,7 @@
            <div class="rl-set-row"><button id="rl-mcp-add">Add server</button><span id="rl-mcp-status"></span></div>
          </section>`;
       const open = (url) => { try { window.open(url, "_blank", "noopener"); } catch {} menuEl.hidden = true; };
-      menuEl.querySelectorAll("button.rl-site-opt, .rl-tip-opt").forEach((b) =>
+      menuEl.querySelectorAll("button.rl-site-opt").forEach((b) =>
         b.addEventListener("click", () => open(b.dataset.u)));
       const ta = menuEl.querySelector("#rl-set-text");
       const saveBtn = menuEl.querySelector("#rl-set-save");

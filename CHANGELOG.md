@@ -1,5 +1,127 @@
 # Changelog
 
+## [2.2.0] - 2026-09-21
+
+Public GitHub release: 119-tool catalog.
+
+- Cinematics: `create_cutscene`, `create_dialogue`, `create_motion_effect`,
+  `create_vfx` (real viewport effects) with runtime snippets for Play.
+- Editor round-trip: `export_animation_clip` (curve-data twin) and
+  `publish_animation` (prepare → human publish → register asset ID).
+- Realistic motion: per-keyframe easing bakes interpolated frames.
+- Hardening: Edit-only honesty, single-flight queue, marker stripping,
+  `get_all_properties` safe reads, batch cap 10, version-mismatch warnings.
+
+## [2.1.18] - 2026-09-21
+
+119 tools: clip export + publish workflow for the editor round-trip.
+
+- **New tools 118-119**: `export_animation_clip` (AnimationClip twin with
+  per-part curve data for editor round-trips + read-back) and
+  `publish_animation` (prepare validates + refreshes the twin with human
+  publish steps; register caches a published asset ID for play/info).
+  Publishing stays human-only (auth); invented IDs are rejected.
+- **`get_animation_info` round-trip**: responses include `clip` +
+  `clipCurves` when a twin exists, so post-editor tweaks are visible.
+- Registry, prompts, code-fields, HUD registry, bridge routing, and plugin
+  branches updated across all layers.
+
+## [2.1.17] - 2026-09-21
+
+117 tools: tip panels removed, cinematics added, properties/batch fixed.
+
+- **Tip panels removed**: the in-page menu no longer shows Free Support /
+  Robux / Ko-fi sections (constants, handlers, and styles removed).
+- **New tools 114-117**: `create_cutscene` (camera shots + runtimeSnippet),
+  `create_dialogue` (NPC lines + ProximityPrompt), `create_motion_effect`
+  (tween/shake/fov/pulse setup + snippet), `create_vfx` (real viewport
+  particles/fire/smoke/sparkles/beam/light). Registry, prompts,
+  code-fields, HUD registry, bridge routing, and plugin branches updated.
+- **Realistic animation**: per-keyframe `easing` bakes interpolated frames;
+  non-decreasing times enforced.
+- **`get_all_properties` fixed**: curated safe reads + attributes instead of
+  `pairs(instance)` (invalid argument #1); misses carry sibling hints.
+- **Batch discipline**: cap 10, stops at first stuck failure, single-command
+  guidance in prompts.
+
+## [2.1.16] - 2026-09-21
+
+Extension startup fix: `RL is not defined` is gone.
+
+- Root cause: unescaped backticks in a prompt rule inside the
+  `config.js` template literal broke parsing, so `RL` never defined and
+  Start failed. All literal backticks in prompt text are now escaped.
+- Versions re-synced across bridge/plugin/extension.
+
+## [2.1.15] - 2026-09-21
+
+Marker leak + stale read + harness. Every write/exec tool strips leaked
+transport markers so a file never holds a leading `#`; `get_script_content`
+returns bytes/rev to detect staleness; the compiler harness no longer
+appends `return true` (which turned `return {...}` into `Expected eof`)
+and is only used for real `require()` snippets; Client-targeted
+execute_luau in the queue path warns `LocalPlayer is nil`; bridge
+queue/next carries bridge_version for mismatch warnings; file writes
+guard 100k and multi-edit in Play is `play_gated`.
+
+## [2.1.14] - 2026-09-21
+
+Error honesty + track-to-Animation + single-flight queue.
+
+- **No more require_failed spam**: only the module loader may use that
+  prefix; plain Luau errors (e.g. LocalPlayer nil, LoadAnimation misuse)
+  surface verbatim. Harness failures split into `compiler_error` vs
+  `require_failed`, both with code heads.
+- **Animation chain fixed**: `create_animation_track` returns
+  `runtimeSnippet`; `play_animation` accepts hash, rbxassetid, or
+  KeyframeSequence path (auto-registers via KeyframeSequenceProvider) and
+  never passes a KeyframeSequence to LoadAnimation. Play returns
+  `playable:false` + snippet for a real Script.
+- **No 2-claim stall**: plugin single-flight (`__RL_BUSY`) + bridge
+  `queue_take` backstop; every execution reports exactly once;
+  `set_script_content` over 100k fails fast with a chunk hint; timeouts
+  name in_flight tools.
+
+## [2.1.13] - 2026-09-21
+
+Yield + Play honesty + require context.
+
+- **Yield-transparent execution**: `runBudgeted` no longer busy-resumes a
+  coroutine, so `task.wait()` snippets work (`0.2s` false
+  `Cannot call task.wait on a thread that is already 'waiting'` is gone).
+  `poll()` already runs in `task.spawn`, so yields propagate normally; the
+  instruction hook budgets the current thread only where supported.
+- **Play render honesty**: the plugin runs in the Edit DataModel only.
+  `play_animation` in Edit returns `rendered:false`; in Play it returns
+  `playable:false` with the stop-Play-then-verify steps instead of a bare
+  success the user cannot see. `execute_luau` with a non-Edit datamodel
+  notes the Edit-only queue path. Prompts updated to match.
+- **Require context**: the ModuleScript harness is parented before
+  `require()`, always destroyed, and `Requested module ...` wrappers are
+  unwrapped to `require_failed: <inner> [code: ...]`; `run_function`
+  misses keep sibling hints.
+
+## [2.1.12] - 2026-09-21
+
+Execution hardening: every code tool works on real Studio Luau again.
+
+- **Nil-call fix**: `debug.sethook` does not exist in Roblox Luau, so 2.1.11
+  threw `attempt to call a nil value` on all `sandboxRun` tools
+  (`execute_luau`, `run_in_sandbox`, `refactor_code`, `compile_visual_graph`,
+  `generate_asset`, `generate_level`, `import_asset`, generic fallback).
+  The plugin now feature-detects (`HAS_SETHOOK`/`HAS_SETFENV`) and falls back
+  to a plain resume loop; the hook budget still applies where supported.
+- **No more hangs**: yield-less `while true` loops are rejected fast as
+  validation errors in the plugin (`riskyLoop`), bridge preflight, and
+  `mcp-server validateLuau`, instead of wedging the poll task.
+- **Honest errors**: hung claims while the plugin still polls now return
+  `stuck-execution` (call `plugin_status`, do not resend) instead of false
+  `plugin_offline` reinstall steps; dead pollers still say `plugin_offline`.
+- **Keyframe reads by path**: `get_animation_info` accepts `path`
+  (e.g. `Workspace/RoLinkAnimations/HelloWave`) and returns indexed
+  keyframes, so duplicate `Keyframe` names no longer force raw Lua dumps.
+- **`simulate_ticks` capped** at 10s to stay under queue timeouts.
+
 ## [2.1.11] - 2026-09-20
 
 Bounded execution: synchronous Luau runs on a coroutine under an instruction

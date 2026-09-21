@@ -1,4 +1,4 @@
-# tests/test_tool_completeness.py - all 113 tools exist in every layer.
+# tests/test_tool_completeness.py - all 119 tools exist in every layer.
 #   python3 tests/test_tool_completeness.py
 # For each registry name: (a) zod schema in mcp-server registry.ts,
 # (b) dispatcher branch in studio-plugin/RoLink.lua, (c) prompt entry in
@@ -35,9 +35,9 @@ class CompletenessTest(unittest.TestCase):
                             ROOT, "rolink-extension", "core", "__fixtures__",
                             "tool-calls", "*.txt"))}
 
-    def test_registry_is_113_unique(self):
-        self.assertEqual(len(self.registry), 113)
-        self.assertEqual(len(set(self.registry)), 113)
+    def test_registry_is_117_unique(self):
+        self.assertEqual(len(self.registry), 119)
+        self.assertEqual(len(set(self.registry)), 119)
 
     def test_every_tool_in_registry_ts(self):
         missing = [n for n in self.registry if f'name: "{n}"' not in self.registry_ts]
@@ -70,8 +70,8 @@ class CompletenessTest(unittest.TestCase):
                        "hologram", "RoLinkHUD"):
             self.assertNotIn(marker, self.plugin, f"HUD remnant: {marker}")
         # ...but the execution + reporting path must survive the removal.
-        for snippet in ("local function poll()", "executeCommand(cmd)",
-                        "reportResult(cmd.id, result, err, elapsed)",
+        for snippet in ("local function poll()", "pcall(executeCommand",
+                        "reportResult(cmd.id, result, err, elapsed",
                         "local function executeCommand",
                         "/queue/next", "/queue/result"):
             self.assertIn(snippet, self.plugin, f"poll path broken, missing: {snippet}")
@@ -109,15 +109,18 @@ class CompletenessTest(unittest.TestCase):
             self.assertIn(snippet, self.plugin, f"missing: {snippet}")
 
     def test_execution_budget(self):
-        # Unbounded synchronous code must die by instruction budget, never by
-        # frozen Studio: coroutine wrap + step hook + yield-tolerant resume
-        # loop, applied to both the main and heal-retry paths.
-        for snippet in ("local function runBudgeted", "debug.sethook(co",
-                        "HOOK_MAX_HITS", "coroutine.status(co)",
+        # Yield-transparent execution: direct pcall (poll already runs in
+        # task.spawn, so task.wait resumes normally), hook only where the
+        # engine supports it, never a busy-resume loop.
+        for snippet in ("local function runBudgeted", "HAS_SETHOOK", "sethook",
+                        "HOOK_MAX_HITS",
                         "budget exceeded"):
             self.assertIn(snippet, self.plugin, f"missing: {snippet}")
-        self.assertEqual(self.plugin.count("runBudgeted(res)"), 1)
-        self.assertEqual(self.plugin.count("runBudgeted(resH)"), 1)
+        self.assertNotIn("while r[1] and coroutine.status", self.plugin)
+        self.assertNotIn("while results[1] and coroutine.status", self.plugin)
+        self.assertIn("runBudgeted", self.plugin)
+        # Main + heal paths both execute via runBudgeted exactly via pcall.
+        self.assertGreaterEqual(self.plugin.count("pcall(runBudgeted"), 2)
 
     def test_findbypath_walk_order(self):
         # Slash-walk, then dot-walk, then legacy exact-name fallbacks. Order

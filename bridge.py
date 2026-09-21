@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.1.11"
+BRIDGE_VERSION = "2.2.0"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", os.environ.get("ZS_BRIDGE_PORT", "17613"))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -85,7 +85,7 @@ PRIMARY_SERVER_ID = "roblox"
 
 # ── RoLink unified catalog (Option A: single WS, bridge answers local tools) ──
 # Workflow stays RoLink-identical: extension -> bridge :17613 -> StudioMCP.
-# StudioMCP only knows Roblox-native tools. RoLink's 113-catalog adds pure-local
+# StudioMCP only knows Roblox-native tools. RoLink's 119-catalog adds pure-local
 # tools (time, validation, ordering, analytics stubs, planning helpers). Those
 # are answered HERE with deterministic handlers so they work even when Studio
 # is offline. Studio-mutating tools always go via mgr.call (StudioMCP/addons).
@@ -116,6 +116,8 @@ STUDIO_ROUTED_TOOLS = frozenset([
     "place_parts", "create_model_from_table", "apply_material", "create_ui",
     "set_ui_property", "get_ui_tree", "bind_ui_click", "create_animation_track",
     "play_animation", "get_animation_info", "delete_animation",
+    "create_cutscene", "create_dialogue", "create_motion_effect", "create_vfx",
+    "export_animation_clip", "publish_animation",
     "set_lighting", "add_particle_emitter",
     "get_datastore_value", "set_datastore_value", "send_notification",
     "set_breakpoint", "remove_breakpoint", "watch_variable", "step_through",
@@ -272,14 +274,16 @@ def _local_batch_queue(args, timeout):
     """Sequential fan-out for batch_queue (superpower beyond RoLink).
 
     Each sub-command goes through safe_call recursively so studio tools get
-    studio gating and local tools get the fast-path. Bounded to 20 sub-calls
-    to avoid runaway loops. Never raises.
+    studio gating and local tools get the fast-path. Bounded to 10 sub-calls:
+    the plugin executes on a single thread, so larger batches reliably wedge
+    it — prefer single commands, keep batches small and independent. Stops at
+    the first stuck/timeout failure instead of hammering the rest. Never raises.
     """
     cmds = (args or {}).get("commands", [])
     if not isinstance(cmds, list) or not cmds:
         return {"ok": False, "kind": "validation_error", "error": "batch_queue: 'commands' must be a non-empty array"}
-    if len(cmds) > 20:
-        return {"ok": False, "kind": "validation_error", "error": "batch_queue: max 20 commands per batch"}
+    if len(cmds) > 10:
+        return {"ok": False, "kind": "validation_error", "error": "batch_queue: max 10 commands per batch - split into smaller batches or single commands"}
     results = []
     for i, c in enumerate(cmds):
         if not isinstance(c, dict):
@@ -300,6 +304,10 @@ def _local_batch_queue(args, timeout):
         except Exception as e:
             r = {"ok": False, "kind": "execution_error", "error": str(e)}
         results.append({"index": i, "tool": sub_name, **r})
+        if r.get("kind") in ("stuck-execution", "plugin_offline", "timeout"):
+            results.append({"index": i + 1, "tool": "batch_queue", "ok": False, "kind": "validation_error",
+                            "error": "batch_queue: stopping early - Studio stopped answering; call plugin_status, then retry remaining commands singly"})
+            break
     ok_count = sum(1 for r in results if r.get("ok"))
     return {"ok": True, "text": json.dumps({"batched": len(results), "succeeded": ok_count, "results": results})}
 
@@ -313,6 +321,11 @@ def _luau_preflight(code):
     import re as _re
     if not isinstance(code, str):
         return "code must be a string"
+    # Transport markers must never reach the compiler: ###LUA### leak wrote a
+    # '#' line 1 into files ("Expected identifier, got '#'"). Flag them here
+    # so the model strips instead of executing marker text.
+    if "###LUA" in code or "###END_LUA" in code:
+        return "render chrome: Luau transport markers (###LUA###) leaked into code - strip them before sending"
     s = _re.sub(r"[\u200b\u200c\u200d\ufeff]", "", code).lstrip("\ufeff")
     s = s.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'").replace("\u00a0", " ")
     if not s.strip():
@@ -380,6 +393,13 @@ def _luau_preflight(code):
         return "unbalanced braces"
     if bracket != 0:
         return "unbalanced brackets"
+    # Tight-loop guard (no hook in Studio to preempt it): a loop with no
+    # yield hangs the plugin poll task. Fail fast as validation instead.
+    low = s.lower()
+    if ("while true" in low or "while 1 do" in low) and not any(
+        k in low for k in ("task.wait", "task.delay", "heartbeat", ":wait(", "wait(")
+    ):
+        return "probable infinite loop with no yield - add task.wait() inside the loop"
     return None
 
 # Full per-tool param guidance for the advertised catalog (drives the live
@@ -1447,7 +1467,7 @@ class MCPManager:
                 tt["name"] = advertised
                 tt["server"] = sid
                 out.append(tt)
-        # Extended 113-tool catalog: advertise local/studio tools even when
+        # Extended 119-tool catalog: advertise local/studio tools even when
         # Studio is offline, with param guidance so list_commands stays useful.
         # Never collides: names already advertised by a live server are skipped
         # here (collisions are resolved by the ownership step below instead).
@@ -1623,6 +1643,14 @@ def _ai_readable_error(kind: str, raw: str, tool: str) -> str:
                 f"Fix: in Roblox Studio, install studio-plugin/RoLink.lua into the Plugins folder "
                 f"(run install-plugin.bat), then in the command bar run "
                 f"game:GetService(\"HttpService\").HttpEnabled = true, and keep a place open.\nRaw: {raw}")
+    if kind == "stuck-execution":
+        return (f"ERROR calling {tool}: the Studio plugin is polling but did not finish in time.\n"
+                f"Likely cause: Luau is still running (infinite loop or long wait). Do NOT resend the same code. "
+                f"Call plugin_status first, simplify the snippet (must terminate, yield with task.wait()), "
+                f"and only restart Studio if plugin_status says stuck-execution.\nRaw: {raw}")
+    if kind == "play_gated":
+        return (f"ERROR calling {tool}: Studio blocked this edit while in Play mode.\n"
+                f"Fix: call start_stop_play to leave Play, edit in Edit mode via queue tools, then replay. Raw: {raw}")
     return raw
 
 # ── P0 ToolEvent spine ──────────────────────────────────────────────────
@@ -1637,6 +1665,8 @@ def _classify_bridge_error(err_text: str) -> str:
         return "validation_error"
     if "bridge not connected" in low or "bridge offline" in low:
         return "bridge_offline"
+    if "not available in play mode" in low or "cannot edit while in play" in low:
+        return "play_gated"
     if any(m in low for m in ("no roblox studio", "no active studio", "not connected to", "no studio instance")):
         return "studio_offline"
     if "mcp offline" in low or "mcp not alive" in low:
@@ -1710,6 +1740,16 @@ def safe_call(name, arguments, timeout):
         _pre = _luau_preflight(arguments["code"])
         if _pre:
             return {"ok": False, "error": _ai_readable_error("validation_error", _pre, name), "kind": "validation_error"}
+    # Marker leak guard: transport wrappers must never persist into files.
+    for _k in ("content", "exports", "code", "handlerCode"):
+        if isinstance((arguments or {}).get(_k), str) and "###LUA" in arguments[_k]:
+            arguments[_k] = arguments[_k].replace("###LUA:Server###", "").replace("###LUA:Client###", "").replace("###LUA###", "").replace("###END_LUA###", "")
+    # Large script writes hang the plugin recompile: fail fast offline too,
+    # before any queue wait or MCP hop.
+    if canonical == "set_script_content" and isinstance((arguments or {}).get("content"), str):
+        if len(arguments["content"]) > 100000:
+            return {"ok": False, "kind": "validation_error",
+                    "error": _ai_readable_error("validation_error", f"content too large ({len(arguments['content'])} chars, max 100000) - split into smaller writes", name)}
     # Third-party MCP path: our Studio plugin answers registry tools through
     # the embedded :3001 queue whenever it is polling. Falls through to
     # StudioMCP below when the plugin is absent (graceful degradation).
@@ -2346,6 +2386,13 @@ def queue_enqueue(tool, command, args, projectId="default"):
 def queue_take(projectId=None):
     now = time.time()
     with _queue_lock:
+        # Single-flight: never hand out a second command while one claim is
+        # unexpired. Overlapping claims produced the 2 in_flight stall (both
+        # holding the plugin, neither reporting). The plugin also guards with
+        # __RL_BUSY; this is the server-side backstop.
+        for c in _queue_cmds.values():
+            if c.get("status") == "claimed" and now - c.get("claimed_at", 0) < _CLAIM_TIMEOUT_S:
+                return None
         for cid, cmd in _queue_cmds.items():
             if cmd["status"] == "done":
                 continue
@@ -2365,6 +2412,10 @@ def queue_complete(cid, result, error, timings=None):
         if cmd is None:
             return False
         if cmd.get("status") == "done":
+            try:
+                log(f"[queue] late result for {cid} (already settled, dropped)", "dim", terminal=False)
+            except Exception:
+                pass
             return True  # already settled (e.g. client timeout cancelled it)
         cmd["status"] = "failed" if error else "done"
         cmd["result"] = result
@@ -2476,7 +2527,8 @@ class _QueueHandler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"
                     "Studio Output must print the NEW version on load.",
                 ])
             pid = (qs.get("projectId") or ["default"])[0]
-            self._send({"ok": True, "command": queue_take(pid)})
+            self._send({"ok": True, "command": queue_take(pid),
+                        "bridge_version": BRIDGE_VERSION})
         elif u.path == "/queue/status":
             with _queue_lock:
                 vals = list(_queue_cmds.values())
@@ -2568,9 +2620,9 @@ STUDIO_QUEUE_TOOLS = frozenset(
     [t for t in ROLINK_TOOL_NAMES if t and t not in LOCAL_HANDLERS and t != "batch_queue"]
 )
 
-# Native plugin tools that live OUTSIDE the 113 registry (real search
+# Native plugin tools that live OUTSIDE the 119 registry (real search
 # implementations, not aliases): routed + advertised exactly like registry
-# tools, so the registry file and all 113-counts stay untouched.
+# tools, so the registry file and all 119-counts stay untouched.
 _QUEUE_EXTRA_TOOLS = frozenset(("script_search", "script_grep", "search_game_tree"))
 _QUEUE_EXTRA_DESC = {
     "script_search": ("Tool. Full-text search across Script/ModuleScript/LocalScript "
@@ -2619,6 +2671,13 @@ def _queue_call(name, args, timeout):
         return {"ok": False, "kind": "plugin_offline",
                 "error": _ai_readable_error("plugin_offline", _why, name)}
     project = (args.get("projectId", "default") if isinstance(args, dict) else "default") or "default"
+    # Large script writes hang the plugin recompile: fail fast with a chunk
+    # hint instead of burning a 60s queue timeout (WaveSystem stall).
+    if name == "set_script_content" and isinstance((args or {}).get("content"), str):
+        _n = len(args["content"])
+        if _n > 100000:
+            return {"ok": False, "kind": "validation_error",
+                    "error": _ai_readable_error("validation_error", f"content too large ({_n} chars, max 100000) - split into smaller writes", name)}
     # Code-carrying tools: the plugin runs cmd.command as Luau (Node's
     # convention), so the code itself must travel as the command payload -
     # sending the tool name would "succeed" without running anything.
@@ -2643,9 +2702,16 @@ def _queue_call(name, args, timeout):
             _ages = [time.time() - c.get("claimed_at", time.time())
                      for c in _vals if c.get("status") == "claimed" and c.get("claimed_at")]
             _oldest = f", oldest claim {_ages and max(_ages):.0f}s" if _ages else ""
-            _snap = f" (queue: {_pend} pending{_oldest})"
+            _flight = [f"{c.get('tool', '?')}" for c in _vals if c.get("status") == "claimed"]
+            _tools = f", in_flight: {', '.join(_flight[:3])}" if _flight else ""
+            _snap = f" (queue: {_pend} pending{_oldest}{_tools})"
         except Exception:
             _snap = ""
+        # Plugin still polling but a claim never resolved = hung execution,
+        # not a missing install. Keep plugin_offline only for dead pollers.
+        if _plugin_alive():
+            return {"ok": False, "kind": "stuck-execution",
+                    "error": _ai_readable_error("stuck-execution", f"no plugin answer in {_wait:.0f}s{_snap}", name)}
         return {"ok": False, "kind": "plugin_offline",
                 "error": _ai_readable_error("plugin_offline", f"no plugin answer in {_wait:.0f}s{_snap}", name)}
     _queue_consec_timeouts[0] = 0
@@ -2666,7 +2732,7 @@ async def main():
         log(f"tool catalog: {len(ROLINK_TOOL_NAMES)} extended tools loaded", "gr")
     else:
         action_banner([
-            "The 113-tool catalog did NOT load - only live Studio tools",
+            "The 119-tool catalog did NOT load - only live Studio tools",
             "will be listed. Re-extract the release zip into a CLEAN",
             f"folder (this run: {_CATALOG_ERROR or 'empty catalog'}).",
         ])

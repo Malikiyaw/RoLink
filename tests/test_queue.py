@@ -43,7 +43,7 @@ class QueueTest(unittest.TestCase):
         code, body = http("GET", "/health")
         self.assertEqual(code, 200)
         self.assertTrue(body["ok"])
-        self.assertEqual(body["tools"], 113)
+        self.assertEqual(body["tools"], 119)
 
     def test_plugin_status_live(self):
         import json as _json
@@ -158,11 +158,12 @@ class QueueTest(unittest.TestCase):
 
     def test_queue_wait_timeout_is_plugin_offline(self):
         # Plugin was seen, but nothing completes the command: short timeout
-        # must surface plugin_offline (with install guidance), not a hang.
+        # must surface stuck-execution (plugin alive but hung), not a hang.
         bridge._queue_last_poll[0] = time.time()
         res = bridge.safe_call("get_instances", {"path": "workspace"}, 0.3)
         self.assertFalse(res["ok"])
-        self.assertEqual(res["kind"], "plugin_offline")
+        self.assertEqual(res["kind"], "stuck-execution")
+        self.assertIn("plugin_status", res["error"])
 
     def test_code_payload_round_trip(self):
         # Code-carrying tools must travel with the CODE as the command payload
@@ -269,7 +270,7 @@ class QueueTest(unittest.TestCase):
         bridge._queue_last_poll[0] = time.time()
         res = bridge.safe_call("get_instances", {"path": "workspace"}, 0.3)
         self.assertFalse(res["ok"])
-        self.assertEqual(res["kind"], "plugin_offline")
+        self.assertEqual(res["kind"], "stuck-execution")
         self.assertIn("queue:", res["error"], res["error"])
 
 

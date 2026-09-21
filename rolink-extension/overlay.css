@@ -368,27 +368,6 @@ button.rl-site-opt:hover .rl-site-go { opacity: 1; transform: translateX(0); }
 #rl-set-save:hover, #rl-mcp-add:hover { background: rgba(255, 255, 255, 0.15); }
 #rl-set-status, #rl-mcp-status { font-size: 11px; color: #8a8a92; font-weight: 500; }
 
-/* support actions: neutral rows, differentiated by the aside text, not colour */
-.rl-tip-opt {
-  width: 100%; margin: 5px 0; padding: 9px 11px;
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px;
-  color: #e4e4e8; font-size: 12.5px; font-weight: 600; cursor: pointer; text-align: left;
-  transition: background 0.13s ease;
-}
-.rl-tip-opt:hover { background: rgba(255, 255, 255, 0.09); }
-.rl-tip-sub { font-size: 10px; font-weight: 400; color: #7a7a82; white-space: nowrap; }
-.rl-rbx-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.rl-tip-rbx {
-  justify-content: center; gap: 3px; margin: 0; padding: 8px 6px;
-  font-size: 12px; font-weight: 500; color: #c8c8ce;
-}
-.rl-rbx-cur { color: #7a7a82; font-weight: 400; }
-.rl-tip-sep {
-  font-size: 10px; color: #6b6b73; margin: 11px 0 8px; text-align: center;
-}
-
 /* ── custom MCP servers list (add-your-own, same shell as Custom prompt) ── */
 .rl-mcp-item {
   display: flex; align-items: center; gap: 8px;
@@ -1006,16 +985,10 @@ html.rl-light button.rl-site-opt:hover { background: rgba(0, 0, 0, 0.05); }
 html.rl-light .rl-site-badge { color: #6b7280; border-color: rgba(0, 0, 0, 0.14); }
 html.rl-light .rl-site-go { color: #9ca3af; }
 html.rl-light #rl-set-save,
-html.rl-light #rl-mcp-add,
-html.rl-light .rl-tip-opt {
+html.rl-light #rl-mcp-add {
   background: rgba(0, 0, 0, 0.05); color: #1f2430; border-color: rgba(0, 0, 0, 0.12);
 }
 html.rl-light #rl-set-save:hover,
-html.rl-light #rl-mcp-add:hover,
-html.rl-light .rl-tip-opt:hover { background: rgba(0, 0, 0, 0.09); }
+html.rl-light #rl-mcp-add:hover { background: rgba(0, 0, 0, 0.09); }
 html.rl-light #rl-set-status,
-html.rl-light #rl-mcp-status,
-html.rl-light .rl-tip-sub,
-html.rl-light .rl-rbx-cur,
-html.rl-light .rl-tip-sep { color: #6b7280; }
-html.rl-light .rl-tip-rbx { color: #374151; }
+html.rl-light #rl-mcp-status { color: #6b7280; }

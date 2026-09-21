@@ -11,7 +11,7 @@ window.ROLINK_CODE_FIELDS = {
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
   "generatedAt": "2026-09-02T12:20:58.726Z",
-  "toolCount": 113,
+  "toolCount": 119,
   "toolFields": {
     "get_instances": [
       "path",
@@ -446,12 +446,50 @@ window.ROLINK_CODE_FIELDS = {
     "delete_animation": [
       "animationId",
       "projectId"
+    ],
+    "create_cutscene": [
+      "loop",
+      "name",
+      "projectId",
+      "shots"
+    ],
+    "create_dialogue": [
+      "lines",
+      "npcPath",
+      "projectId"
+    ],
+    "create_motion_effect": [
+      "duration",
+      "effect",
+      "path",
+      "projectId",
+      "properties"
+    ],
+    "create_vfx": [
+      "effect",
+      "parent",
+      "projectId",
+      "properties"
+    ],
+    "export_animation_clip": [
+      "animationId",
+      "projectId",
+      "trackPath"
+    ],
+    "publish_animation": [
+      "action",
+      "animationId",
+      "assetId",
+      "projectId",
+      "trackPath"
     ]
   },
   "stringFields": [
     "a",
+    "action",
     "animationId",
     "archive",
+    "assetId",
     "attribute",
     "b",
     "category",
@@ -465,6 +503,8 @@ window.ROLINK_CODE_FIELDS = {
     "datamodel_type",
     "description",
     "difficulty",
+    "duration",
+    "effect",
     "event",
     "exports",
     "fromId",
@@ -474,11 +514,13 @@ window.ROLINK_CODE_FIELDS = {
     "key",
     "keyword",
     "label",
+    "lines",
     "material",
     "message",
     "name",
     "newName",
     "newParent",
+    "npcPath",
     "parent",
     "part",
     "path",
@@ -489,6 +531,7 @@ window.ROLINK_CODE_FIELDS = {
     "region",
     "sandboxId",
     "sessionId",
+    "shots",
     "snapshot",
     "snapshotId",
     "soundId",
@@ -499,6 +542,7 @@ window.ROLINK_CODE_FIELDS = {
     "theme",
     "toId",
     "tool",
+    "trackPath",
     "variable"
   ],
   "codeLikeFields": [

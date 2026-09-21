@@ -540,5 +540,56 @@
   "delete_animation": {
     "animationId": "test",
     "projectId": "test"
+  },
+  "create_cutscene": {
+    "name": "test",
+    "projectId": "test",
+    "shots": [
+      {
+        "camera": {
+          "lookAt": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "duration": 1
+      }
+    ]
+  },
+  "create_dialogue": {
+    "lines": [
+      {
+        "speaker": "test",
+        "text": "test"
+      }
+    ],
+    "npcPath": "test",
+    "projectId": "test"
+  },
+  "create_motion_effect": {
+    "duration": 1,
+    "effect": "test",
+    "path": "test",
+    "projectId": "test"
+  },
+  "create_vfx": {
+    "effect": "test",
+    "parent": "test",
+    "projectId": "test"
+  },
+  "export_animation_clip": {
+    "projectId": "test",
+    "trackPath": "test"
+  },
+  "publish_animation": {
+    "action": "test",
+    "assetId": "test",
+    "projectId": "test"
   }
 }

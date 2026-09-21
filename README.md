@@ -1,4 +1,4 @@
-# RoLink 2.1.11 — AI → Roblox Studio
+# RoLink 2.2.0 — AI → Roblox Studio
 
 **Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio agent.** Browser extension + local bridge + MCP. Download through GitHub, no build needed.
 
@@ -8,12 +8,12 @@ Eight providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** (
 
 ## 2.0.0 implementation
 
-113-tool catalog, offline local tools, Luau pre-flight, grouped system-prompt catalog, and full rebrand are included in this release line:
+119-tool catalog, offline local tools, Luau pre-flight, grouped system-prompt catalog, and full rebrand are included in this release line:
 
-- **113 tools** (`mcp-server/src/tools/registry.ts`, `tests/__registry__.json`): instances, scripting, snapshots, sandbox, terrain/build, UI, animation, datastore, sessions, templates, AI/devops, debug, projects, sound.
+- **119 tools** (`mcp-server/src/tools/registry.ts`, `tests/__registry__.json`): instances, scripting, snapshots, sandbox, terrain/build, UI, animation, cinematics, clip export, datastore, sessions, templates, AI/devops, debug, projects, sound.
 - **Works offline**: `get_time`, `validate_command`, `suggest_ordering`, `batch_queue`, and other pure-local tools answer with no Studio connected.
 - **Luau pre-flight**: code Studio would certainly reject comes back as a structured validation error the model can fix, instead of a failed Studio call.
-- **Live catalog**: `list_commands` always returns all 113 with parameter details, even with Studio closed.
+- **Live catalog**: `list_commands` always returns all 119 with parameter details, even with Studio closed.
 
 ## How it works
 
@@ -46,7 +46,7 @@ Open Studio and load a Place, then enable MCP (first time only):
 - Click **Manage MCP Servers**
 - Click **Enable Studio as MCP Server**
 
-### 2b. Install the RoLink Studio plugin (unlocks all 113 tools)
+### 2b. Install the RoLink Studio plugin (unlocks all 119 tools)
 
 Roblox's built-in MCP only speaks ~27 commands. The rest of the catalog runs
 through our own plugin:
