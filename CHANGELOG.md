@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.2.3] - 2026-09-21
+
+Missing bar fix: inject on bare `deepseek.com`.
+
+- Content scripts only matched `chat.deepseek.com`, while host permissions
+  already covered bare `deepseek.com` — pages served there got zero
+  injection (no bar, no chip). Both the manifest entry and background
+  status coverage now include it. A regression test pins the match set.
+
 ## [2.2.2] - 2026-09-21
 
 Critical DeepSeek fix: the Start chip is back.

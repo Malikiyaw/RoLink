@@ -191,6 +191,22 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertIn("needSearchOff", main)
         self.assertIn("Smart Search", main)
 
+    def test_deepseek_injects_on_bare_domain(self):
+        import json as _json
+        with open(os.path.join(ROOT, "rolink-extension", "manifest.json"), encoding="utf-8") as f:
+            manifest = _json.load(f)
+        with open(os.path.join(ROOT, "rolink-extension", "background.js"), encoding="utf-8") as f:
+            bg = f.read()
+        deepseek_scripts = [c for c in manifest["content_scripts"]
+                            if "providers/deepseek.js" in c.get("js", [])]
+        self.assertTrue(deepseek_scripts, "no deepseek content script entry")
+        matches = deepseek_scripts[0]["matches"]
+        # Bare deepseek.com must inject (v4.1 serves pages there); host
+        # permissions already allowed it, but content_scripts did not.
+        self.assertIn("https://deepseek.com/*", matches)
+        self.assertIn("https://chat.deepseek.com/*", matches)
+        self.assertIn("https://deepseek.com/*", bg)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
