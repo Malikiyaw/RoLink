@@ -781,80 +781,6 @@ ol.flex-col-reverse > div.w-full:not(.mx-auto) > .rl-chip {
 }
 .rl-banner-video:hover { background: rgba(255, 255, 255, 0.11); }
 
-/* ── first-time onboarding card (bridge missing; pinned top-right) ───────── */
-#rl-setup {
-  position: fixed;
-  top: 18px; right: 18px;
-  width: 288px;
-  padding: 0 0 14px;
-  background: #161618;
-  color: #ececee;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
-  font-size: 12px;
-  z-index: 2147483600;
-  animation: rl-pop 0.2s ease-out;
-}
-#rl-setup-head {
-  display: flex; align-items: baseline; gap: 7px;
-  padding: 12px 15px 11px; border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-}
-#rl-setup-logo { font-weight: 700; font-size: 13px; letter-spacing: -0.1px; color: #f4f4f6; }
-#rl-setup-tag { font-size: 10.5px; font-weight: 500; color: #7a7a82; }
-#rl-setup-sub { color: #9a9aa2; font-size: 11.5px; line-height: 1.5; margin: 12px 15px 12px; }
-/* the steps ARE a real sequence, so numbered markers earn their place here */
-#rl-setup-steps {
-  list-style: none; margin: 0 15px 13px; padding: 0;
-  counter-reset: rl-step; font-size: 11.5px; line-height: 1.4;
-}
-#rl-setup-steps li {
-  counter-increment: rl-step;
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 6px 0; color: #cacacf;
-}
-#rl-setup-steps li + li { border-top: 1px solid rgba(255, 255, 255, 0.05); }
-#rl-setup-steps li::before {
-  content: counter(rl-step);
-  flex: none; font-size: 11px; font-weight: 600; color: #7a7a82;
-  min-width: 14px;
-}
-#rl-setup-steps code {
-  background: rgba(255, 255, 255, 0.08); padding: 0 4px; border-radius: 4px;
-  font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 10.5px;
-}
-.rl-setup-copy-row { display: flex; gap: 6px; margin: 0 15px 10px; }
-.rl-setup-copy-row input {
-  flex: 1; min-width: 0;
-  background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 7px; color: #b8b8bf; font-size: 10px;
-  padding: 6px 8px; font-family: ui-monospace, "Cascadia Mono", monospace;
-  outline: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-#rl-setup-copy {
-  background: rgba(255, 255, 255, 0.09); color: #ededf0;
-  border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 7px;
-  padding: 6px 11px; font-size: 11px; font-weight: 600; cursor: pointer;
-  white-space: nowrap; transition: background 0.13s ease;
-}
-#rl-setup-copy:hover { background: rgba(255, 255, 255, 0.15); }
-#rl-setup-video {
-  display: block; margin: 0 15px 10px; padding: 8px; box-sizing: border-box;
-  background: rgba(255, 255, 255, 0.05); color: #e4e4e8;
-  border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px;
-  font-size: 12px; font-weight: 600; text-align: center; text-decoration: none;
-  transition: background 0.13s ease;
-}
-#rl-setup-video:hover { background: rgba(255, 255, 255, 0.09); }
-#rl-setup-dismiss {
-  display: block; width: calc(100% - 30px); margin: 0 15px; padding: 8px;
-  border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1);
-  background: transparent; color: #a0a0a8;
-  font-size: 11px; font-weight: 600; cursor: pointer;
-  transition: background 0.13s ease;
-}
-#rl-setup-dismiss:hover { background: rgba(255, 255, 255, 0.06); }
-
 /* ── capture preview popup (left-hand, RoLink style) ─────── */
 .rl-shot {
   position: fixed; left: 18px; top: 72px; width: 300px; max-width: 32vw;
@@ -942,19 +868,15 @@ html.rl-light #rl-action:disabled {
   background: rgba(0, 0, 0, 0.05); color: rgba(0, 0, 0, 0.35); border-color: rgba(0, 0, 0, 0.08);
 }
 
-html.rl-light #rl-menu,
-html.rl-light #rl-setup {
+html.rl-light #rl-menu {
   background: rgba(249, 250, 253, 0.99);
   color: #1f2430;
   border-color: rgba(99, 102, 241, 0.30);
   box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
 }
-html.rl-light .rl-menu-head,
-html.rl-light #rl-setup-head { border-bottom-color: rgba(0, 0, 0, 0.08); }
-html.rl-light .rl-menu-logo,
-html.rl-light #rl-setup-logo { color: #1f2430; }
-html.rl-light .rl-menu-tag,
-html.rl-light #rl-setup-tag { color: #8a8a92; }
+html.rl-light .rl-menu-head { border-bottom-color: rgba(0, 0, 0, 0.08); }
+html.rl-light .rl-menu-logo { color: #1f2430; }
+html.rl-light .rl-menu-tag { color: #8a8a92; }
 html.rl-light .rl-menu-sec + .rl-menu-sec { border-top-color: rgba(0, 0, 0, 0.07); }
 html.rl-light .rl-sec-label span { color: #6b6b73; }
 html.rl-light .rl-menu-note { color: #6b7280; }
@@ -969,13 +891,6 @@ html.rl-light .rl-mcp-remove { color: #8a8a92; }
 html.rl-light .rl-mcp-remove:hover { background: rgba(0, 0, 0, 0.06); color: #1f2430; }
 html.rl-light .rl-mcp-sep { background: rgba(0, 0, 0, 0.08); }
 html.rl-light .rl-mcp-spin { border-color: rgba(0, 0, 0, 0.15); border-top-color: #4b5563; }
-html.rl-light #rl-setup-sub { color: #4b5563; }
-html.rl-light #rl-setup-steps li { color: #374151; }
-html.rl-light #rl-setup-steps li + li { border-top-color: rgba(0, 0, 0, 0.06); }
-html.rl-light #rl-setup-steps li::before { color: #8a8a92; }
-html.rl-light #rl-setup-steps code { background: rgba(0, 0, 0, 0.06); }
-html.rl-light #rl-setup-dismiss { border-color: rgba(0, 0, 0, 0.12); color: #4b5563; }
-html.rl-light #rl-setup-dismiss:hover { background: rgba(0, 0, 0, 0.05); }
 
 /* Menu contents in light theme: neutral grays, subtle surfaces on hover */
 html.rl-light .rl-site-opt { color: #4b5563; }

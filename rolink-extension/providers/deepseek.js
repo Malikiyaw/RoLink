@@ -66,7 +66,19 @@ const ZSProvider = (() => {
     const primary = document.querySelector(S.sendBtn);
     if (primary && primary.offsetParent !== null) return primary;
     try {
-      const frame = (typeof composerFrame === "function" && composerFrame()) || document;
+      // NOTE: must NOT call composerFrame() here - composerFrame() itself
+      // calls findSendBtn(), so that would recurse forever and kill the whole
+      // content script (no bar at all). Scope from the textarea instead:
+      // getEditor() never touches the send button, so this direction is safe.
+      let frame = document;
+      try {
+        const ta = (typeof getEditor === "function" && getEditor()) || null;
+        if (ta) {
+          let n = ta;
+          for (let i = 0; i < 8 && n && n.parentElement; i++) n = n.parentElement;
+          if (n) frame = n;
+        }
+      } catch {}
       const btns = [...frame.querySelectorAll('button, [role="button"]')];
       const named = btns.find((b) => b.offsetParent !== null &&
         /send|submit|enviar|envoyer|发送/i.test(
@@ -246,7 +258,7 @@ const ZSProvider = (() => {
   function composerFrame() {
     const ta = getEditor();
     if (!ta) return null;
-    const sb = document.querySelector(S.sendBtn);
+    const sb = (typeof findSendBtn === "function" && findSendBtn()) || document.querySelector(S.sendBtn);
     const group = document.querySelector(S.modeRadioGroup);
     const targets = [sb, group].filter(Boolean);
     let n = ta;
@@ -268,22 +280,56 @@ const ZSProvider = (() => {
   function barMount() {
     const ta = getEditor();
     if (!ta) return null;
-    const send = document.querySelector(S.sendBtn);
+    // Use the reskin-aware lookup: the raw `.ds-button--primary` hook may be
+    // gone on the redesigned composer (v4.1/unified model), in which case the
+    // old code treated send as missing and mounted into the textarea's direct
+    // parent - a tiny inline wrapper where the bar renders invisible.
+    const send = (typeof findSendBtn === "function" && findSendBtn()) || document.querySelector(S.sendBtn);
     const group = document.querySelector(S.modeRadioGroup);
     let box = ta.parentElement;
     while (box && box !== document.body) {
       const holdsSend = !send || box.contains(send);
       const holdsTabs = group && box.contains(group);
-      if (holdsSend && !holdsTabs) break; // the input box, without the tabs
+      if (holdsSend && !holdsTabs) {
+        // Reject wrappers too narrow to host a full-width bar (e.g. the
+        // textarea's direct inline parent). Keep climbing to the composer card.
+        try {
+          const r = box.getBoundingClientRect();
+          if (send && r.width > 0 && r.width < 200) { box = box.parentElement; continue; }
+        } catch {}
+        break; // the input box, without the tabs
+      }
       box = box.parentElement;
     }
     if (!box || box === document.body) box = ta.parentElement;
+    if (!box) return null;
+    // Final sanity: never mount into a zero-width/collapsed node - return null
+    // so the core falls through to the anchored/floating fallback (visible)
+    // instead of inserting an invisible bar.
+    try {
+      const r = box.getBoundingClientRect();
+      if (r.width > 0 && r.width < 100) {
+        const frame = (typeof composerFrame === "function" && composerFrame()) || null;
+        if (frame && frame !== box && frame.contains(ta)) box = frame;
+        else return null;
+      }
+    } catch {}
     if (!box) return null;
     // Insert before the first REAL child (skip our own bar if already mounted,
     // otherwise we'd try to insert the bar before itself every frame).
     let before = box.firstElementChild;
     if (before && before.id === "rl-bar") before = before.nextElementSibling;
     return { parent: box, before, inside: true }; // lives INSIDE the input box
+  }
+
+  // Anchored fallback: the composer card for the fixed-position bar. Used when
+  // barMount() bails (returns null) so the core still shows the bar hugging the
+  // composer's top edge instead of hiding it.
+  function barAnchor() {
+    try {
+      const card = (typeof composerFrame === "function" && composerFrame()) || null;
+      return (card && card.isConnected) ? card : null;
+    } catch { return null; }
   }
 
   // ── Composer mode: pick Expert (most powerful) at startup, Search OFF ──
@@ -1004,7 +1050,7 @@ const ZSProvider = (() => {
     assistantCount, userCount, lastAssistant, lastAssistantId, itemKey, readAssistant,
     streamLen, snapshot,
     // composer / state
-    getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barMount,
+    getEditor, editorText, chatIsEmpty, isFreshChat, composerFrame, barMount, barAnchor,
     setInputLock, typeAndSend, stopGeneration,
     isGenerating, isBusyNow, isHardGenerating, genDebug,
     enforceComposer, ensureComposerReady,

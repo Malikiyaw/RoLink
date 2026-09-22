@@ -13,6 +13,28 @@
 
 (() => {
   "use strict";
+  // Load-failure guard: each content-script file parses independently, so a
+  // syntax break in the provider (or parser) kills it WITHOUT killing this
+  // file - which then dies on the bare `ZSProvider` reference below, leaving
+  // zero UI and zero errors on the page (the "bar just gone" ghost, hit twice:
+  // a duplicated `let sites`, then a duplicated `const VOLATILE_SEL`). Fail
+  // LOUD instead: paint a static banner naming the dead layer. Inline styles
+  // only (no dependency on anything that may also be dead).
+  if (typeof ZSProvider === "undefined") {
+    try {
+      const root = document.createElement("div");
+      root.id = "rl-root";
+      root.innerHTML =
+        '<div id="rl-bar" style="position:fixed;left:12px;top:12px;z-index:2147483600;' +
+        'display:flex;align-items:center;gap:8px;background:#2a1215;color:#fca5a5;' +
+        'border:1px solid rgba(239,68,68,0.5);border-radius:10px;padding:9px 13px;' +
+        'font:600 12px ui-sans-serif,system-ui,sans-serif">' +
+        "⚠ RoLink provider failed to load (this tab's script is broken). " +
+        "Reload the extension; if it persists, re-extract the zip clean.</div>";
+      (document.documentElement || document).appendChild(root);
+    } catch {}
+    return;
+  }
   const P = ZSProvider;
   const T = P.timings;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -84,6 +106,11 @@
   // alone tells us which build they're on for debugging. Pulled from
   // manifest.json (single source of truth) rather than duplicated here.
   const EXT_VERSION = chrome.runtime.getManifest().version;
+  // Internal build beacon (NOT the release version): bump on every fix batch
+  // so a screenshot proves which code runs. Stamped onto <html> as
+  // data-rl-build, the brand tooltip, and failure banners - this ends the
+  // "fix didn't work" vs "fix not loaded" ambiguity for good.
+  const RL_BUILD = "agent-9";
   // YouTube tutorial - how to set up the Bridge.
   const VIDEO_URL = "https://youtu.be/kPKiZLZ9_Ps";
   // AI chat sites RoLink works on. Keep in sync with manifest.json
@@ -96,6 +123,8 @@
     { name: "GLM", url: "https://chat.z.ai/" },
     { name: "Qwen", url: "https://chat.qwen.ai/" },
     { name: "Arena", url: "https://arena.ai/text/direct" },
+    { name: "Arena Agent", url: "https://arena.ai/agent" },
+    { name: "Claude", url: "https://claude.ai/new" },
     { name: "Meta AI", url: "https://www.meta.ai/" },
   ];
 
@@ -173,9 +202,16 @@
     toolsAt: 0,
   };
 
+  // Bounded wait with hidden-time excluded: a user who tabs to Studio (or any
+  // app) mid-wait must not burn the budget off-screen. Time spent hidden
+  // doesn't count toward the timeout; reads there are unreliable anyway.
   async function waitFor(pred, timeout) {
     const t0 = Date.now();
-    while (Date.now() - t0 < timeout) {
+    let held = 0, wasHidden = false, hideStart = 0;
+    while (Date.now() - t0 - held < timeout) {
+      const h = document.hidden;
+      if (h && !wasHidden) { wasHidden = true; hideStart = Date.now(); }
+      else if (!h && wasHidden) { wasHidden = false; held += Date.now() - hideStart; }
       if (pred()) return true;
       await sleep(120);
     }
@@ -386,6 +422,7 @@
     let reasonSince = 0; // reasoning written but no answer yet (loading phase)
     let noTurnSince = 0; // finalize attempted before this send's reply turn exists
     let unsettledSince = 0; // command-shaped reply whose read is not yet stable
+    let lastGateTick = 0, gateEdgeLogged = false; // supervised vote-gate hold (below)
     const WARMUP_MS = T.WARMUP_MS;
     const REASON_NOREPLY_MS = T.REASON_NOREPLY_MS;
     const NO_TURN_GRACE_MS = 30000;
@@ -428,6 +465,31 @@
         }
         continue; // re-read everything now that the tab has layout again
       }
+      // Supervised-agent vote gate (Arena Agent mode): the site is waiting on
+      // the HUMAN (e.g. a "Was this task successful?" vote), not on the model.
+      // Freeze every deadline while held instead of timing out - the reply only
+      // resumes after the user clicks, which can take minutes. Never
+      // auto-advance past the gate (those buttons cast leaderboard votes).
+      if (!A.stop && typeof P.voteGateActive === "function" && P.voteGateActive()) {
+        const nowG = Date.now();
+        if (lastGateTick) {
+          const held = nowG - lastGateTick;
+          lastActiveAt += held; lastChangeAt += held;
+          if (doneSince) doneSince += held;
+          if (genFalseSince) genFalseSince += held;
+          if (preStartSilent) preStartSilent += held;
+          if (warmSince) warmSince += held;
+          if (reasonSince) reasonSince += held;
+          if (noTurnSince) noTurnSince += held;
+          if (unsettledSince) unsettledSince += held;
+          if (genOffFirstAt) genOffFirstAt += held;
+        }
+        lastGateTick = nowG;
+        if (!gateEdgeLogged) { gateEdgeLogged = true; diag("voteGate.held", {}); }
+        await sleep(400);
+        continue;
+      }
+      lastGateTick = 0; gateEdgeLogged = false;
       const gen = P.isGenerating();
       if (gen) lastActiveAt = Date.now(); // actively generating ⇒ never time out
       const d = P.readAssistant();
@@ -744,6 +806,15 @@
       // truncates. We try clicking it directly (same turn) in the loop.
       if (P.findContinueBtn()) return { kind: "truncated", text: r, item: d.item };
       if (r === "") { diag("empty.why", { branch: "finalBlank" }); return { kind: "empty" }; }
+      // Injection-skepticism refusal (Claude most of all): the model answers in
+      // prose that it won't follow the mechanism. Classify it as its own kind -
+      // never terminal text - so the loop can answer it once (de-escalation)
+      // instead of dying silently. isRefusal already excludes command-shaped
+      // replies, so a real call can never land here.
+      if (RL.isRefusal && RL.isRefusal(r)) {
+        diag("cmd.refusal", { len: r.length });
+        return { kind: "refusal", raw: r, item: d.item };
+      }
       return { kind: "text", text: r };
     }
     return { kind: "timeout" };
@@ -1348,6 +1419,22 @@
         }
         if (res.kind === "text") break; // final answer
 
+        // Injection-skepticism refusal: answer ONCE with the user-voiced
+        // de-escalation (falsifiable test + genuine opt-out). A second refusal
+        // ends the loop with clear user guidance instead of burning retries.
+        if (res.kind === "refusal") {
+          if (A.deescalated) {
+            ui.banner("warn", `${P.displayName} declined twice`,
+              `${P.displayName} won't run RoLink commands in this chat. Say one short sentence yourself (e.g. what to build), or try the same task on DeepSeek.`);
+            diag("refusal.twice");
+            break;
+          }
+          A.deescalated = true;
+          diag("refusal.deescalate");
+          base = await submitAndGetBase(RL.FEEDBACK.deescalate);
+          continue;
+        }
+
         if (res.kind === "tool") {
           const calls = res.calls;
           if (calls.length > 1) {
@@ -1643,6 +1730,7 @@
       siteName: P.displayName,
       customPrompt: ui.getCustomPrompt(),
       providerNotes: P.promptExtra || "",
+      compact: P.compactPrompt === true,
     });
   }
 
@@ -1810,6 +1898,96 @@
   // ════════════════════════════════════════════════════════════════════════
   //  SESSION BOOTSTRAP  ("Starting Up" animated chip, shown in the conversation)
   // ════════════════════════════════════════════════════════════════════════
+  // Startup-failure snapshot (screenshot-readable): editor/turn census plus
+  // loop flags at the moment the bootstrap died, so a failed Start names its
+  // own cause (e.g. loop alive elsewhere vs truly dead).
+  function bootSnapshot() {
+    try {
+      const ed = !!(P.getEditor && P.getEditor());
+      const ac = P.assistantCount ? P.assistantCount() : -1;
+      const uc = P.userCount ? P.userCount() : -1;
+      return ` [diag: editor=${ed} turns=${uc}u/${ac}a` +
+        ` loop=r${A.running ? 1 : 0}s${A.starting ? 1 : 0}t${A.started ? 1 : 0}i${A.injecting ? 1 : 0}]`;
+    } catch { return ""; }
+  }
+  // Orphan adoption candidate: the LAST assistant turn carries a complete,
+  // runnable, never-executed RoLink command with no injected result below it,
+  // and this conversation holds our bootstrap marker (same-chat proof).
+  // Returns {item} or {refusal} - the refusal code (R1..R6) names the failing
+  // gate so a missing offer is diagnosable from a screenshot. Mirrors the
+  // watchdog guards minus freshness/started - adoption is limited to
+  // last-turn orphans so the watchdog's single-execution guarantees carry
+  // over unchanged.
+  function findAdoptable() {
+    if (A.started || A.starting || A.running) return { refusal: "busy", turns: 0 };
+    try {
+      const item = P.lastAssistant();
+      if (!item || item.dataset.zloop) return { refusal: "R1-no-turns", turns: 0 };
+      if (P.turnHalted && P.turnHalted(item)) return { refusal: "R6-halted", turns: 0 };
+      const all = P.allItems();
+      const turns = all.length;
+      const after = all[all.indexOf(item) + 1];
+      if (after && P.isUserItem(after) &&
+          ZSParse.isInjectedFeedback(P.classifyText(after, ".rl-chip"))) return { refusal: "R5-has-result", turns };
+      const txt = P.itemText(item);
+      if (!ZSParse.hasToolSignature(txt)) return { refusal: "R2-no-signature", turns };
+      if (isRememberedExecuted(item, txt)) return { refusal: "R5-has-result", turns };
+      if (!ZSParse.parseToolCalls(txt).length) return { refusal: "R3-unparseable", turns };
+      // Same-chat proof, first hit wins (logged): marker text (survives the
+      // collapsed bootstrap header via textContent) -> our decoration dataset
+      // on any turn (worked-this-conversation proof) -> injected feedback turn.
+      let proof = "";
+      try {
+        const marker = RL.SYS_MARKER;
+        const hasMarker = all.some((it) => {
+          try { return (P.classifyText(it, ".rl-chip") || "").includes(marker); } catch { return false; }
+        });
+        if (hasMarker) proof = "marker";
+        else {
+          const decorated = all.some((it) => {
+            try { return !!(it.dataset && (it.dataset.zphase || it.dataset.zloop || it.dataset.zResume)); } catch { return false; }
+          });
+          if (decorated) proof = "decoration";
+          else {
+            const fed = all.some((it) => {
+              try { return P.isUserItem(it) && ZSParse.isInjectedFeedback(P.classifyText(it, ".rl-chip")); } catch { return false; }
+            });
+            if (fed) proof = "feedback";
+          }
+        }
+      } catch {}
+      if (!proof) return { refusal: "R4-no-proof", turns };
+      // Edge-logged: findAdoptable rescans every 2s while the orphan sits.
+      if (A._adoptProof !== proof) {
+        A._adoptProof = proof;
+        try { diag("adopt.proof", { proof }); } catch {}
+      }
+      return { item, proof, turns };
+    } catch { return { refusal: "R0-error", turns: 0 }; }
+  }
+  // Adopt an orphaned command into a live session (the "No agent here, but a
+  // command never ran" dead end). Re-verifies at click time, binds the session
+  // to THIS conversation, then lets the normal watchdog adopt the turn: it
+  // re-checks halted/result-below/executed/zResume/parse guards, so adoption
+  // can only ever fire an unexecuted, complete command once. bootBaselineId is
+  // deliberately untouched (setting it to the orphan would exclude the very
+  // turn being adopted); lastGenAt is touched once because the click itself is
+  // live user intent, equivalent to a fresh generation for window purposes.
+  function adoptChat() {
+    let item = null;
+    try { item = (findAdoptable() || {}).item || null; } catch {}
+    if (!item) { ui.toast("Nothing left to adopt - open a new chat to start one."); return; }
+    A.started = true;
+    try { A.loopKey = P.conversationKey(); } catch {}
+    A.userStopped = false;
+    A.stop = false;
+    A.lastGenAt = Date.now();
+    A._adoptProof = null; // re-log the proof on the next orphan episode
+    try { rememberSession(P.conversationKey()); } catch {}
+    try { ui.setStarted(true); } catch {}
+    try { ui.toast("Chat adopted - running the pending command."); } catch {}
+    diag("adopt", {});
+  }
   async function startSession() {
     if (A.running || A.starting) return;
     // "Start session" is allowed ONLY on a blank conversation. Opening an
@@ -1820,6 +1998,7 @@
     }
     A.userStopped = false;
     A.stop = false;               // clear any halt left by a prior aborted bootstrap
+    A.deescalated = false;        // fresh refusal budget for the new session
     // Snapshot any turn already on screen at session start (normally none on a
     // clean new chat; on a reload-restored generation it's the stray turn). The
     // auto-resume watchdog refuses to run a tool from this baseline turn so a
@@ -1854,17 +2033,80 @@
           `Could not switch ${P.displayName} to the required mode. ${hint}`);
         return;
       }
-      const prompt = systemPrompt();
-      const base = await submitAndGetBase(prompt);
-      if (!alive()) return;
-      // (syncSessionState pins A.startingKey to the conversation id once the chat
-      // has content, and aborts this bootstrap if the user opens a new empty chat.)
-      decorate.sweep(); // show the animated "Starting Up" chip immediately
-      const startRes = await waitForResponse(base);
-      if (!alive()) return;
-      // The user halted the bootstrap (our Stop or the site's native stop). Do
-      // NOT declare the session ready - abort quietly so "Start" stays available.
-      if (A.stop || startRes.kind === "stopped") { diag("start.aborted", { kind: startRes.kind }); return; }
+      // Two-step bootstrap (opt-in via P.bootOpener, e.g. Claude): a small
+      // user-voiced opener first. If it is refused, skip the wall-sized full
+      // prompt (wasted quota) and go straight to the single de-escalation; if
+      // it already yields a tool call, skip the full prompt and continue below.
+      // Any other outcome falls through to the full prompt normally.
+      let startRes = null;
+      if (typeof P.bootOpener === "function") {
+        let opener = "";
+        try { opener = P.bootOpener() || ""; } catch {}
+        if (opener) {
+          const base0 = await submitAndGetBase(RL.SYS_MARKER + "\n" + opener);
+          if (!alive()) return;
+          decorate.sweep();
+          const openRes = await waitForResponse(base0);
+          if (!alive()) return;
+          if (A.stop || openRes.kind === "stopped") { diag("start.aborted", { kind: openRes.kind }); return; }
+          if (openRes.kind === "refusal") {
+            A.deescalated = true;
+            diag("start.openerRefused");
+            const baseD = await submitAndGetBase(RL.FEEDBACK.deescalate);
+            if (!alive()) return;
+            decorate.sweep();
+            const deRes = await waitForResponse(baseD);
+            if (!alive()) return;
+            if (A.stop || deRes.kind === "stopped") { diag("start.aborted", { kind: deRes.kind }); return; }
+            if (deRes.kind === "tool") {
+              startRes = deRes; // de-escalation worked - continue below
+            } else {
+              ui.banner("warn", `${P.displayName} declined`,
+                `${P.displayName} won't run RoLink commands in this chat. Say one short sentence yourself (e.g. what to build), or try the same task on DeepSeek.`);
+              return;
+            }
+          } else if (openRes.kind === "tool") {
+            startRes = openRes; // complied already - skip the full prompt
+          }
+        }
+      }
+      if (!startRes) {
+        const prompt = systemPrompt();
+        const base = await submitAndGetBase(prompt);
+        if (!alive()) return;
+        // (syncSessionState pins A.startingKey to the conversation id once the chat
+        // has content, and aborts this bootstrap if the user opens a new empty chat.)
+        decorate.sweep(); // show the animated "Starting Up" chip immediately
+        startRes = await waitForResponse(base);
+        if (!alive()) return;
+        // The user halted the bootstrap (our Stop or the site's native stop). Do
+        // NOT declare the session ready - abort quietly so "Start" stays available.
+        if (A.stop || startRes.kind === "stopped") { diag("start.aborted", { kind: startRes.kind }); return; }
+        // A refusal of the full prompt gets the single de-escalation (unless the
+        // opener path already spent it). A second refusal ends with guidance.
+        if (startRes.kind === "refusal") {
+          if (A.deescalated) {
+            ui.banner("warn", `${P.displayName} declined`,
+              `${P.displayName} won't run RoLink commands in this chat. Say one short sentence yourself (e.g. what to build), or try the same task on DeepSeek.`);
+            return;
+          }
+          A.deescalated = true;
+          diag("start.refused");
+          const baseR = await submitAndGetBase(RL.FEEDBACK.deescalate);
+          if (!alive()) return;
+          decorate.sweep();
+          const reRes = await waitForResponse(baseR);
+          if (!alive()) return;
+          if (A.stop || reRes.kind === "stopped") { diag("start.aborted", { kind: reRes.kind }); return; }
+          if (reRes.kind === "tool") {
+            startRes = reRes;
+          } else {
+            ui.banner("warn", `${P.displayName} declined`,
+              `${P.displayName} won't run RoLink commands in this chat. Say one short sentence yourself (e.g. what to build), or try the same task on DeepSeek.`);
+            return;
+          }
+        }
+      }
 
       // If the model calls list_commands as instructed, run it and wait for the "ready" reply.
       const firstName = startRes.calls && startRes.calls[0] && startRes.calls[0].tool;
@@ -1903,7 +2145,7 @@
       ui.setStarted(true);
       ui.toast(`Agent ready. Ask ${P.displayName} to build something in Roblox.`);
     } catch (e) {
-      if (alive()) ui.banner("warn", "Startup failed", String((e && e.message) || e));
+      if (alive()) ui.banner("warn", "Startup failed", String((e && e.message) || e) + bootSnapshot() + ` [build ${RL_BUILD}]`);
     } finally {
       // Only tear down our OWN starting state. If we were superseded (the user
       // opened another chat), the newer flow / syncSessionState owns it now.
@@ -2509,8 +2751,13 @@
     sweep() {
       // Pass each turn's FOLLOWING turn too: a command chip needs it to know
       // whether its injected result was an ERROR (error-aware settle above).
+      // Per-turn isolation: one hostile turn (detached mid-read, exotic DOM)
+      // must never abort classification for every later turn.
       const items = P.allItems();
-      for (let i = 0; i < items.length; i++) this.classify(items[i], items[i + 1] || null);
+      for (let i = 0; i < items.length; i++) {
+        try { this.classify(items[i], items[i + 1] || null); }
+        catch (e) { try { diag("sweep.itemErr", { i }); } catch {} }
+      }
       // Safety net for stopped turns whose chip lives OUTSIDE the enumerated
       // message list. On Arena an A/B comparison renders each candidate as a
       // slide in the carousel's OWN nested <ol>, not the main flex-col-reverse
@@ -2526,6 +2773,35 @@
           this.toolBox(item, (tx && tx.textContent) || "tool", "err", "stopped", false);
         }
       }
+      // Chip-or-nothing tripwire: a non-user turn with a complete, parseable
+      // command and no chip and no result below must never sit raw (the exact
+      // field shape: visible JSON, no chip, dead bar). Skipped while the loop
+      // owns presentation (running/starting/injecting) to avoid flicker races
+      // with its own chips. Log-first (tag + classification + spot outcome),
+      // then force an honest whole-turn idle chip.
+      if (!A.running && !A.starting && !A.injecting) {
+        for (const item of items) {
+          try {
+            if (P.isUserItem(item)) continue;
+            if (item.querySelector(".rl-chip")) continue;
+            const txt = P.itemText(item);
+            if (!ZSParse.hasToolSignature(txt)) continue;
+            if (!ZSParse.parseToolCalls(txt).length) continue;
+            const nx = items[items.indexOf(item) + 1];
+            if (nx && P.isUserItem(nx) && ZSParse.isInjectedFeedback(P.classifyText(nx, ".rl-chip"))) continue;
+            let spot = "null";
+            try {
+              const s = P.findToolBlockSpot ? P.findToolBlockSpot(item, null) : null;
+              spot = s ? "ok" : "null";
+            } catch (e) { spot = "threw:" + String((e && e.message) || e).slice(0, 60); }
+            diag("chip.missing", {
+              tag: (item.tagName || "?") + "." + String((item.className || "") + "").slice(0, 40),
+              spot,
+            });
+            this.toolBox(item, ZSParse.toolNameFromText(txt) || "tool", "idle", "not run", false);
+          } catch {}
+        }
+      }
     },
   };
 
@@ -2537,7 +2813,7 @@
     let cover, coverRaf, barRaf;
     let openMenuFn = null; // set by build(); lets the popup force the panel open via runtime message
     let bridgeOk = false, studioDown = false, placeDown = false, appDown = false, addonOk = false, studioProcUp = false;
-    let wasConnected = false, bridgeBannerEl = null;
+    let bridgeBannerEl = null;
 
     function build() {
       root = document.createElement("div");
@@ -2554,7 +2830,7 @@
           <span id="rl-state"></span>
           <button id="rl-action"></button>
           <button id="rl-stop" hidden>■ Stop</button>
-          <a id="rl-discord" href="https://discord.gg/D5G2HAzX8z" target="_blank" rel="noopener" title="Need help? Join our Discord"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg></a>
+          <a id="rl-discord" href="https://discord.gg/AgqwfTVwJ6" target="_blank" rel="noopener" title="Need help? Join our Discord"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg></a>
           <button id="rl-switch" aria-label="Switch AI and options" title="Switch AI, custom prompt, support"><span id="rl-switch-name"></span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
           <button id="rl-support" aria-label="Support RoLink" title="Support RoLink"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></button>
         </div>
@@ -2579,9 +2855,15 @@
       // (not just the bar). Meta's turn root is full-width with the reply in a
       // nested centered column, so whole-turn chips (result/sys) need re-centering.
       document.documentElement.classList.add(`rl-site-${P.id}`);
+      // Build beacon (see RL_BUILD): inspectable without a console.
+      try { document.documentElement.dataset.rlBuild = RL_BUILD; } catch {}
+      if (brandEl) brandEl.title = `RoLink ${EXT_VERSION} (build ${RL_BUILD})`;
 
-      actionBtn.addEventListener("click", onActionClick);
-      stopBtn.addEventListener("click", stopLoop);
+      // stopPropagation: our clicks must never reach the site's own handlers -
+      // on agent UIs a bubbled click inside the composer region can fire an
+      // empty site-side task and replace the composer out from under us.
+      actionBtn.addEventListener("click", (e) => { try { e.stopPropagation(); } catch {} onActionClick(); });
+      stopBtn.addEventListener("click", (e) => { try { e.stopPropagation(); } catch {} stopLoop(); });
       unstableEl = root.querySelector("#rl-unstable");
       if (unstableEl) {
         // Set the native tooltip via PROPERTY, not the HTML template: the warning
@@ -2628,6 +2910,19 @@
       setInterval(applyTheme, 2000); // follow the host page toggling its theme
       renderBar();
       placeBar(); // start the per-frame anchoring loop
+      watchBar(); // synchronous re-append if a re-render deletes our nodes
+      // rAF-independent watchdog: throttled tabs and framework node-stealing
+      // can both starve the loops above; this cheap check needs no layout and
+      // runs regardless. (Intervals throttle in background tabs too, but the
+      // park/visibility paths own that case.)
+      setInterval(() => {
+        try {
+          if (root && !root.isConnected) document.documentElement.appendChild(root);
+          // Re-append only - never decide visibility here; placeBar owns that
+          // on its next frame (avoids flashing the bar where it should hide).
+          if (bar && !bar.isConnected && root && root.isConnected) root.appendChild(bar);
+        } catch {}
+      }, 1000);
     }
 
     // The primary button does different things depending on the current state
@@ -2635,6 +2930,7 @@
     function onActionClick() {
       const kind = actionBtn.dataset.kind;
       if (kind === "start" || kind === "start-degraded") startSession();
+      else if (kind === "adopt") adoptChat();
     }
 
     // ── Custom prompt (persisted) ───────────────────────────────────────────
@@ -2753,7 +3049,6 @@
           ? `<div class="rl-site-opt rl-site-here">${label}<span class="rl-site-badge">active</span></div>`
           : `<button class="rl-site-opt" data-u="${s.url}">${label}<span class="rl-site-go">&rarr;</span></button>`;
       }
-      let sites = "";
       const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
       const mergedServers = mergedMcpServers();
       // Roblox always heads the list - greyed out, no health dot (its own status
@@ -2862,84 +3157,6 @@
         await waitForBridgeBack(id);
         buildMenu(); // rebuilds with the new server listed + spinner cleared
       });
-    }
-
-    // ── First-time onboarding card (bridge missing) ─────────────────────────
-    let setupCard = null, setupSeen = false, setupRaf = null;
-    try {
-      chrome.storage.local.get("zsSetupSeen", (r) => {
-        if (r && r.zsSetupSeen) setupSeen = true;
-      });
-    } catch {}
-
-    function buildSetup() {
-      setupCard = document.createElement("div");
-      setupCard.id = "rl-setup";
-      setupCard.hidden = true;
-      const videoBtn = VIDEO_URL
-        ? `<a id="rl-setup-video" href="${VIDEO_URL}" target="_blank" rel="noopener">▶︎ Watch tutorial</a>`
-        : "";
-      setupCard.innerHTML =
-        `<div id="rl-setup-head"><span id="rl-setup-logo">RoLink</span><span id="rl-setup-tag">Setup</span></div>` +
-        `<div id="rl-setup-sub">The <b>Bridge</b> is what connects this chat to Roblox Studio. Three steps and you're running.</div>` +
-        `<ol id="rl-setup-steps">` +
-          `<li>Download the Bridge from GitHub</li>` +
-          `<li>Run <code>start.bat</code></li>` +
-          `<li>Back here, click <b>Start Roblox agent</b></li>` +
-        `</ol>` +
-        `<div class="rl-setup-copy-row">` +
-          `<input type="text" id="rl-setup-link" readonly value="${GITHUB_URL}">` +
-          `<button id="rl-setup-copy">Copy</button>` +
-        `</div>` +
-        videoBtn +
-        `<button id="rl-setup-dismiss">Got it</button>`;
-      document.documentElement.appendChild(setupCard);
-
-      setupCard.querySelector("#rl-setup-copy").addEventListener("click", () => {
-        try { navigator.clipboard.writeText(GITHUB_URL); } catch {
-          const inp = setupCard.querySelector("#rl-setup-link");
-          inp.select(); try { document.execCommand("copy"); } catch {}
-        }
-        const btn = setupCard.querySelector("#rl-setup-copy");
-        btn.textContent = "Copied!";
-        setTimeout(() => { btn.textContent = "Copy"; }, 1600);
-      });
-
-      setupCard.querySelector("#rl-setup-dismiss").addEventListener("click", () => {
-        setupSeen = true;
-        try { chrome.storage.local.set({ zsSetupSeen: true }); } catch {}
-        hideSetup();
-      });
-    }
-
-    // The onboarding card is pinned to the top-right corner (via CSS), out of the
-    // way of the composer; nothing to reposition per frame.
-    function placeSetup() {}
-
-    function showSetup() {
-      if (!setupCard) buildSetup();
-      if (setupCard.hidden) {
-        setupCard.hidden = false;
-        cancelAnimationFrame(setupRaf);
-        placeSetup();
-      }
-    }
-
-    function hideSetup() {
-      if (setupCard) setupCard.hidden = true;
-      cancelAnimationFrame(setupRaf);
-    }
-
-    function refreshSetup(bridgeConnected) {
-      if (setupSeen || bridgeConnected) { hideSetup(); return; }
-      // Bridge is down, but if the user is just READING an existing
-      // conversation with no RoLink session (the "No agent here" state),
-      // a "bridge down" onboarding popup is pure noise - they may not want an
-      // agent here at all (user request). Keep it for the states where the
-      // bridge actually matters: a fresh/empty chat (the Start affordance is
-      // showing) or a conversation with a live/starting session.
-      if (!A.started && !A.starting && !P.chatIsEmpty()) { hideSetup(); return; }
-      showSetup();
     }
 
     // The single source of truth for the bar's content. Decides the dot tone,
@@ -3063,6 +3280,35 @@
       } else {
         toneClass = "noagent";
         msg = `No agent here. Open a new chat to start one.`;
+        // Orphaned command adoption: the bootstrap died but the model already
+        // emitted a runnable command (it sits unexecuted with our marker in
+        // this conversation). Offer one-click adoption instead of a dead end.
+        // Scanned at most every 2s (allItems + text reads are sweep-priced).
+        // A refusal code is shown when turns exist but no offer qualifies, so
+        // the missing offer itself stays diagnosable from a screenshot.
+        const nowA = Date.now();
+        if (!A._adoptAt || nowA - A._adoptAt > 2000) {
+          A._adoptAt = nowA;
+          try {
+            const r = findAdoptable() || {};
+            A._adopt = !!r.item;
+            A._adoptWhy = r.item ? "" : (r.refusal || "");
+            A._adoptTurns = r.turns || 0;
+          } catch { A._adopt = false; A._adoptWhy = "R0-error"; A._adoptTurns = 0; }
+        }
+        if (A._adopt) {
+          toneClass = "standby";
+          // Order matters with an open vote gate: adopt first (deadlines park),
+          // then vote - the reverse strands the command on the site's track.
+          let gateOpen = false;
+          try { gateOpen = typeof P.voteGateActive === "function" && P.voteGateActive(); } catch {}
+          msg = gateOpen
+            ? `<b>Unfinished business</b> · adopt this chat first, then vote`
+            : `<b>Unfinished business</b> · a command never ran - adopt this chat`;
+          label = "▶︎ Adopt this chat"; kind = "adopt"; disabled = false;
+        } else if ((A._adoptTurns || 0) > 0 && A._adoptWhy && A._adoptWhy !== "busy") {
+          msg += ` (${A._adoptWhy})`;
+        }
       }
       // Parked on visibility: the loop is alive but deliberately frozen because
       // this tab is not the foreground tab of its window. Say so explicitly -
@@ -3071,7 +3317,19 @@
       // background"). No red warn tone: this is a normal, recoverable pause.
       if (A.parked && (A.running || A.starting)) {
         toneClass = "warn"; warn = false;
-        msg = `<b>Paused</b> · bring this tab to the front to continue`;
+        // A tool in flight keeps executing bridge-side (desktop process, never
+        // throttled) - say so, so switching to Studio mid-run reads as safe.
+        msg = A.toolRunning
+          ? `<b>Paused</b> · Studio keeps working - return anytime`
+          : `<b>Paused</b> · bring this tab to the front to continue`;
+      }
+      // Supervised-agent vote gate (Arena Agent mode): the site waits on the
+      // human, not the model. Say so plainly - otherwise the bar keeps claiming
+      // "Agent active" while nothing can advance. Never red: this is an
+      // expected pause, and RoLink must not click through it (vote buttons).
+      if ((A.running || A.starting) && typeof P.voteGateActive === "function" && P.voteGateActive()) {
+        toneClass = "warn"; warn = false;
+        msg = `<b>Waiting on you</b> · answer the site's prompt to continue`;
       }
       // Provider mode guard: some sites (e.g. Arena) only work in one chat mode.
       // When the provider reports the current mode is unsupported, override the
@@ -3185,25 +3443,11 @@
       // start in a DEGRADED mode - the agent just can't touch Roblox until Studio
       // is back. Gated on s.connected so a dropped bridge never reads as usable.
       addonOk = !!s.connected && servers.some((x) => x.id !== "roblox" && x.alive && (x.tools || 0) > 0);
-      // Bridge-drop alert: a clear, persistent red banner the moment a
-      // previously-connected bridge goes offline. Clears on reconnect.
-      if (wasConnected && !s.connected) bridgeAlert(true);
-      if (s.connected) bridgeAlert(false);
-      wasConnected = s.connected;
-      // Once the bridge has connected at least once, onboarding is done: never
-      // resurface the "download the bridge" setup card again (otherwise, if the
-      // bridge later drops, it would reappear on top of the bridge-lost banner).
-      if (s.connected && !setupSeen) {
-        setupSeen = true;
-        try { chrome.storage.local.set({ zsSetupSeen: true }); } catch {}
-      }
       renderBar();
-      refreshSetup(s.connected);
     }
 
     // The page outlived its extension build (reload / Chrome auto-update /
-    // disable+enable). Distinct from bridgeAlert on purpose: opposite cause,
-    // opposite fix, and this one NEVER self-heals, so the banner has no Close
+    // disable+enable). This one NEVER self-heals, so the banner has no Close
     // button and offers the reload directly rather than telling the user to go
     // restart a bridge that was never down.
     function staleExtensionAlert() {
@@ -3219,28 +3463,6 @@
         <div class="rl-banner-m">RoLink was updated or reloaded while this tab was open, so this page is still running the old copy and commands can no longer run. Your bridge and Roblox Studio are fine - only this page needs refreshing.</div>
         <div class="rl-banner-acts"><button class="rl-banner-reload">Reload page</button></div>`;
       b.querySelector(".rl-banner-reload").addEventListener("click", () => location.reload());
-      root.appendChild(b);
-      bridgeBannerEl = b;
-    }
-
-    // Show (on=true) / clear (on=false) the bridge-disconnected red banner.
-    function bridgeAlert(on) {
-      if (!on) {
-        if (bridgeBannerEl) { bridgeBannerEl.remove(); bridgeBannerEl = null; }
-        return;
-      }
-      if (bridgeBannerEl) return; // already shown
-      const b = document.createElement("div");
-      b.className = "rl-banner limit";
-      // The setup tutorial lives INSIDE this banner (not as a separate card) so it
-      // can never overlap the alert - the previous standalone onboarding card did.
-      const videoLink = VIDEO_URL
-        ? `<a class="rl-banner-video" href="${VIDEO_URL}" target="_blank" rel="noopener">▶︎ Watch setup tutorial</a>`
-        : "";
-      b.innerHTML = `<div class="rl-banner-t">⚠ Lost connection to RoLink</div>
-        <div class="rl-banner-m">The RoLink bridge stopped on your PC. Restart it (run start.bat and keep Roblox Studio open): the agent will reconnect automatically as soon as it is detected again.</div>
-        <div class="rl-banner-acts">${videoLink}<button class="rl-banner-x">Close</button></div>`;
-      b.querySelector(".rl-banner-x").addEventListener("click", () => { b.remove(); if (bridgeBannerEl === b) bridgeBannerEl = null; });
       root.appendChild(b);
       bridgeBannerEl = b;
     }
@@ -3351,12 +3573,57 @@
     // we fall back to the floating bar rather than risk overlapping its layout.
     function computeBarMount() {
       if (!P.barMount) return null;
-      const m = P.barMount();
-      return (m && m.parent && m.parent.isConnected) ? m : null;
+      let m = null;
+      try { m = P.barMount(); } catch { return null; }
+      if (!(m && m.parent && m.parent.isConnected)) return null;
+      // Reject collapsed/hidden parents: mounting there renders an invisible
+      // bar (the "I can't see it" report). Return null so the caller falls
+      // through to the anchored/floating fallback, which is always visible.
+      try {
+        const r = m.parent.getBoundingClientRect();
+        if (r.width > 0 && r.width < 100) return null;
+      } catch {}
+      return m;
     }
 
     // Floating fallback geometry (used only when no inline mount is available).
     const BAR_MAX_W = 560, BAR_GAP = 8;
+
+    // Last-resort composer probe (reskin-proofing, provider-agnostic): any
+    // visible text-entry control outside our UI and vote dialogs. Used ONLY
+    // for the visibility decision below - never for typing or sending (the
+    // provider owns those). Converts future reskins from "vanished bar" to a
+    // visible, degradedly-placed bar.
+    function findAnyEditor() {
+      try {
+        const sels = ['textarea', '[contenteditable]:not([contenteditable="false"])', '[role="textbox"]'];
+        for (const s of sels) {
+          for (const e of document.querySelectorAll(s)) {
+            try {
+              if (!e.isConnected) continue;
+              if (e.closest && (e.closest("#rl-root") ||
+                  e.closest('[role="dialog"], [role="alertdialog"]'))) continue;
+              if (e.getClientRects().length) return e;
+            } catch {}
+          }
+        }
+      } catch {}
+      return null;
+    }
+    // Throttled wrapper: full-subtree scans every frame would trash layout
+    // budgets; 1s granularity is plenty for a visibility fallback. A cached
+    // node that detached is dropped immediately (its rect reads zero anyway).
+    let anyEdCache = null, anyEdAt = 0;
+    function findAnyEditorCached() {
+      try {
+        if (anyEdCache && !anyEdCache.isConnected) { anyEdCache = null; anyEdAt = 0; }
+        const now = Date.now();
+        if (anyEdAt && now - anyEdAt < 1000) return anyEdCache;
+        anyEdCache = findAnyEditor();
+        anyEdAt = now;
+        return anyEdCache;
+      } catch { return null; }
+    }
 
     // Anchored mode bookkeeping: the composer element whose top padding we are
     // borrowing to seat the bar (see the anchored branch below). Cleared when we
@@ -3364,6 +3631,76 @@
     let anchorPadEl = null;
     function clearAnchorPad() {
       if (anchorPadEl) { try { anchorPadEl.style.paddingTop = ""; } catch {} anchorPadEl = null; }
+    }
+
+    // Last time a usable mount/anchor/editor was seen. When the composer is
+    // briefly torn down (SPA re-render, model switch, message send), all three
+    // can read null for a few frames - hiding the bar instantly then makes it
+    // flicker/vanish. Only hide after a sustained miss; otherwise keep last art.
+    let barMissSince = 0;
+    const BAR_MISS_GRACE_MS = 2500;
+    // Last-known good fixed geometry (recorded on every successful placement).
+    // While a run is live but the composer is gone (agent UIs unmount/replace
+    // the input while working), the bar holds this geometry visible instead of
+    // hiding - a vanished bar mid-run reads as "Start did nothing".
+    let lastBarGeom = null;
+    // Edge-triggered visibility tracer: logs hold/hide/shown transitions only
+    // (never per-frame), so one console line names the exact path on repro.
+    let barVisEdge = "";
+    function noteBarVis(state) {
+      if (barVisEdge === state) return;
+      barVisEdge = state;
+      try { diag("bar.vis", { state }); } catch {}
+    }
+    function holdLastGeom() {
+      if (!(A.starting || A.running)) return false;
+      if (!lastBarGeom) {
+        // Last-chance capture: no fixed placement has recorded geometry yet
+        // (e.g. the bar only ever mounted in-flow before a teardown), so
+        // snapshot the live rect on the spot instead of giving up and hiding.
+        try {
+          const r = bar.getBoundingClientRect();
+          if (r.width > 0) {
+            lastBarGeom = {
+              left: Math.round(r.left) + "px",
+              top: Math.round(r.top) + "px",
+              width: Math.round(r.width) + "px",
+            };
+          }
+        } catch {}
+      }
+      if (!lastBarGeom) return false;
+      try {
+        if (root && bar.parentElement !== root) root.appendChild(bar);
+        bar.classList.remove("rl-bar-inline");
+        bar.style.display = "flex";
+        bar.style.left = lastBarGeom.left;
+        bar.style.top = lastBarGeom.top;
+        bar.style.width = lastBarGeom.width;
+      } catch {}
+      noteBarVis("hold");
+      return true;
+    }
+
+    // Synchronous self-heal for a deleted bar node: a site re-render (or any
+    // other script on the page) can remove #rl-bar / #rl-root entirely. The
+    // rAF loop below re-adds it next frame; this observer re-appends it in the
+    // same microtask so it never stays gone.
+    let barWatch = null;
+    function watchBar() {
+      if (barWatch || !root || typeof MutationObserver === "undefined") return;
+      try {
+        barWatch = new MutationObserver(() => {
+          if (root && !root.isConnected) {
+            try { document.documentElement.appendChild(root); } catch {}
+          }
+          if (bar && !bar.isConnected && root && root.isConnected) {
+            try { root.appendChild(bar); bar.style.display = "flex"; } catch {}
+            barMissSince = 0;
+          }
+        });
+        barWatch.observe(document.documentElement, { childList: true, subtree: true });
+      } catch {}
     }
 
     // Position the floating "⚠ unstable" pill just above the bar's left edge.
@@ -3392,6 +3729,17 @@
       if (root && !root.isConnected) {
         try { document.documentElement.appendChild(root); } catch {}
       }
+      // A site re-render (or another script) can delete just #rl-bar while
+      // #rl-root survives. Stage it back on root here; the mount branches below
+      // move it to its correct parent right after.
+      if (!bar.isConnected) {
+        try {
+          if (root && root.isConnected) root.appendChild(bar);
+          else document.documentElement.appendChild(bar);
+          bar.style.display = "flex";
+        } catch {}
+        barMissSince = 0;
+      }
 
       // The instability warning floats just ABOVE the bar (not inside it), so it
       // never crowds the row on narrow composers like Gemini. Positioned from the
@@ -3412,12 +3760,17 @@
         bar.style.display = "none";
         clearAnchorPad();
         if (menuEl) menuEl.hidden = true;
+        noteBarVis("hide:overlay");
         return;
       }
 
       // Preferred: in-flow mount inside the composer (no overlap, full width).
-      const mount = computeBarMount();
+      // Skipped outright when the provider opts out (P.noInflow): on hosts
+      // that destroy the composer subtree mid-run, an in-flow bar dies with
+      // it - those providers live in #rl-root via anchor/fallbacks instead.
+      const mount = P.noInflow ? null : computeBarMount();
       if (mount) {
+        barMissSince = 0;
         clearAnchorPad();
         if (bar.parentElement !== mount.parent || bar.nextElementSibling !== mount.before) {
           try { mount.parent.insertBefore(bar, mount.before || null); } catch {}
@@ -3430,6 +3783,17 @@
         // when mounted ABOVE it. The provider's barMount() signals which via .inside.
         bar.classList.toggle("rl-bar-inside", !!mount.inside);
         bar.style.display = "flex";
+        noteBarVis("shown:inflow");
+        try {
+          const br = bar.getBoundingClientRect();
+          if (br.width > 0) {
+            lastBarGeom = {
+              left: Math.round(br.left) + "px",
+              top: Math.round(br.top) + "px",
+              width: Math.round(br.width) + "px",
+            };
+          }
+        } catch {}
         if (menuEl && !menuEl.hidden) {
           const br = bar.getBoundingClientRect();
           menuEl.style.right = Math.round(window.innerWidth - br.right) + "px";
@@ -3449,12 +3813,19 @@
       // a child of the framework's DOM. barAnchor() returns the element to hug.
       const anchorEl = (P.barAnchor && P.barAnchor()) || null;
       if (anchorEl && anchorEl.isConnected) {
+        barMissSince = 0;
         bar.classList.remove("rl-bar-inline", "rl-bar-inside");
         bar.classList.add("rl-bar-anchored");
         if (root && bar.parentElement !== root) root.appendChild(bar);
         const r = anchorEl.getBoundingClientRect();
-        if (!r.width) { bar.style.display = "none"; clearAnchorPad(); if (menuEl) menuEl.hidden = true; return; }
+        if (!r.width) {
+          if (holdLastGeom()) return;
+          bar.style.display = "none"; clearAnchorPad(); if (menuEl) menuEl.hidden = true;
+          noteBarVis("hide:anchor-zero");
+          return;
+        }
         bar.style.display = "flex";
+        noteBarVis("shown:anchored");
         const bh = bar.offsetHeight || 34;
         if (anchorPadEl && anchorPadEl !== anchorEl) clearAnchorPad();
         anchorPadEl = anchorEl;
@@ -3462,6 +3833,7 @@
         bar.style.left = Math.round(r.left) + "px";
         bar.style.top = Math.round(r.top) + "px";
         bar.style.width = Math.round(r.width) + "px";
+        lastBarGeom = { left: bar.style.left, top: bar.style.top, width: bar.style.width };
         if (menuEl && !menuEl.hidden) {
           bar.classList.remove("rl-bar-inline"); // ensure fixed geometry for menu math
           menuEl.style.right = Math.round(window.innerWidth - (r.left + r.width)) + "px";
@@ -3479,11 +3851,29 @@
         bar.classList.remove("rl-bar-inline");
         if (root && bar.parentElement !== root) root.appendChild(bar);
       }
-      const f = (P.getEditor && P.getEditor()) || (P.composerFrame && P.composerFrame());
-      if (!f) { bar.style.display = "none"; if (menuEl) menuEl.hidden = true; return; }
+      const f = (P.getEditor && P.getEditor()) || (P.composerFrame && P.composerFrame()) || findAnyEditorCached();
+      if (!f) {
+        // A live run with no composer (agent UIs unmount the input while
+        // working): hold last geometry instead of hiding. Otherwise keep the
+        // last visible bar through brief teardowns; hide only after a
+        // sustained miss (e.g. login page with genuinely no composer).
+        if (holdLastGeom()) { barMissSince = 0; return; }
+        if (!barMissSince) barMissSince = Date.now();
+        if (Date.now() - barMissSince < BAR_MISS_GRACE_MS) return;
+        bar.style.display = "none"; if (menuEl) menuEl.hidden = true;
+        noteBarVis("hide:no-editor");
+        return;
+      }
+      barMissSince = 0;
       bar.style.display = "flex";
+      noteBarVis("shown:floating");
       const r = f.getBoundingClientRect();
-      if (!r.width) { bar.style.display = "none"; return; }
+      if (!r.width) {
+        if (holdLastGeom()) return;
+        bar.style.display = "none";
+        noteBarVis("hide:float-zero");
+        return;
+      }
       const w = Math.min(r.width, BAR_MAX_W);
       const left = Math.round(r.left + (r.width - w) / 2);
       const bh = bar.offsetHeight || 40;
@@ -3491,6 +3881,7 @@
       bar.style.width = w + "px";
       bar.style.left = left + "px";
       bar.style.top = top + "px";
+      lastBarGeom = { left: bar.style.left, top: bar.style.top, width: bar.style.width };
       // Keep the open "more" menu anchored to the bar, opening upward.
       if (menuEl && !menuEl.hidden) {
         const br = bar.getBoundingClientRect();
@@ -3765,7 +4156,7 @@
     }
 
     build();
-    return { setStatus, staleExtensionAlert, setStarted, setStarting, showStop, markStopping, inputCover, toast, banner, showImages, nudgeStart, updateStartGate, refreshSetup, getCustomPrompt, getCustomMcpServers, openMenu: (toSupport) => openMenuFn && openMenuFn(toSupport) };
+    return { setStatus, staleExtensionAlert, setStarted, setStarting, showStop, markStopping, inputCover, toast, banner, showImages, nudgeStart, updateStartGate, getCustomPrompt, getCustomMcpServers, openMenu: (toSupport) => openMenuFn && openMenuFn(toSupport) };
   })();
 
   // ── Live token + timer, shown ONLY on a tool call's chip detail. The
@@ -4242,6 +4633,7 @@
       // A fresh user message = fresh intent: clear any previous manual stop so
       // the loop is allowed to run again.
       A.userStopped = false;
+      A.deescalated = false; // a new request re-arms the single refusal retry
       bumpSys("users");
       captureSendToken(); // identity of the assistant turn before this reply
       // A Stop clicked during this 300ms window sets A.userStopped → honor it and

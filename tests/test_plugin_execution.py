@@ -208,5 +208,57 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertIn("https://deepseek.com/*", bg)
 
 
+    def test_sandbox_exposes_standard_builtins(self):
+        # pcall(require, ...) failed with "attempt to call a nil value" because
+        # safeEnv lacked the builtins themselves. All three env definitions
+        # must provide them.
+        for rel in ("studio-plugin/RoLink.lua",
+                    "studio-plugin/src/plugin/init.plugin.luau",
+                    "studio-plugin/src/sandbox.luau"):
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
+                src = f.read()
+            for name in ("pcall=pcall", "require=require", "assert=assert",
+                         "select=select", "unpack=unpack"):
+                self.assertIn(name, src, "%s missing %s" % (rel, name))
+
+    def test_hanging_snippet_times_out_without_wedging(self):
+        for rel in ("studio-plugin/RoLink.lua",
+                    "studio-plugin/src/plugin/init.plugin.luau"):
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
+                src = f.read()
+            # Wall-clock deadline on its own coroutine: a hung require/wait
+            # reports a timeout instead of wedging the single-flight queue.
+            self.assertIn("runWithDeadline", src)
+            self.assertIn("EXEC_BUDGET_S", src)
+            self.assertIn("coroutine.create", src)
+            self.assertIn("still running after", src)
+
+    def test_execute_luau_warns_against_bulk_require(self):
+        with open(os.path.join(ROOT, "mcp-server", "src", "tools", "toolPrompts.ts"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("never bulk-require", src)
+        with open(os.path.join(ROOT, "generated", "tool-prompts.json"), encoding="utf-8") as f:
+            import json as _json
+            gen = _json.load(f)["prompts"]["execute_luau"]["pitfalls"]
+        self.assertIn("never bulk-require", gen)
+
+    def test_runtime_error_names_offending_line(self):
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        # Runtime errors must carry the failing source line, not just a
+        # 120-char head: '[string "RoLink"]:460' is useless on long scripts.
+        self.assertIn("errLineCtx", src)
+        self.assertIn('>> line "', src)
+        self.assertIn("attempt to call a nil value", src)
+        # Both runtime-failure returns in sandboxRun attach the context.
+        self.assertEqual(src.count("errLineCtx(code,"), 2)
+        with open(os.path.join(ROOT, "studio-plugin", "src", "plugin", "init.plugin.luau"),
+                  encoding="utf-8") as f:
+            mirror = f.read()
+        self.assertIn("errLineCtx", mirror)
+        self.assertIn("errLineCtx(code, errMsg)", mirror)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

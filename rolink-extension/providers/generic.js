@@ -33,9 +33,13 @@ window.makeGenericProvider = function(opts){
   // Hidden-tab safe: innerText needs layout ("" when backgrounded), so every
   // text read falls back to textContent. Visible behavior unchanged.
   const visibleText = (el) => (el ? ((el.innerText || el.textContent) || "") : "");
-  const allItems = () => [...document.querySelectorAll(S.chatItem)].filter(it => {
+  // Sites whose turns need multi-strategy discovery (Agent Mode trace DOM) may
+  // pass opts.allItems. Everything downstream (assistantItems, counts,
+  // chatIsEmpty, itemKey) derives from this closure, so an override stays
+  // consistent by construction. Providers without one keep the default below.
+  const allItems = opts.allItems || (() => [...document.querySelectorAll(S.chatItem)].filter(it => {
     return it && visibleText(it).length > 5 && (it.querySelector("p, div") || it.tagName === "ARTICLE" || it.tagName === "DIV");
-  });
+  }));
   const isUser = opts.isUser || function(it){
     return it && (it.getAttribute && (
       it.getAttribute("data-message-author-role") === "user" ||
@@ -377,6 +381,8 @@ window.makeGenericProvider = function(opts){
   const P = {
     id: SELF, displayName: DISPLAY,
     get supportsVision(){ return SUPPORTS_VISION; },
+    // Opt-in condensed user-voiced system prompt (injection-sensitive models).
+    compactPrompt: !!opts.compactPrompt,
     timings,
     init({diag:d}={}){ if(d) diag=d; },
     allItems,

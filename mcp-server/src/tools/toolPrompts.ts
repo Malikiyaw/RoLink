@@ -39,7 +39,7 @@ export const toolPrompts: Record<string, ToolPrompt> = {
     output:
       "Returns execution result text or ERROR. On ERROR, read the message, fix the code, retry exactly once.",
     pitfalls:
-      "1) JSON-escaping bugs — use ###LUA###, never hand-escape quotes. 2) Yielding forever (while true without task.wait) hits timeout — keep loops bounded. 3) Nil parents — Parent to game.Workspace explicitly.",
+      "1) JSON-escaping bugs — use ###LUA###, never hand-escape quotes. 2) Yielding forever (while true without task.wait) hits timeout — keep loops bounded. 3) Nil parents — Parent to game.Workspace explicitly. 4) Module verification — read Source with get_script_content; require() modules singly, never bulk-require in one snippet (a hung module burns the ~20s budget).",
   },
   get_instances: {
     persona:

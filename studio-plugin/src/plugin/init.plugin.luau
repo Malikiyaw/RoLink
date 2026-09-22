@@ -77,6 +77,11 @@ end
 local safeEnv = {
 	print = print, warn = warn, error = error,
 	pairs = pairs, ipairs = ipairs, next = next, type = type, tostring = tostring, tonumber = tonumber,
+	-- Standard builtins user code expects (a missing entry reads as
+	-- "attempt to call a nil value" on the calling line).
+	pcall = pcall, xpcall = xpcall, assert = assert, select = select, unpack = unpack,
+	require = require, setmetatable = setmetatable, getmetatable = getmetatable,
+	rawget = rawget, rawset = rawset, rawequal = rawequal, rawlen = rawlen,
 	math = math, string = string, table = table, vector = vector,
 	game = game, workspace = workspace, Instance = Instance, Enum = Enum,
 	task = task, tick = tick, time = time, os = { clock = os.clock, date = os.date, time = os.time },
@@ -103,6 +108,68 @@ local function healMissingEnds(code: string): string
 	return code
 end
 
+-- Error context: a runtime message carries only a chunk line number
+-- ([string "RoLink"]:460) - attach the failing line (plus neighbours) so the
+-- model can fix the actual expression instead of guessing from a code head.
+local function errLineCtx(code: string, err: string): string
+	local ln = err:match('%[string "RoLink[^"]*"%]:(%d+):')
+	local n = ln and tonumber(ln) or nil
+	if not n or n < 1 then return "" end
+	local idx, prev, target, nxt = 0, nil, nil, nil
+	for line in (code .. "\n"):gmatch("([^\n]*)\n") do
+		idx += 1
+		if idx == n - 1 then prev = line
+		elseif idx == n then target = line
+		elseif idx == n + 1 then nxt = line break
+		end
+	end
+	if not target then return "" end
+	local function trim(s: string): string
+		s = s:gsub("^%s+", ""):gsub("%s+$", "")
+		if #s > 200 then s = s:sub(1, 200) .. "..." end
+		return s
+	end
+	local ctx = " >> line " .. tostring(n) .. ": " .. trim(target)
+	if prev and prev:gsub("%s+", "") ~= "" then
+		ctx = " >> line " .. tostring(n - 1) .. ": " .. trim(prev) .. "\n" .. ctx
+	end
+	if nxt and nxt:gsub("%s+", "") ~= "" then
+		ctx = ctx .. "\n >> line " .. tostring(n + 1) .. ": " .. trim(nxt)
+	end
+	if err:find("attempt to call a nil value") or err:find("attempt to call missing") then
+		ctx = ctx .. " (something on this line is nil when called - check forward-referenced locals, typos, and require() results)"
+	elseif err:find("attempt to index nil") then
+		ctx = ctx .. " (indexing nil - the object on this line resolved to nothing; verify the path/name exists)"
+	end
+	return "\n" .. ctx
+end
+
+-- Wall-clock budget (mirrors RoLink.lua runWithDeadline): a never-resolving
+-- yield would wedge the single-flight queue, so abandon past the deadline.
+local EXEC_BUDGET_S = 20
+local function runWithDeadline(fn: any, code: string): (boolean, any)
+	local done, okRun, ret = false, false, nil
+	local co = coroutine.create(function()
+		okRun, ret = pcall(fn)
+		done = true
+	end)
+	local t0 = os.clock()
+	local okStart, startErr = coroutine.resume(co)
+	if not okStart then
+		return false, tostring(startErr)
+	end
+	while not done do
+		if os.clock() - t0 > EXEC_BUDGET_S then
+			local head = code:gsub("%s+", " "):sub(1, 120)
+			return false, "timeout: snippet still running after " .. tostring(EXEC_BUDGET_S)
+				.. "s (likely a hung require or wait without timeout - verify modules singly) [code: " .. head .. ( #code > 120 and "..." or "") .. "]"
+				.. errLineCtx(code, "")
+		end
+		task.wait(0.1)
+	end
+	return okRun, ret
+end
+
 local function sandboxRun(code: string): (boolean, any)
 	-- try loadstring if enabled, else ModuleScript fallback
 	local fn: any
@@ -112,7 +179,7 @@ local function sandboxRun(code: string): (boolean, any)
 	if ok and res then
 		fn = res
 		pcall(function() setfenv(fn, safeEnv) end)
-		local ok2, ret = pcall(fn)
+		local ok2, ret = runWithDeadline(fn, code)
 		if ok2 then return true, ret end
 		-- S1 auto-heal retry: balance parens / missing ends / deprecated connect
 		local errMsg: string = tostring(ret)
@@ -133,7 +200,7 @@ local function sandboxRun(code: string): (boolean, any)
 				return false, tostring(retH) .. " (heal attempted: " .. healed:sub(1,200) .. ")"
 			end
 		end
-		return false, errMsg
+		return false, errMsg .. errLineCtx(code, errMsg)
 	else
 		-- ModuleScript fallback
 		local ok3, ret2 = pcall(function()

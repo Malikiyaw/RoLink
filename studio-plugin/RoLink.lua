@@ -19,6 +19,13 @@ local function log(msg) print("[RoLink] "..msg) end
 local safeEnv = {
   print=print, warn=warn, error=error,
   pairs=pairs, ipairs=ipairs, next=next, type=type, tostring=tostring, tonumber=tonumber,
+  -- Standard builtins user code expects: pcall(require, ...) and direct
+  -- require() both resolve here (a missing entry reads as "attempt to call a
+  -- nil value" on the calling line). require adds no new privilege - the
+  -- run_function branch already requires arbitrary ModuleScript instances.
+  pcall=pcall, xpcall=xpcall, assert=assert, select=select, unpack=unpack,
+  require=require, setmetatable=setmetatable, getmetatable=getmetatable,
+  rawget=rawget, rawset=rawset, rawequal=rawequal, rawlen=rawlen,
   math=math, string=string, table=table, vector=vector, utf8=utf8, bit32=bit32,
   coroutine=coroutine,
   game=game, workspace=workspace, Instance=Instance, Enum=Enum, task=task, tick=tick, time=time,
@@ -106,6 +113,74 @@ local function runBudgeted(fn: (...any) -> ...any, ...: any): (boolean, any)
   return false, out[2]
 end
 
+-- Error context: a runtime message carries only a chunk line number
+-- ([string "RoLink"]:460), while the attached code head shows just the first
+-- 120 chars - useless for long scripts. Extract the failing line (plus its
+-- neighbours) from the code so the model can fix the actual expression.
+local function errLineCtx(code:string, err:string): string
+  local ln = err:match('%[string "RoLink[^"]*"%]:(%d+):')
+  local n = ln and tonumber(ln) or nil
+  if not n or n < 1 then return "" end
+  local idx, prev, target, nxt = 0, nil, nil, nil
+  for line in (code .. "\n"):gmatch("([^\n]*)\n") do
+    idx += 1
+    if idx == n - 1 then prev = line
+    elseif idx == n then target = line
+    elseif idx == n + 1 then nxt = line break
+    end
+  end
+  if not target then return "" end
+  local function trim(s:string): string
+    s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    if #s > 200 then s = s:sub(1, 200) .. "..." end
+    return s
+  end
+  local ctx = " >> line " .. tostring(n) .. ": " .. trim(target)
+  if prev and prev:gsub("%s+", "") ~= "" then
+    ctx = " >> line " .. tostring(n - 1) .. ": " .. trim(prev) .. "\n" .. ctx
+  end
+  if nxt and nxt:gsub("%s+", "") ~= "" then
+    ctx = ctx .. "\n >> line " .. tostring(n + 1) .. ": " .. trim(nxt)
+  end
+  if err:find("attempt to call a nil value") or err:find("attempt to call missing") then
+    ctx = ctx .. " (something on this line is nil when called - check forward-referenced locals, typos, and require() results)"
+  elseif err:find("attempt to index nil") then
+    ctx = ctx .. " (indexing nil - the object on this line resolved to nothing; verify the path/name exists)"
+  end
+  return "\n" .. ctx
+end
+
+-- Wall-clock budget: runBudgeted caps CPU instructions, but a never-resolving
+-- yield (hung require, WaitForChild without timeout) burns no instructions and
+-- would wedge the single-flight queue until the bridge gives up. Run the chunk
+-- on its own coroutine and abandon it past the deadline: the orphaned coroutine
+-- holds no locks and its late result is discarded, so the queue stays usable
+-- with no Studio restart. Must stay under the bridge's claim expiry (~25s).
+local EXEC_BUDGET_S = 20
+local function runWithDeadline(fn:any, code:string): (boolean, any)
+  local done, okRun, a, b = false, false, nil, nil
+  local co = coroutine.create(function()
+    okRun, a, b = pcall(runBudgeted, fn)
+    done = true
+  end)
+  local t0 = os.clock()
+  local okStart, startErr = coroutine.resume(co)
+  if not okStart then
+    return false, tostring(startErr)
+  end
+  while not done do
+    if os.clock() - t0 > EXEC_BUDGET_S then
+      local head = code:gsub("%s+", " "):sub(1, 120)
+      return false, "timeout: snippet still running after " .. tostring(EXEC_BUDGET_S)
+        .. "s (likely a hung require or wait without timeout - verify modules singly, "
+        .. "never bulk-require in one snippet) [code: " .. head .. ( #code > 120 and "..." or "") .. "]"
+        .. errLineCtx(code, "")
+    end
+    task.wait(0.1)
+  end
+  return okRun, a, b
+end
+
 local function sandboxRun(code:string): (boolean, any)
   code, _ = stripMarkers(code)
   local risk = riskyLoop(code)
@@ -118,14 +193,14 @@ local function sandboxRun(code:string): (boolean, any)
   if ok and type(fn) == "function" then
     local res = fn
     applyEnv(res)
-    local okRun, a, b = pcall(runBudgeted, res)
+    local okRun, a, b = pcall(runWithDeadline, res, code)
     local ok2: boolean? = nil
     local ret: any = nil
     if okRun then
       ok2 = a :: any
       ret = b
     else
-      return false, tostring(a) .. " [code: " .. code:gsub("%s+", " "):sub(1, 120) .. "]"
+      return false, tostring(a) .. " [code: " .. code:gsub("%s+", " "):sub(1, 120) .. "]" .. errLineCtx(code, tostring(a))
     end
     if ok2 then return true, ret end
     local err=tostring(ret); local healed=code
@@ -135,14 +210,14 @@ local function sandboxRun(code:string): (boolean, any)
       local okH, resH = pcall(function() return loadstring(healed, "RoLinkHeal") end)
       if okH and resH then
         applyEnv(resH)
-        local hOk, hA, hB = pcall(runBudgeted, resH)
+        local hOk, hA, hB = pcall(runWithDeadline, resH, healed)
         if hOk and (hA :: any) then return true, hB end
       end
     end
     -- Error context: the model only sees a line number otherwise. Attach the
     -- offending head so it can fix the actual expression.
     local head = code:gsub("%s+", " "):sub(1, 120)
-    return false, err .. " [code: " .. head .. ( #code > 120 and "..." or "") .. "]"
+    return false, err .. " [code: " .. head .. ( #code > 120 and "..." or "") .. "]" .. errLineCtx(code, err)
   elseif ok and fn == nil then
     -- Genuine compile failure: report the loader message, no harness detour.
     local head0 = code:gsub("%s+", " "):sub(1, 120)

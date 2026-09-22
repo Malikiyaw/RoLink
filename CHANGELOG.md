@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.3.0] - 2026-09-22
+
+New provider, hardening, and cleanup.
+
+- **Claude support** (`claude.ai`): generic-factory provider with layered
+  composer discovery, extended-thinking exclusion, chat-only command rules,
+  and usage-cap economy notes. Marked unstable pending live validation.
+- **Injection-skepticism refusals**: replies that refuse the mechanism now
+  classify as their own kind (never terminal text). One user-voiced
+  de-escalation with a falsifiable test and a genuine opt-out; a second
+  refusal ends with clear guidance instead of a silent death.
+- **Condensed user-voiced prompt** for sensitive models (no catalog dump -
+  the live `list_commands` output carries it) plus an opt-in two-step
+  bootstrap (small opener first, full prompt only on compliance).
+- **Background robustness**: bounded waits exclude hidden-tab time, and the
+  Paused bar reads "Studio keeps working" while a tool is in flight. Tool
+  execution itself was already background-safe (desktop bridge process).
+- **Arena Agent Mode (supervised)**: `/agent` provider reading settled
+  output, orchestration awareness, human vote-gate parking (never votes),
+  orphan-command adoption, A/B and thought-block handling, and a bar that
+  survives composer teardowns. Direct mode got layered editor discovery.
+- **Removed**: the Ko-fi tip button (toolbar popup) and the Setup + bridge
+  notification cards; Discord invite rotated.
+- **Studio plugin**: sandbox exposes standard builtins (`pcall`, `require`,
+  …), wall-clock deadline stops hung snippets wedging the queue, and runtime
+  errors name the offending source line.
+
 ## [2.2.3] - 2026-09-21
 
 Missing bar fix: inject on bare `deepseek.com`.

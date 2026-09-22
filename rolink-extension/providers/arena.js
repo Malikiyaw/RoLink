@@ -224,14 +224,82 @@ const ZSProvider = (() => {
   const assistantCount = () => assistantItems().length;
   const userCount = () => allItems().filter(isUserItem).length;
 
-  // The composer textarea = the ONLY <textarea> inside a <form> (other page
-  // textareas are recaptcha/aria-hidden). Scope away RoLink's own settings
-  // textarea (#rl-root) so the send hooks' "not on a chat page" guard holds on
-  // login/OAuth pages that have no site composer.
-  const getEditor = () => {
-    for (const e of document.querySelectorAll("form textarea")) {
-      if (!e.closest("#rl-root")) return e;
+  // Layered composer discovery (first hit wins, layer logged once): the legacy
+  // form textarea, then any visible textarea, then contenteditable (any value
+  // except "false"), then textbox roles, then same-origin frames/shadow roots.
+  // The old single-selector lookup (`form textarea`) died on the first reskin
+  // that replaced the textarea - bar gone on every route, zero errors.
+  let _edLayerLogged = "";
+  function noteEdLayer(layer) {
+    if (layer === _edLayerLogged) return;
+    _edLayerLogged = layer;
+    try { diag("arena.editor", { layer }); } catch {}
+  }
+  const isEdShown = (e) => { try { return e.getClientRects().length > 0; } catch { return false; } };
+  function pickEd(list) {
+    for (const e of list) {
+      try {
+        if (!e || !e.isConnected) continue;
+        if (e.closest && e.closest("#rl-root")) continue;
+        if (isEdShown(e)) return e;
+      } catch {}
     }
+    return null;
+  }
+  // Last-known composer card for barAnchor when the live lookup misses.
+  let lastCard = null, lastCardEd = null;
+  function rememberCard(ed) {
+    if (!ed || ed === lastCardEd) return;
+    lastCardEd = ed;
+    try {
+      let n = ed, best = null;
+      for (let i = 0; i < 10 && n && n.parentElement; i++) {
+        n = n.parentElement;
+        if (!n.getClientRects) continue;
+        if (n.getClientRects().length && n.getBoundingClientRect().width >= 300) { best = n; break; }
+      }
+      lastCard = best && best.isConnected ? best : null;
+    } catch { lastCard = null; }
+  }
+  const getEditor = () => {
+    try {
+      let hit = pickEd(document.querySelectorAll("form textarea"));
+      if (hit) { noteEdLayer("form-textarea"); rememberCard(hit); return hit; }
+      hit = pickEd(document.querySelectorAll("textarea"));
+      if (hit) { noteEdLayer("textarea"); rememberCard(hit); return hit; }
+      const ce = [...document.querySelectorAll("[contenteditable]")].filter((e) => {
+        try {
+          if (e.closest && e.closest("#rl-root")) return false;
+          const v = e.getAttribute && e.getAttribute("contenteditable");
+          if (v === "false" && !(e.hasAttribute && e.hasAttribute("data-rl-locked"))) return false;
+          return true;
+        } catch { return false; }
+      });
+      hit = pickEd(ce);
+      if (hit) { noteEdLayer("contenteditable"); rememberCard(hit); return hit; }
+      hit = pickEd(document.querySelectorAll('[role="textbox"]'));
+      if (hit) { noteEdLayer("textbox"); rememberCard(hit); return hit; }
+      // Deep pass only when nothing visible surfaced.
+      const deep = [];
+      try {
+        for (const f of document.querySelectorAll("iframe")) {
+          try {
+            const doc = f.contentDocument;
+            if (doc) for (const e of doc.querySelectorAll("textarea, [contenteditable], [role='textbox']")) deep.push(e);
+          } catch {}
+        }
+      } catch {}
+      try {
+        for (const el of document.querySelectorAll("*")) {
+          let sr = null;
+          try { sr = el.shadowRoot; } catch {}
+          if (!sr) continue;
+          try { for (const e of sr.querySelectorAll("textarea, [contenteditable], [role='textbox']")) deep.push(e); } catch {}
+        }
+      } catch {}
+      hit = pickEd(deep);
+      if (hit) { noteEdLayer("deep"); rememberCard(hit); return hit; }
+    } catch {}
     return null;
   };
   const editorText = () => {
@@ -268,10 +336,26 @@ const ZSProvider = (() => {
   const isFreshChat = () =>
     chatIsEmpty() && /^\/text\//.test(location.pathname) && !!getEditor();
 
-  // The whole composer the Start gate hides as one unit = the <form>.
+  // The whole composer the Start gate hides as one unit = the <form> when one
+  // exists; otherwise the smallest ancestor holding editor + send control.
   const composerFrame = () => {
     const ed = getEditor();
-    return ed ? ed.closest("form") : null;
+    if (!ed) return null;
+    try {
+      if (ed.closest) {
+        const f = ed.closest("form");
+        if (f) return f;
+      }
+      const sb = sendButton();
+      let n = ed.parentElement;
+      for (let i = 0; i < 12 && n && n.parentElement; i++) {
+        if (!sb || n.contains(sb)) return n;
+        n = n.parentElement;
+      }
+    } catch {}
+    let f2 = ed.parentElement;
+    for (let i = 0; i < 6 && f2 && f2.parentElement; i++) f2 = f2.parentElement;
+    return f2;
   };
 
   // Arena is a React app that reconciles the composer subtree, so we must NOT
@@ -281,30 +365,55 @@ const ZSProvider = (() => {
   // edge at full width and reserves the strip with padding-top.
   function barAnchor() {
     const ed = getEditor();
-    if (!ed) return null;
-    let n = ed;
-    for (let i = 0; i < 10 && n; i++) {
-      if ([...n.classList].some((c) => c.startsWith("rounded"))) return n;
-      n = n.parentElement;
+    if (ed) {
+      let n = ed;
+      for (let i = 0; i < 10 && n; i++) {
+        let hit = false;
+        try { hit = [...n.classList].some((c) => typeof c === "string" && c.startsWith("rounded")); } catch { hit = false; }
+        if (hit) {
+          if (n.isConnected) lastCard = n;
+          return n;
+        }
+        try { n = n.parentElement; } catch { return (lastCard && lastCard.isConnected) ? lastCard : null; }
+      }
+      if (ed.closest) {
+        try {
+          const f = ed.closest("form");
+          if (f) return f;
+        } catch {}
+      }
     }
-    return ed.closest("form");
+    return (lastCard && lastCard.isConnected) ? lastCard : null;
   }
 
   // ── Input lock ────────────────────────────────────────────────────────────
-  // The textarea is real: `readonly` blocks the user but is IGNORED by the
-  // native prototype setter used in setTextareaValue(), so our own injections
-  // keep working. getEditor() keys off the <form>, not the placeholder, so the
-  // placeholder swap below is safe.
+  // Real <textarea>: `readonly` blocks the user but is IGNORED by the native
+  // prototype setter used in setTextareaValue(), so our own injections keep
+  // working. Contenteditable composer (post-reskin): flip the attribute
+  // itself (ChatGPT precedent). getEditor() keys off structure, not the
+  // placeholder, so the placeholder swap below is safe on both paths.
   function setInputLock(on) {
     const ed = getEditor();
     if (!ed) return;
+    if (ed.tagName === "TEXTAREA") {
+      if (on) {
+        if (!ed.dataset.zsPlaceholder) ed.dataset.zsPlaceholder = ed.getAttribute("placeholder") || "";
+        ed.setAttribute("readonly", "");
+        ed.setAttribute("placeholder", "⏳ Agent working… please wait");
+      } else {
+        ed.removeAttribute("readonly");
+        if (ed.dataset.zsPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.zsPlaceholder);
+      }
+      return;
+    }
     if (on) {
-      if (!ed.dataset.zsPlaceholder) ed.dataset.zsPlaceholder = ed.getAttribute("placeholder") || "";
-      ed.setAttribute("readonly", "");
-      ed.setAttribute("placeholder", "⏳ Agent working… please wait");
+      if (!ed.dataset.rlPlaceholder) ed.dataset.rlPlaceholder = ed.getAttribute("placeholder") || "";
+      ed.setAttribute("contenteditable", "false");
+      ed.setAttribute("data-rl-locked", "1");
     } else {
-      ed.removeAttribute("readonly");
-      if (ed.dataset.zsPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.zsPlaceholder);
+      ed.setAttribute("contenteditable", "true");
+      ed.removeAttribute("data-rl-locked");
+      if (ed.dataset.rlPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.rlPlaceholder);
     }
   }
 
@@ -425,11 +534,51 @@ const ZSProvider = (() => {
     el.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
+  // Contenteditable composer (post-reskin): chunked insertText with readback.
+  // Kept local so arena.js stays self-contained (mirrors providers/agent.js).
+  const PM_CHUNK = 8000;
+  function proseText(ed) { try { return (ed.innerText || ed.textContent || ""); } catch { return ""; } }
+  async function typeProseMirror(ed, text) {
+    const want = String(text);
+    const wasLocked = ed.getAttribute("contenteditable") !== "true";
+    try {
+      ed.focus();
+      if (wasLocked) ed.setAttribute("contenteditable", "true");
+      for (let at = 0; at < want.length; at += PM_CHUNK) {
+        try { document.execCommand("insertText", false, want.slice(at, at + PM_CHUNK)); } catch {}
+        try {
+          const cur = getEditor();
+          if (cur && cur !== ed) ed = cur;
+          ed.focus();
+        } catch {}
+      }
+      try { ed.dispatchEvent(new Event("input", { bubbles: true })); } catch {}
+      if ((proseText(ed) || "").length < want.length * 0.9) {
+        try {
+          const cur = getEditor() || ed;
+          const sel = window.getSelection();
+          sel.selectAllChildren(cur);
+          document.execCommand("insertText", false, want);
+          cur.dispatchEvent(new Event("input", { bubbles: true }));
+        } catch {}
+        if ((proseText(getEditor() || ed) || "").length < want.length * 0.9) {
+          throw new Error("Arena composer accepted only part of the message");
+        }
+      }
+    } finally {
+      if (wasLocked) { try { ed.setAttribute("contenteditable", "false"); } catch {} }
+    }
+  }
+
   async function typeAndSend(text, images) {
     const editor = getEditor();
     if (!editor) throw new Error("Arena input box not found");
     editor.focus();
-    setTextareaValue(editor, truncateForSend(text));
+    if (editor.tagName !== "TEXTAREA") {
+      await typeProseMirror(editor, truncateForSend(text));
+    } else {
+      setTextareaValue(editor, truncateForSend(text));
+    }
     if (images && images.length) tagImages(images);
     diag("arena.tas.enter", {
       textLen: (text || "").length,

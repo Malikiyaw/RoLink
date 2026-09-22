@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "RoLink Free × Roblox Studio Agent",
-  "version": "2.2.3",
+  "version": "2.3.0",
   "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio agent that drives Studio through a local bridge.",
   "permissions": ["storage"],
   "host_permissions": [
@@ -17,6 +17,7 @@
     "https://arena.ai/*",
     "https://www.meta.ai/*",
     "https://meta.ai/*",
+    "https://claude.ai/*",
     "http://127.0.0.1/*",
     "ws://127.0.0.1/*"
   ],
@@ -76,13 +77,26 @@
     },
     {
       "matches": ["https://arena.ai/*"],
+      "exclude_matches": ["https://arena.ai/agent*"],
       "js": ["core/config.js", "core/parser.js", "providers/arena.js", "core/main.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://arena.ai/agent*"],
+      "js": ["core/config.js", "core/parser.js", "providers/generic.js", "providers/agent.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://www.meta.ai/*", "https://meta.ai/*"],
       "js": ["core/config.js", "core/parser.js", "providers/meta.js", "core/main.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["core/config.js", "core/parser.js", "providers/generic.js", "providers/claude.js", "core/main.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     },

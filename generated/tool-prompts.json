@@ -12,7 +12,7 @@
       "args_guide": "code* (Luau source; use game.Workspace, never just Workspace). datamodel_type auto-injected (Edit/Client/Server) \u2014 set explicitly only to override. timeoutMs default 20000. Studio gotcha: Studio defaults to Edit context, so server-only APIs stay silent.",
       "example_call": "###LUA###\nlocal p = Instance.new(\"Part\")\np.Size = Vector3.new(4, 1, 2)\np.Position = Vector3.new(0, 5, 0)\np.Parent = game.Workspace\n###END_LUA###",
       "output": "Returns execution result text or ERROR. On ERROR, read the message, fix the code, retry exactly once.",
-      "pitfalls": "1) JSON-escaping bugs \u2014 use ###LUA###, never hand-escape quotes. 2) Yielding forever (while true without task.wait) hits timeout \u2014 keep loops bounded. 3) Nil parents \u2014 Parent to game.Workspace explicitly."
+      "pitfalls": "1) JSON-escaping bugs \u2014 use ###LUA###, never hand-escape quotes. 2) Yielding forever (while true without task.wait) hits timeout \u2014 keep loops bounded. 3) Nil parents \u2014 Parent to game.Workspace explicitly. 4) Module verification \u2014 read Source with get_script_content; require() modules singly, never bulk-require in one snippet (a hung module burns the ~20s budget)."
     },
     "get_instances": {
       "persona": "You are a methodical Explorer scout who maps unknown places top-down before touching anything. You list broad branches first, then drill into the one that matters, and you read every name literally. You never guess deep paths or mutate a tree you have not mapped.",
