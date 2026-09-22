@@ -1,30 +1,25 @@
 # RoLink 2.3.0 — AI → Roblox Studio
 
-**Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio agent.** Browser extension + local bridge + MCP. Download through GitHub, no build needed.
+**Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena, Arena Agent, Meta AI, or Claude into a Roblox Studio agent.** Browser extension + local bridge + MCP. Download through GitHub, no build needed.
 
 > 🌐 Free alternative for building Roblox games with AI.
 
-Eight providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** (`kimi.ai`), **GLM** (`chat.z.ai`), **Qwen** (`chat.qwen.ai`), **Arena** (`arena.ai`), **Meta AI**. Images off on ChatGPT free tier (separate quota); Gemini/Kimi may drop tools in long sessions; Arena keep **Direct** mode (Battle / Side-by-Side unsupported).
+Ten providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** (`kimi.ai`), **GLM** (`chat.z.ai`), **Qwen** (`chat.qwen.ai`), **Arena** (`arena.ai`, Direct mode), **Arena Agent** (`arena.ai/agent`, supervised), **Meta AI**, **Claude** (`claude.ai`, fresh support). Images off on ChatGPT free tier (separate quota); Gemini/Kimi may drop tools in long sessions; Arena chat keep **Direct** mode (Battle / Side-by-Side unsupported); Agent Mode runs supervised — it reads settled output, pauses at human prompts, and never votes for you.
 
-## 2.0.0 implementation
+## New in 2.3.0
 
-119-tool catalog, offline local tools, Luau pre-flight, grouped system-prompt catalog, and full rebrand are included in this release line:
-
-- **119 tools** (`mcp-server/src/tools/registry.ts`, `tests/__registry__.json`): instances, scripting, snapshots, sandbox, terrain/build, UI, animation, cinematics, clip export, datastore, sessions, templates, AI/devops, debug, projects, sound.
-- **Works offline**: `get_time`, `validate_command`, `suggest_ordering`, `batch_queue`, and other pure-local tools answer with no Studio connected.
-- **Luau pre-flight**: code Studio would certainly reject comes back as a structured validation error the model can fix, instead of a failed Studio call.
-- **Live catalog**: `list_commands` always returns all 119 with parameter details, even with Studio closed.
+See [CHANGELOG.md](CHANGELOG.md): Claude provider, injection-refusal recovery, background-task hardening, supervised Arena Agent support, animation easing aliases + execution deadline, Studio sandbox builtins, and a full cleanup (ZeroScript identifiers gone).
 
 ## How it works
 
 ```
-AI chat (ChatGPT / DeepSeek / Gemini / Kimi / GLM / Qwen / Arena / Meta AI, in your browser)
+AI chat (in your browser)
   -> RoLink Extension -> Bridge (your PC, ws://127.0.0.1:17613) -> Roblox Studio
 ```
 
 The extension runs inside the chat page. When you type a request, it sends commands to the Bridge running on your PC, which drives Roblox Studio through the built-in MCP server (`StudioMCP`, port `13469`). Extra MCP servers (Blender, Sketchfab, ...) can be attached alongside via `config.json`. `mcp-server/` (Node) is the advanced power layer: queue API, prompts, and tooling around the same catalog.
 
-## Setup
+## Setup (everything, in order)
 
 ### 1. Download the zip and install the extension
 
@@ -36,6 +31,7 @@ To load the extension:
 - Enable **Developer mode** (top right toggle)
 - Click **Load unpacked**
 - Select the `rolink-extension` folder from the extracted zip
+- After any update: press the extension's **reload icon** on `chrome://extensions`, then refresh your AI tabs (a page refresh alone does not load new files)
 
 ### 2. Start Roblox Studio and enable MCP
 
@@ -55,24 +51,36 @@ through our own plugin:
 - **macOS:** copy `studio-plugin/RoLink.lua` to `~/Documents/Roblox/Plugins/` (create the folder if missing).
 - In Studio, open your place, press **View > Command Bar**, and run:
   `game:GetService("HttpService").HttpEnabled = true` (once per place — lets the plugin reach the bridge).
-- Restart Studio if it was open. A **RoLink** toolbar button appears; the bridge prints `plugin polling` when it connects. Without this step, registry tools report a clear `plugin_offline` error instead of running.
+- **Quit Studio completely first** — it caches plugins at startup, so installing while open changes nothing until a full restart. A **RoLink** toolbar button appears; the bridge prints `plugin polling` when it connects. Without this step, registry tools report a clear `plugin_offline` error instead of running.
+- After every RoLink update, reinstall the plugin the same way (quit Studio → run installer → reopen).
 
 ### 3. Run the Bridge
 
-- **Windows:** double-click `start.bat` inside the extracted folder.
+- **Windows:** double-click `start.bat` **inside the extracted folder for this version** (an old folder runs the old bridge — check the banner version below).
 - **macOS:** double-click `MacOS_Start.command` inside the extracted folder. The first time, macOS shows a security warning — click **Done**, then **System Settings > Privacy & Security > Open Anyway** (once).
 
 A small window opens — the Bridge is running.
 
 ### 4. Start a session
 
-Open a new chat on https://chat.deepseek.com (recommended), https://chatgpt.com, https://gemini.google.com, https://www.kimi.ai, https://chat.z.ai, https://chat.qwen.ai, https://arena.ai or https://www.meta.ai. The RoLink bar appears above the input box. Click **Start session** and type what you want to build. The model should call `list_commands` first for the full live reference.
+Open a new chat on https://chat.deepseek.com (recommended), https://chatgpt.com, https://gemini.google.com, https://www.kimi.ai, https://chat.z.ai, https://chat.qwen.ai, https://arena.ai, https://arena.ai/agent, https://www.meta.ai, or https://claude.ai. The RoLink bar appears above the input box. Click **Start session** and type what you want to build. The model should call `list_commands` first for the full live reference.
+
+## Version check (all four must match)
+
+| Where | What to look for |
+| --- | --- |
+| Bridge terminal banner | `BRIDGE START v2.3.0` (proves which folder you launched) |
+| Bridge `plugin vX` line | Must equal the bridge version — a mismatch means Studio loaded a stale plugin; redo step 2b with Studio fully quit |
+| Extension bar/popup | `v2.3.0` next to the RoLink name |
+| Studio Output on launch | `RoLink 2.3.0 loaded` |
+
+If any one differs, that component came from a different install — reinstall it from this release.
 
 ## What the AI can do
 
 - Read and edit scripts, run Luau directly in Studio
 - Inspect the game tree, create/move/clone instances, apply materials
-- Build terrain, UI, particles, lighting, animations (keyframe tracks)
+- Build terrain, UI, particles, lighting, animations (keyframe tracks — easing names need their suffix: `quadIn`, not bare `quad`; max 1024 poses per track)
 - Generate assets, levels, quests, sounds; browse the Creator Store
 - Control play-testing, debug with breakpoints and watches
 - **Remember your project across sessions** (persistent project memory)
@@ -99,4 +107,4 @@ Open a new chat on https://chat.deepseek.com (recommended), https://chatgpt.com,
 
 ## License
 
-GPL-3.0-or-later. See `LICENSE`. This 2.0.0 line is a reboot: free-edition foundation with the full 113-tool catalog — one tag, `2.0.0`.
+GPL-3.0-or-later. See `LICENSE`.
