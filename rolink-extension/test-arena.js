@@ -123,7 +123,7 @@ global.MutationObserver = class { observe() {} disconnect() {} };
 global.getComputedStyle = () => ({});
 global.CustomEvent = class { constructor(t) { this.type = t; } };
 const P = new Function(
-  fs.readFileSync(__dirname + "/providers/arena.js", "utf8") + "; return ZSProvider;"
+  fs.readFileSync(__dirname + "/providers/arena.js", "utf8") + "; return RLProvider;"
 )();
 const diagLog = [];
 const ok = (name, cond) => { console.log((cond ? "PASS" : "FAIL") + "  " + name); if (!cond) process.exitCode = 1; };

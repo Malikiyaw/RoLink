@@ -62,7 +62,7 @@ global.CustomEvent = class { constructor(t) { this.type = t; } };
 global.MutationObserver = class { observe() {} disconnect() {} };
 global.getComputedStyle = () => ({});
 const P = new Function(
-  fs.readFileSync(__dirname + "/providers/chatgpt.js", "utf8") + "; return ZSProvider;"
+  fs.readFileSync(__dirname + "/providers/chatgpt.js", "utf8") + "; return RLProvider;"
 )();
 
 const ok = (name, cond) => { console.log((cond ? "PASS" : "FAIL") + "  " + name); if (!cond) process.exitCode = 1; };

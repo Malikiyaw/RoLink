@@ -121,8 +121,7 @@ def _find_studio_mcp_mac() -> Optional[Path]:
 
 
 def find_studio_mcp() -> Optional[Path]:
-    override_value = (os.environ.get(ENV_OVERRIDE) or os.environ.get("RL_STUDIO_MCP_PATH")
-                      or os.environ.get("ZS_STUDIO_MCP_PATH"))
+    override_value = (os.environ.get(ENV_OVERRIDE) or os.environ.get("RL_STUDIO_MCP_PATH"))
     if override_value:
         override_path = _resolve_override_path(override_value)
         if override_path:

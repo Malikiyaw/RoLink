@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // providers/arena.js - the Arena (arena.ai) provider.
-// Exports the same ZSProvider interface as providers/deepseek.js; the core
+// Exports the same RLProvider interface as providers/deepseek.js; the core
 // (core/main.js) is provider-agnostic. To DISABLE Arena support, remove this
 // file from manifest.json (and its URL from background.js PROVIDER_URLS).
 //
@@ -25,7 +25,7 @@
 //    by an aria-label "Stop generation" button for the WHOLE generation.
 //  - Conversation URL is /c/<uuid>; a fresh chat is /text/direct (no id yet).
 // eslint-disable-next-line no-unused-vars
-const ZSProvider = (() => {
+const RLProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let diag = () => {}; // injected by core via init()
@@ -397,12 +397,12 @@ const ZSProvider = (() => {
     if (!ed) return;
     if (ed.tagName === "TEXTAREA") {
       if (on) {
-        if (!ed.dataset.zsPlaceholder) ed.dataset.zsPlaceholder = ed.getAttribute("placeholder") || "";
+        if (!ed.dataset.rlPlaceholder) ed.dataset.rlPlaceholder = ed.getAttribute("placeholder") || "";
         ed.setAttribute("readonly", "");
         ed.setAttribute("placeholder", "⏳ Agent working… please wait");
       } else {
         ed.removeAttribute("readonly");
-        if (ed.dataset.zsPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.zsPlaceholder);
+        if (ed.dataset.rlPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.rlPlaceholder);
       }
       return;
     }
@@ -582,9 +582,9 @@ const ZSProvider = (() => {
     if (images && images.length) tagImages(images);
     diag("arena.tas.enter", {
       textLen: (text || "").length,
-      imgId: images ? images.__zsId : null,
+      imgId: images ? images.__rlId : null,
       imgCount: images ? images.length : 0,
-      attachedId: _attachedImages ? _attachedImages.__zsId : null,
+      attachedId: _attachedImages ? _attachedImages.__rlId : null,
       sameSet: images === _attachedImages,
       pendingBefore: pendingCount(),
     });
@@ -612,12 +612,12 @@ const ZSProvider = (() => {
       try {
         const ok = await attachImages(images);
         if (ok) _attachedImages = images;
-        diag("arena.tas.attached", { imgId: images.__zsId, ok, pendingAfter: pendingCount() });
+        diag("arena.tas.attached", { imgId: images.__rlId, ok, pendingAfter: pendingCount() });
       } catch (e) { diag("arena.tas.attachErr", { msg: String(e && e.message || e) }); }
       // Staging the file re-disables send for ~0.4s while Arena ingests it.
       await waitFor(sendReady, 6000);
     } else {
-      diag("arena.tas.skipAttach", { reason: !images || !images.length ? "no-images" : "same-set", imgId: images ? images.__zsId : null });
+      diag("arena.tas.skipAttach", { reason: !images || !images.length ? "no-images" : "same-set", imgId: images ? images.__rlId : null });
     }
     // Click and CONFIRM the send took (editor clears the instant Arena accepts
     // it, image AND text paths). Re-click until it clears so a single swallowed
@@ -887,8 +887,8 @@ const ZSProvider = (() => {
   // being (re)attached across the core's retries (same array = same id).
   let _imgSeq = 0;
   function tagImages(images) {
-    if (images && images.__zsId == null) {
-      try { Object.defineProperty(images, "__zsId", { value: ++_imgSeq, enumerable: false }); } catch { images.__zsId = ++_imgSeq; }
+    if (images && images.__rlId == null) {
+      try { Object.defineProperty(images, "__rlId", { value: ++_imgSeq, enumerable: false }); } catch { images.__rlId = ++_imgSeq; }
     }
     return images;
   }

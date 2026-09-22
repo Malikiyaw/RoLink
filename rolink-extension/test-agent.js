@@ -32,11 +32,11 @@ global.CustomEvent = class { constructor(t) { this.type = t; } };
 new Function(fs.readFileSync(__dirname + "/providers/generic.js", "utf8"))();
 // Real command parser (same file the extension ships): read-path tests exercise
 // true signature/parse behavior (test-parser.js proves this file loads clean).
-global.ZSParse = new Function(
-  fs.readFileSync(__dirname + "/core/parser.js", "utf8") + "; return ZSParse;"
+global.RLParse = new Function(
+  fs.readFileSync(__dirname + "/core/parser.js", "utf8") + "; return RLParse;"
 )();
 const P = new Function(
-  fs.readFileSync(__dirname + "/providers/agent.js", "utf8") + "; return ZSProvider;"
+  fs.readFileSync(__dirname + "/providers/agent.js", "utf8") + "; return RLProvider;"
 )();
 
 const ok = (name, cond) => { console.log((cond ? "PASS" : "FAIL") + "  " + name); if (!cond) process.exitCode = 1; };
@@ -588,4 +588,4 @@ ok("adoption names vote order at open gates", /adopt this chat first, then vote/
 ok("VOLATILE_SEL declared exactly once",
   (agentSrc.match(/const VOLATILE_SEL =/g) || []).length === 1);
 ok("core fails loud on a dead provider",
-  /typeof ZSProvider === "undefined"/.test(mainSrc2) && /provider failed to load/.test(mainSrc2));
+  /typeof RLProvider === "undefined"/.test(mainSrc2) && /provider failed to load/.test(mainSrc2));

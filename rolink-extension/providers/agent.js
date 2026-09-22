@@ -16,7 +16,7 @@
 // validation pass is still required before calling this supported (see the
 // LIVE-DOM notes inline).
 // eslint-disable-next-line no-unused-vars
-const ZSProvider = (() => {
+const RLProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const VOTE_RE = /was this task successful|keep working/i;
@@ -305,7 +305,7 @@ const ZSProvider = (() => {
   function cmdShapeText(s) {
     try {
       if (!s) return false;
-      if (typeof ZSParse !== "undefined" && ZSParse.hasToolSignature) return !!ZSParse.hasToolSignature(s);
+      if (typeof RLParse !== "undefined" && RLParse.hasToolSignature) return !!RLParse.hasToolSignature(s);
       return /"(command|tool)"\s*:/.test(s);
     } catch { return false; }
   }
@@ -459,8 +459,8 @@ const ZSProvider = (() => {
           if (bt.length < 40) {
             let shaped = false;
             try {
-              shaped = (typeof ZSParse !== "undefined" && ZSParse.hasToolSignature)
-                ? !!ZSParse.hasToolSignature(bt)
+              shaped = (typeof RLParse !== "undefined" && RLParse.hasToolSignature)
+                ? !!RLParse.hasToolSignature(bt)
                 : /###(LUA|MCP_TOOL)###|"(command|tool)"\s*:/.test(bt);
             } catch {}
             if (!shaped) continue;
@@ -658,8 +658,8 @@ const ZSProvider = (() => {
   }
   function codeClean(item, t) {
     try {
-      if (typeof ZSParse === "undefined" || !ZSParse.hasToolSignature || !ZSParse.parseToolCalls) return t;
-      if (!ZSParse.hasToolSignature(t) || ZSParse.parseToolCalls(t).length) return t;
+      if (typeof RLParse === "undefined" || !RLParse.hasToolSignature || !RLParse.parseToolCalls) return t;
+      if (!RLParse.hasToolSignature(t) || RLParse.parseToolCalls(t).length) return t;
       let blocks = [];
       try { blocks = codeBlocks(item); } catch {}
       const parts = [];
@@ -670,10 +670,10 @@ const ZSProvider = (() => {
       }
       if (parts.length) {
         const c = parts.join("\n");
-        if (ZSParse.parseToolCalls(c).length) return c;
+        if (RLParse.parseToolCalls(c).length) return c;
       }
       const v = viewLinesText(item);
-      if (v && ZSParse.parseToolCalls(v).length) return v;
+      if (v && RLParse.parseToolCalls(v).length) return v;
     } catch {}
     return t;
   }

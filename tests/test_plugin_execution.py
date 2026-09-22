@@ -208,6 +208,51 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertIn("https://deepseek.com/*", bg)
 
 
+    def test_no_legacy_branding(self):
+        # No ZeroScript remnants anywhere: no product name (any case), no
+        # legacy code/storage identifiers, no old invite or tip links, no stale
+        # repo URL. Migration fallbacks are the one exception: lines marked
+        # legacy (or the line above them) may name the old storage keys.
+        import re
+        banned = [
+            r"zeroscript",  # case-insensitive below
+            r"ZSParse", r"ZSProvider", r"__zs", r"#zs-", r"data-zs",
+            r"zs-diag", r"ZS_BRIDGE_PORT", r"ZS_STUDIO_MCP_PATH",
+            r"zStopped", r"zloop", r"zResume", r"zResumeLen", r"zphase",
+            r"zsToolT0", r"zsGenT0", r"zsCode", r"zsPlaceholder",
+            r"zsGptVer", r"zsDsVer", r"zsSys", r"zsCustomPrompt",
+            r"zsCustomMcpServers", r"zsImageTools", r"zsStartedSessions",
+            r"zsSetupSeen", r"zsQwenModelVision2", r"domHasZsSignal",
+            r"D5G2HAzX8z", r"KOFI_URL", r"sebattfg/RoLink-Free",
+        ]
+        text_exts = (".js", ".ts", ".html", ".css", ".json", ".md", ".py",
+                     ".lua", ".txt", ".bat", ".sh", ".command")
+        hits = []
+        for dirpath, dirnames, filenames in os.walk(ROOT):
+            dirnames[:] = [d for d in dirnames if d != ".git"]
+            for fn in filenames:
+                if not fn.endswith(text_exts):
+                    continue
+                p = os.path.join(dirpath, fn)
+                if os.path.abspath(p) == os.path.abspath(__file__):
+                    continue
+                try:
+                    with open(p, encoding="utf-8") as f:
+                        lines = f.read().splitlines()
+                except (OSError, UnicodeDecodeError):
+                    continue
+                for i, line in enumerate(lines):
+                    window = [lines[j] for j in range(max(0, i - 3), i + 1)]
+                    if any(re.search(r"legacy", w, re.IGNORECASE) for w in window):
+                        continue
+                    for pat in banned:
+                        flags = re.IGNORECASE if pat == "zeroscript" else 0
+                        if re.search(pat, line, flags):
+                            hits.append("%s:%d: %s" % (
+                                os.path.relpath(p, ROOT), i + 1, pat))
+                            break
+        self.assertEqual(hits, [], "legacy remnants:\n" + "\n".join(hits[:20]))
+
     def test_sandbox_exposes_standard_builtins(self):
         # pcall(require, ...) failed with "attempt to call a nil value" because
         # safeEnv lacked the builtins themselves. All three env definitions
@@ -258,6 +303,45 @@ class PluginExecutionTest(unittest.TestCase):
             mirror = f.read()
         self.assertIn("errLineCtx", mirror)
         self.assertIn("errLineCtx(code, errMsg)", mirror)
+
+    def test_easing_aliases_and_tool_deadline(self):
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        # Bare family names normalize instead of erroring (the 'quad' report).
+        self.assertIn('quad = "quadInOut"', src)
+        self.assertIn('cubic = "cubicInOut"', src)
+        self.assertIn('sine = "sineInOut"', src)
+        self.assertIn("function resolveEasing", src)
+        # Unknown names still error, with the same prefix plus a hint.
+        self.assertIn("unknown easing '", src)
+        self.assertIn("did you mean", src)
+        self.assertIn("EASE_LIST", src)
+        # Instance budget fails fast instead of wedging the queue.
+        self.assertIn("totalPoses", src)
+        self.assertIn("max 1024", src)
+        self.assertIn("made % 128", src)
+        # Every tool (not just Luau snippets) runs under a wall-clock
+        # deadline; the poll loop routes through it instead of bare pcall.
+        self.assertIn("TOOL_BUDGET_S", src)
+        self.assertIn("function runToolDeadline", src)
+        self.assertIn("runToolDeadline(cmd)", src)
+        self.assertIn("still running after", src)
+        # Exactly one bare dispatch left, inside the deadline runner itself.
+        self.assertEqual(src.count("pcall(executeCommand, cmd)"), 1)
+        # Prompt surfaces document the enum and the budget.
+        with open(os.path.join(ROOT, "mcp-server", "src", "tools", "registry.ts"),
+                  encoding="utf-8") as f:
+            reg = f.read()
+        self.assertIn("quadIn/Out/InOut", reg)
+        self.assertIn("1024", reg)
+        with open(os.path.join(ROOT, "mcp-server", "src", "tools", "toolPrompts.ts"),
+                  encoding="utf-8") as f:
+            prompts = f.read()
+        self.assertIn("bare quad", prompts)
+        with open(os.path.join(ROOT, "generated", "tool-prompts.json"), encoding="utf-8") as f:
+            import json as _json2
+            gen = _json2.load(f)["prompts"]["create_animation_track"]["pitfalls"]
+        self.assertIn("bare quad", gen)
 
 
 if __name__ == "__main__":

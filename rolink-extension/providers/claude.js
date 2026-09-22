@@ -13,7 +13,7 @@
 // artifacts in a side panel. RoLink commands must be plain-text JSON in the
 // CHAT - never inside an artifact (artifacts don't reflow into turns).
 // eslint-disable-next-line no-unused-vars
-const ZSProvider = (() => {
+const RLProvider = (() => {
   "use strict";
 
   const isShown = (e) => { try { return e.getClientRects().length > 0; } catch { return false; } };

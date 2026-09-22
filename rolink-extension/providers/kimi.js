@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // providers/kimi.js - the Kimi (www.kimi.ai, Moonshot AI) provider.
-// Exports the same ZSProvider interface as providers/deepseek.js and gemini.js;
+// Exports the same RLProvider interface as providers/deepseek.js and gemini.js;
 // the core (core/main.js) is provider-agnostic. To DISABLE Kimi support, remove
 // this file from manifest.json (and its URL from background.js PROVIDER_URLS +
 // main.js AI_SITES).
@@ -25,7 +25,7 @@
 //    CodeMirror virtualization), so the command JSON survives intact.
 //  - Conversation URL is /chat/<id>; a fresh chat is exactly "/".
 // eslint-disable-next-line no-unused-vars
-const ZSProvider = (() => {
+const RLProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let diag = () => {}; // injected by core via init()

@@ -19,8 +19,8 @@
 // run_at "document_start" so the wrap is installed before Qwen's app uses fetch.
 (() => {
   "use strict";
-  if (window.__zsQwenNet) return;
-  window.__zsQwenNet = true;
+  if (window.__rlQwenNet) return;
+  window.__rlQwenNet = true;
 
   const NODE_ID = "rl-qwen-net";
   const node = () => {

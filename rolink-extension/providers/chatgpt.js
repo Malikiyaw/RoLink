@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // providers/chatgpt.js - the OpenAI ChatGPT (chatgpt.com) provider.
-// Exports the same ZSProvider interface as providers/deepseek.js and
+// Exports the same RLProvider interface as providers/deepseek.js and
 // providers/gemini.js; the core (core/main.js) is provider-agnostic. To DISABLE
 // ChatGPT support, remove this file from manifest.json (and its URL from
 // background.js PROVIDER_URLS + manifest host_permissions + popup.js
@@ -57,7 +57,7 @@
 //    vision is disabled here (supportsVision: false) rather than working only
 //    part of the day. ChatGPT announces the quota walls itself, in the thread.
 // eslint-disable-next-line no-unused-vars
-const ZSProvider = (() => {
+const RLProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let diag = () => {}; // injected by core via init()
@@ -943,7 +943,7 @@ const ZSProvider = (() => {
     init({ diag: d } = {}) {
       if (d) diag = d;
       // Version beacon: stamp the loaded build onto <html> so a reload can be
-      // confirmed from the page (read document.documentElement.dataset.zsGptVer).
+      // confirmed from the page (read document.documentElement.dataset.rlGptVer).
       try { document.documentElement.setAttribute("data-rl-gpt-ver", "2026-08-13_cmtap+toolkey"); } catch {}
     },
     // turns

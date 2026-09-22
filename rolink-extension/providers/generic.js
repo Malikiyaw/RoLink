@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// providers/generic.js - base ZSProvider for any AI chat site.
+// providers/generic.js - base RLProvider for any AI chat site.
 //
 // This file defines a SINGLE factory function `makeGenericProvider(opts)` that
-// builds a complete ZSProvider instance. Per-site providers (gemini, kimi, glm,
+// builds a complete RLProvider instance. Per-site providers (gemini, kimi, glm,
 // qwen, arena, meta) call this factory with their own id, displayName and any
 // selector overrides.
 //
@@ -169,10 +169,10 @@ window.makeGenericProvider = function(opts){
     // full text does, prefer the full text (stability is handled downstream
     // by payload-stability, not raw text).
     try{
-      if(i && typeof ZSParse !== "undefined" && ZSParse.hasToolSignature && ZSParse.stableBlockKey){
-        if(ZSParse.hasToolSignature(reply) && !ZSParse.stableBlockKey(reply)){
+      if(i && typeof RLParse !== "undefined" && RLParse.hasToolSignature && RLParse.stableBlockKey){
+        if(RLParse.hasToolSignature(reply) && !RLParse.stableBlockKey(reply)){
           const ft = fullText(i);
-          if(ft && ft.length > reply.length && ZSParse.stableBlockKey(ft)) reply = ft;
+          if(ft && ft.length > reply.length && RLParse.stableBlockKey(ft)) reply = ft;
         }
       }
     }catch{}
@@ -377,7 +377,7 @@ window.makeGenericProvider = function(opts){
   }
   function isFreshChat(){ return chatIsEmpty(); }
 
-  // ── the ZSProvider object ────────────────────────────────────────────────
+  // ── the RLProvider object ────────────────────────────────────────────────
   const P = {
     id: SELF, displayName: DISPLAY,
     get supportsVision(){ return SUPPORTS_VISION; },

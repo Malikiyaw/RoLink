@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // core/main.js - the provider-agnostic agentic loop, UI and session state.
-// Drives any AI chat site through the ZSProvider interface (providers/*.js):
-// waits for the model's reply, parses RoLink commands (ZSParse), asks the
+// Drives any AI chat site through the RLProvider interface (providers/*.js):
+// waits for the model's reply, parses RoLink commands (RLParse), asks the
 // background worker to execute them on the Roblox MCP bridge, and feeds the
 // result back. Camouflages the system prompt ("Starting Up") and tool JSON
 // behind animated chips, masks injected input, and exposes a Stop button.
@@ -15,12 +15,12 @@
   "use strict";
   // Load-failure guard: each content-script file parses independently, so a
   // syntax break in the provider (or parser) kills it WITHOUT killing this
-  // file - which then dies on the bare `ZSProvider` reference below, leaving
+  // file - which then dies on the bare `RLProvider` reference below, leaving
   // zero UI and zero errors on the page (the "bar just gone" ghost, hit twice:
   // a duplicated `let sites`, then a duplicated `const VOLATILE_SEL`). Fail
   // LOUD instead: paint a static banner naming the dead layer. Inline styles
   // only (no dependency on anything that may also be dead).
-  if (typeof ZSProvider === "undefined") {
+  if (typeof RLProvider === "undefined") {
     try {
       const root = document.createElement("div");
       root.id = "rl-root";
@@ -35,7 +35,7 @@
     } catch {}
     return;
   }
-  const P = ZSProvider;
+  const P = RLProvider;
   const T = P.timings;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const log = (...a) => console.log("[rolink]", ...a);
@@ -58,7 +58,7 @@
   // ── Diagnostics ───────────────────────────────────────────────────────────
   // Persistent, lightweight breadcrumb log of the agentic loop's key decisions
   // (sends, response kinds, tool start/end, resumes, stops). Read back from the
-  // console (filter "[rl-diag]") or window.__zsDiag (also mirrored onto a hidden
+  // console (filter "[rl-diag]") or window.__rlDiag (also mirrored onto a hidden
   // DOM node for a main-world inspector). Each entry carries a turn snapshot.
   const RL_DIAG_MAX = 300;
   const _diag = [];
@@ -74,7 +74,7 @@
       if (!n) { n = document.createElement("script"); n.type = "application/json"; n.id = "rl-diag-log"; (document.body || document.documentElement).appendChild(n); }
       n.textContent = JSON.stringify(_diag);
     } catch {}
-    try { window.__zsDiag = _diag; } catch {}
+    try { window.__rlDiag = _diag; } catch {}
   }
   P.init({ diag });
 
@@ -101,7 +101,7 @@
   }
 
   // GitHub releases page - where users download the Bridge + start.bat.
-  const GITHUB_URL = "https://github.com/sebattfg/RoLink-Free";
+  const GITHUB_URL = "https://github.com/Malikiyaw/RoLink";
   // Shown in the panel instead of a static "Free" label, so a user's screenshot
   // alone tells us which build they're on for debugging. Pulled from
   // manifest.json (single source of truth) rather than duplicated here.
@@ -414,7 +414,7 @@
     // the exact moment the watcher finalizes - the turn then ended as
     // kind:"empty" even though a (possibly cut-off) command was sitting there a
     // tick earlier, leaving a DEAD turn: no parse_error feedback, and the
-    // autoResume dedupe (zResume) blocks any later retry (validated live on a
+    // autoResume dedupe (rlResume) blocks any later retry (validated live on a
     // Qwen post-stop regenerate, 2026-07). Classify on this fallback instead of
     // declaring empty. Reset whenever the turn NODE changes so a new turn can
     // never inherit the previous turn's text.
@@ -511,7 +511,7 @@
       // carry, so curTok stayed null, `started` never latched, and the loop
       // sat in the pre-start branch for the full 60s before ending "empty" -
       // the regenerated command (complete in the net tap) was never run and
-      // zResume then blocked any retry (validated live via empty.why, 2026-07).
+      // rlResume then blocked any retry (validated live via empty.why, 2026-07).
       // Fall back to the count test instead, exactly as for a provider with no
       // lastAssistantId at all.
       const newReply = (curTok !== undefined && curTok !== null)
@@ -568,7 +568,7 @@
 
       // Keep waiting while a tool command is still being streamed (opener written
       // but no end marker yet) so we never parse/finalize half a command.
-      const blockActive = ZSParse.hasOpenToolBlock(d.reply) && Date.now() - lastChangeAt < 6000;
+      const blockActive = RLParse.hasOpenToolBlock(d.reply) && Date.now() - lastChangeAt < 6000;
       // ...but once generation has clearly stopped (stop indicator gone past the
       // grace window), stop honoring an "open block" - it is DOM churn, not live
       // streaming. Lets a finished big block finalise in seconds instead of
@@ -588,7 +588,7 @@
       // here parsed the half-written JSON and stamped a false "bad JSON" error
       // while GLM was still typing. RESPONSE_TIMEOUT still bounds a truly stuck one.
       const stuckDone = started && d.reply && Date.now() - lastChangeAt > STABLE_MS &&
-        !(gen && ZSParse.hasOpenToolBlock(d.reply));
+        !(gen && RLParse.hasOpenToolBlock(d.reply));
       if ((gen || effectiveBlock) && !stuckDone) {
         // DIAG: attribute this wait. genOffFirstAt set ⇒ we are PAST first stop,
         // so any wait here is tail latency: either gen flickered back on, or an
@@ -673,8 +673,8 @@
       // delayed) and bound it with UNSETTLED_GRACE_MS. No-op on providers that
       // don't implement replyUnsettled (DeepSeek/Gemini/GLM/Kimi/Arena).
       const cmdShaped = P.replyUnsettled && (
-        ZSParse.hasToolSignature(r) ||
-        (ZSParse.LUA_END_RE.test(r) && !ZSParse.LUA_START_RE.test(r)) ||
+        RLParse.hasToolSignature(r) ||
+        (RLParse.LUA_END_RE.test(r) && !RLParse.LUA_START_RE.test(r)) ||
         (/"(?:datamodel_type|edits|old_string|new_string|file_path|target_file)"\s*:/.test(r) &&
           !/"command"\s*:/.test(r))
       );
@@ -702,14 +702,14 @@
         }
         await sleep(250); continue;                              // button not ready yet
       }
-      if (ZSParse.hasToolSignature(r)) {
-        const calls = ZSParse.parseToolCalls(r);
+      if (RLParse.hasToolSignature(r)) {
+        const calls = RLParse.parseToolCalls(r);
         if (calls.length) { finalizeDiag("tool"); return { kind: "tool", calls, item: d.item }; }
         // A half-written command + the site's "Continue" button means the command
         // was truncated mid-stream → resume it rather than reporting bad JSON.
         if (P.findContinueBtn()) return { kind: "truncated", text: r, item: d.item };
         // Only fire parse_error if explicit markers were present.
-        if (r.includes(ZSParse.START_M) || ZSParse.LUA_START_RE.test(r)) return { kind: "parse_error", reason: "malformed", raw: r, item: d.item };
+        if (r.includes(RLParse.START_M) || RLParse.LUA_START_RE.test(r)) return { kind: "parse_error", reason: "malformed", raw: r, item: d.item };
         // A command opener with no closer (a JSON object that never closed -
         // the model was halted mid-write and there is no Continue affordance):
         // ask the model to rewrite it instead of silently ending the turn.
@@ -721,8 +721,8 @@
         // still falls through to the parse_error feedback. Safe to run here:
         // generation has ended (the open-block branch above kept waiting
         // while it streamed).
-        if (ZSParse.hasOpenToolBlock(r)) {
-          const saved = ZSParse.salvageCutOff(r);
+        if (RLParse.hasOpenToolBlock(r)) {
+          const saved = RLParse.salvageCutOff(r);
           if (saved) {
             diag("tool.salvaged", { name: saved.tool });
             finalizeDiag("tool");
@@ -740,7 +740,7 @@
         // merely quotes {"command":"..."} (a DeepSeek-style explanation, or a
         // placeholder like "command_name") is NOT misread as a broken command and
         // looped on - only a real tool name means a genuine failed call.
-        const nm = ZSParse.toolNameFromText(r);
+        const nm = RLParse.toolNameFromText(r);
         if (nm && nm !== "command" && (A.toolNames.has(nm) || A.toolNames.has(bareToolName(nm)))) {
           return { kind: "parse_error", reason: "malformed", raw: r, item: d.item };
         }
@@ -755,7 +755,7 @@
       // unambiguous - unlike the guards below it needs no known-tool gate, which
       // matters because the degenerate form seen in the wild carries no tool name
       // at all (a bare tool_calls opener followed by prose).
-      if (ZSParse.DSML_RE.test(r)) {
+      if (RLParse.DSML_RE.test(r)) {
         diag("cmd.dsml", { len: r.length });
         return { kind: "parse_error", reason: "dsml", raw: r, item: d.item };
       }
@@ -763,7 +763,7 @@
       // FORGOT the ###LUA### opener, so hasToolSignature missed it and the block
       // never ran (seen on Gemini). Don't silently treat it as a final answer -
       // nudge a rewrite instead of leaving the user stuck on a dead turn.
-      if (ZSParse.LUA_END_RE.test(r) && !ZSParse.LUA_START_RE.test(r) && !r.includes(ZSParse.START_M)) {
+      if (RLParse.LUA_END_RE.test(r) && !RLParse.LUA_START_RE.test(r) && !r.includes(RLParse.START_M)) {
         return { kind: "parse_error", reason: "luaOpener", raw: r, item: d.item };
       }
       // Malformed command: the model emitted a tool's RAW ARGUMENTS as a bare JSON
@@ -908,11 +908,23 @@
     if (!bare || A.imageTools.has(bare)) return;
     A.imageTools.add(bare);
     diag("imageTool.remember", { name: bare, total: A.imageTools.size });
-    try { chrome.storage.local.set({ zsImageTools: [...A.imageTools].slice(-200) }); } catch {}
+    try { chrome.storage.local.set({ rlImageTools: [...A.imageTools].slice(-200) }); } catch {}
   }
   try {
-    chrome.storage.local.get("zsImageTools", (r) => {
-      if (r && Array.isArray(r.zsImageTools)) for (const n of r.zsImageTools) A.imageTools.add(n);
+    chrome.storage.local.get("rlImageTools", (r) => {
+      if (r && Array.isArray(r.rlImageTools)) {
+        for (const n of r.rlImageTools) A.imageTools.add(n);
+      } else {
+        // legacy: one-time copy from the legacy key, then it ages out.
+        try {
+          chrome.storage.local.get("zsImageTools", (r2) => {
+            if (r2 && Array.isArray(r2.zsImageTools)) {
+              for (const n of r2.zsImageTools) A.imageTools.add(n);
+              try { chrome.storage.local.set({ rlImageTools: [...A.imageTools].slice(-200) }); } catch {}
+            }
+          });
+        } catch {}
+      }
       diag("imageTool.loaded", { tools: [...A.imageTools] });
     });
   } catch {}
@@ -1399,7 +1411,7 @@
           // stamps on any command-shaped turn once generation ends - the misleading
           // "chip says OK, result says error" state seen live on GLM's truncated
           // execute_blender_code).
-          const failName = ZSParse.toolNameFromText(res.raw || "") || "command";
+          const failName = RLParse.toolNameFromText(res.raw || "") || "command";
           if (res.item) {
             const detail = res.reason === "unclosed" ? "cut off"
               : res.reason === "luaOpener" ? "missing ###LUA###"
@@ -1455,7 +1467,7 @@
           // that also covers the bootstrap), but parking only there would leave
           // this block's side effects applied for the whole minimize:
           //   - the chip spins "running" while nothing actually runs, and
-          //     elapsedOn(zsToolT0) counts the parked time, so a 20-min minimize
+          //     elapsedOn(rlToolT0) counts the parked time, so a 20-min minimize
           //     renders a bogus "1200.0s" on the call;
           //   - rememberExecuted() would mark the turn dispatched before it ever
           //     ran, so a reload/close while parked loses the command for good -
@@ -1476,7 +1488,7 @@
           A.toolArg = argSummary(call);
           // Record this turn as dispatched OFF the DOM so the auto-resume
           // watchdog never re-fires it after a scroll re-render wipes the node's
-          // zloop/zResume markers (see the `executed` map).
+          // rlLoop/rlResume markers (see the `executed` map).
           rememberExecuted(res.item);
           diag("tool.start", { name: call.tool });
           const feedback = await runTool(call);
@@ -1487,7 +1499,7 @@
             // stuck loading forever, and MARK the turn so the sweep classifier
             // never repaints it ✓ done once generation ends (the real cause of a
             // stopped call still going green a moment later).
-            if (res.item) { res.item.dataset.zStopped = "1"; rememberHalted(res.item); }
+            if (res.item) { res.item.dataset.rlStopped = "1"; rememberHalted(res.item); }
             decorate.toolBox(res.item, call.tool, "err", "stopped", true, "", category);
             break;
           }
@@ -1515,7 +1527,7 @@
             true, outBody, resultCat);
           // Snapshot the settled outcome. If the site swaps this turn's DOM node
           // while we wait for the model's next turn (wiping the chip AND the
-          // zloop ownership dataset), the sweep re-owns the fresh node with this
+          // rlLoop ownership dataset), the sweep re-owns the fresh node with this
           // outcome instead of letting branch-3 classification re-spin a "run"
           // chip on an already-executed call.
           A.toolSettle = {
@@ -1601,7 +1613,7 @@
   //
   // The dataset marker alone is NOT enough: sites re-render the whole history
   // when the next user message lands (seen live on DeepSeek), replacing the
-  // halted turn's node and wiping dataset.zStopped - and since a fresh user
+  // halted turn's node and wiping dataset.rlStopped - and since a fresh user
   // message also clears the A.userStopped latch by design, nothing said
   // "stopped" anymore and the chip went ✓ green. So halted turns are ALSO
   // remembered here, keyed independently of the DOM node (conversation +
@@ -1651,13 +1663,13 @@
   function markStoppedTurn() {
     const it = P.lastAssistant();
     if (!it) return;
-    it.dataset.zStopped = "1";
+    it.dataset.rlStopped = "1";
     rememberHalted(it);
   }
 
   // Off-DOM record of assistant turns whose command has ALREADY been dispatched
   // (by the normal loop OR the auto-resume watchdog). The dataset markers that
-  // dedupe re-execution (zResume / zloop) live on the DOM NODE - but sites
+  // dedupe re-execution (rlResume / rlLoop) live on the DOM NODE - but sites
   // virtualize long conversations, so scrolling up DESTROYS and RECREATES a
   // turn's node, wiping those markers. The fresh node then looks un-run, and the
   // watchdog can re-fire the turn's tool with no live generation at all (the
@@ -1713,7 +1725,7 @@
     // seconds after the user pressed Stop. Settle it to the stopped state right
     // now; the loop's own settle on resolve is idempotent.
     if (A.toolRunning && A.toolItem) {
-      A.toolItem.dataset.zStopped = "1";
+      A.toolItem.dataset.rlStopped = "1";
       rememberHalted(A.toolItem);
       decorate.toolBox(A.toolItem, A.toolName, "err", "stopped", true, "", RL.toolCategory(A.toolName));
     }
@@ -1772,7 +1784,7 @@
   // virtualization cannot erase it. The DOM walk is kept as a floor, since a
   // conversation that visibly shows the threshold is due no matter what storage
   // says (e.g. a session adopted from another device, or storage cleared).
-  const sysKey = () => `zsSys:${P.conversationKey() || "new"}`;
+  const sysKey = () => `rlSys:${P.conversationKey() || "new"}`;
   let sysCount = { users: 0, results: 0 };
   let sysCountKey = "";
 
@@ -1787,7 +1799,15 @@
     sysCount = { users: 0, results: 0 };
     try {
       const r = await new Promise((res) => chrome.storage.local.get(k, res));
-      const saved = r && r[k];
+      let saved = r && r[k];
+      if (!saved) {
+        // legacy: one-time read from the legacy key, then it ages out.
+        try {
+          const k2 = k.replace(/^rlSys:/, "zsSys:");
+          const r2 = await new Promise((res2) => chrome.storage.local.get(k2, res2));
+          saved = r2 && r2[k2];
+        } catch {}
+      }
       if (saved) sysCount = {
         users: Math.max(saved.users || 0, local.users || 0),
         results: Math.max(saved.results || 0, local.results || 0),
@@ -1826,7 +1846,7 @@
       // means the rules were fully stated here, so stop counting.
       if (txt.includes(RL.SYS_MARKER)) break;
       if (!P.isUserItem(it)) continue;
-      if (ZSParse.isInjectedFeedback(txt)) results++;
+      if (RLParse.isInjectedFeedback(txt)) results++;
       else users++;
     }
     return { users, results };
@@ -1922,17 +1942,17 @@
     if (A.started || A.starting || A.running) return { refusal: "busy", turns: 0 };
     try {
       const item = P.lastAssistant();
-      if (!item || item.dataset.zloop) return { refusal: "R1-no-turns", turns: 0 };
+      if (!item || item.dataset.rlLoop) return { refusal: "R1-no-turns", turns: 0 };
       if (P.turnHalted && P.turnHalted(item)) return { refusal: "R6-halted", turns: 0 };
       const all = P.allItems();
       const turns = all.length;
       const after = all[all.indexOf(item) + 1];
       if (after && P.isUserItem(after) &&
-          ZSParse.isInjectedFeedback(P.classifyText(after, ".rl-chip"))) return { refusal: "R5-has-result", turns };
+          RLParse.isInjectedFeedback(P.classifyText(after, ".rl-chip"))) return { refusal: "R5-has-result", turns };
       const txt = P.itemText(item);
-      if (!ZSParse.hasToolSignature(txt)) return { refusal: "R2-no-signature", turns };
+      if (!RLParse.hasToolSignature(txt)) return { refusal: "R2-no-signature", turns };
       if (isRememberedExecuted(item, txt)) return { refusal: "R5-has-result", turns };
-      if (!ZSParse.parseToolCalls(txt).length) return { refusal: "R3-unparseable", turns };
+      if (!RLParse.parseToolCalls(txt).length) return { refusal: "R3-unparseable", turns };
       // Same-chat proof, first hit wins (logged): marker text (survives the
       // collapsed bootstrap header via textContent) -> our decoration dataset
       // on any turn (worked-this-conversation proof) -> injected feedback turn.
@@ -1945,12 +1965,12 @@
         if (hasMarker) proof = "marker";
         else {
           const decorated = all.some((it) => {
-            try { return !!(it.dataset && (it.dataset.zphase || it.dataset.zloop || it.dataset.zResume)); } catch { return false; }
+            try { return !!(it.dataset && (it.dataset.rlPhase || it.dataset.rlLoop || it.dataset.rlResume)); } catch { return false; }
           });
           if (decorated) proof = "decoration";
           else {
             const fed = all.some((it) => {
-              try { return P.isUserItem(it) && ZSParse.isInjectedFeedback(P.classifyText(it, ".rl-chip")); } catch { return false; }
+              try { return P.isUserItem(it) && RLParse.isInjectedFeedback(P.classifyText(it, ".rl-chip")); } catch { return false; }
             });
             if (fed) proof = "feedback";
           }
@@ -1968,7 +1988,7 @@
   // Adopt an orphaned command into a live session (the "No agent here, but a
   // command never ran" dead end). Re-verifies at click time, binds the session
   // to THIS conversation, then lets the normal watchdog adopt the turn: it
-  // re-checks halted/result-below/executed/zResume/parse guards, so adoption
+  // re-checks halted/result-below/executed/rlResume/parse guards, so adoption
   // can only ever fire an unexecuted, complete command once. bootBaselineId is
   // deliberately untouched (setting it to the orphan would exclude the very
   // turn being adopted); lastGenAt is touched once because the click itself is
@@ -2208,11 +2228,11 @@
     item.querySelectorAll(".rl-cmd-mask").forEach((e) => e.classList.remove("rl-cmd-mask"));
     delete item.dataset.rl;
     delete item.dataset.zsig;
-    delete item.dataset.zphase;
-    delete item.dataset.zStopped;
+    delete item.dataset.rlPhase;
+    delete item.dataset.rlStopped;
     delete item.dataset.zRegenLen;
     delete item.dataset.zRegenAt;
-    delete item.__zsChip;
+    delete item.__rlChip;
   }
 
   const decorate = {
@@ -2297,7 +2317,7 @@
       item.dataset.rl = cls || "1";
       // Remember the exact opts so a chip wiped by a site re-render can be
       // rebuilt identically (see ensureOwnedChip / the chipGone guards).
-      item.__zsChip = { ...opts };
+      item.__rlChip = { ...opts };
       return chip;
     },
 
@@ -2305,7 +2325,7 @@
     // and/or the .rl-tool-hide classes stripped). The loop owns the label/phase,
     // so we rebuild from the stored opts rather than re-running classification.
     ensureOwnedChip(item) {
-      const opts = item.__zsChip;
+      const opts = item.__rlChip;
       if (!opts) return;
       const chipEl = item.querySelector(".rl-chip");
       const chipGone = !chipEl;
@@ -2326,7 +2346,7 @@
                  // textContent includes the hidden child's text), causing an
                  // infinite rebuild loop (~60/s, seen live on Arena).
                  !e.querySelector(".rl-tool-hide") &&
-                 ZSParse.hasCommandShape(e.textContent || ""));
+                 RLParse.hasCommandShape(e.textContent || ""));
       }
       // A provider opted into `chipAppend` (chip trails the reply text instead
       // of pinning first) has no equivalent of firstChild's immunity to churn:
@@ -2352,9 +2372,9 @@
       if (!item) return;
       // Tracker: every phase TRANSITION of a command chip, with who drove it.
       // "loop" = the agentic loop (authoritative), "sweep" = DOM classification.
-      if (item.dataset.zphase !== phase) {
+      if (item.dataset.rlPhase !== phase) {
         diag("chip.phase", {
-          name, from: item.dataset.zphase || "(new)", to: phase,
+          name, from: item.dataset.rlPhase || "(new)", to: phase,
           by: owned ? "loop" : "sweep", detail: detail || "",
         });
       }
@@ -2363,12 +2383,12 @@
         label: name, detail: detail || "", body: body || "",
         category: category || RL.toolCategory(name), phase, cls,
       });
-      item.dataset.zphase = phase;
-      if (owned) item.dataset.zloop = "1";
+      item.dataset.rlPhase = phase;
+      if (owned) item.dataset.rlLoop = "1";
     },
 
     classify(item, next) {
-      if (item.dataset.zloop) { this.ensureOwnedChip(item); return; } // loop owns it
+      if (item.dataset.rlLoop) { this.ensureOwnedChip(item); return; } // loop owns it
       const txt = P.classifyText(item, ".rl-chip"); // excludes thinking AND our chip
 
       // NOTE on the "needs re-apply" guards below: some sites (Gemini/Angular)
@@ -2395,7 +2415,7 @@
             category: "remind", phase: "remind", cls: "sys", whole: true,
           });
           item.dataset.rl = "resend";
-          item.dataset.zphase = "remind";
+          item.dataset.rlPhase = "remind";
         }
         return;
       }
@@ -2403,16 +2423,16 @@
       // 1. System-prompt bootstrap turn → animated while starting, gear when done.
       if (txt.includes(RL.SYS_MARKER)) {
         const phase = A.starting ? "run" : "sys";
-        if (item.dataset.rl !== "sys" || item.dataset.zphase !== phase || chipGone) {
+        if (item.dataset.rl !== "sys" || item.dataset.rlPhase !== phase || chipGone) {
           this.chip(item, { label: "Starting Up", category: "tool", phase, cls: "sys", whole: true });
-          item.dataset.zphase = phase;
+          item.dataset.rlPhase = phase;
         }
         return;
       }
 
       // 2. Injected result / ERROR / note turns. ALWAYS a user turn we sent,
       //    keyed off our fixed output shapes (never command keywords).
-      if (P.isUserItem(item) && ZSParse.isInjectedFeedback(txt)) {
+      if (P.isUserItem(item) && RLParse.isInjectedFeedback(txt)) {
         const m = txt.match(/Output of '([^']+)'/);
         const isErr = /^\s*ERROR\b/.test(txt);
         // Reload-proof image detection: a feedback carrying an image ends with the
@@ -2435,21 +2455,21 @@
 
       // 2b. FALLBACK for a command turn whose raw tool-call text is no longer
       // readable (e.g. Qwen disposes/never fully renders an off-screen Monaco
-      // code block on a COLD page load - the dataset.zsCode cache only helps
+      // code block on a COLD page load - the dataset.rlCode cache only helps
       // WITHIN a session, since it needs to observe the block live to capture
       // it before disposal; reported live: every past tool-call chip vanished
       // after a page reload, leaving only its "· result" box). The turn's own
       // text no longer "looks like" a command, but the VERY NEXT turn being
       // our injected result (`Output of 'name'`) is definitive proof it WAS
       // one - settle it from that evidence instead of leaving the chip gone.
-      if (P.isAssistantItem(item) && !ZSParse.hasCommandShape(txt) &&
+      if (P.isAssistantItem(item) && !RLParse.hasCommandShape(txt) &&
           next && P.isUserItem(next)) {
         const nt = P.classifyText(next, ".rl-chip");
         const m = nt.match(/^\s*Output of '([^']+)'/);
         if (m) {
           const isErr = /^\s*ERROR\b/.test(nt);
           const phase = isErr ? "err" : "done";
-          if (item.dataset.zphase !== phase || chipGone) {
+          if (item.dataset.rlPhase !== phase || chipGone) {
             this.toolBox(item, m[1], phase, "", false);
           }
           return;
@@ -2461,10 +2481,10 @@
       // this gate, a plain never-started chat where the model merely EXPLAINS
       // the command format (a {"command":...} example in its answer) got the
       // example MASKED behind a tool chip - hiding genuine content the user
-      // asked for. Same principle as domHasZsSignal: a command shape alone is
+      // asked for. Same principle as domHasRlSignal: a command shape alone is
       // not proof of a session. (Branches 1/2 above key off OUR OWN injected
       // markers, which only exist in real sessions, so they need no gate.)
-      if (P.isAssistantItem(item) && ZSParse.hasCommandShape(txt) &&
+      if (P.isAssistantItem(item) && RLParse.hasCommandShape(txt) &&
           (A.started || A.starting)) {
         // Regenerate transition (see zRegenLen capture in regenResume): the site is
         // still showing the OLD command text after a post-stop regenerate, before it
@@ -2479,7 +2499,7 @@
           const replaced = txt.length < baseLen - 8;      // old content wiped
           const expired = Date.now() - armedAt > 6000;    // safety fallback
           if (!replaced && !expired) {
-            const nm = ZSParse.toolNameFromText(txt) || "command";
+            const nm = RLParse.toolNameFromText(txt) || "command";
             this.toolBox(item, nm, "err", "stopped", false);
             return;
           }
@@ -2506,21 +2526,21 @@
           (item === P.lastAssistant() && P.isGenerating()) ||
           (A.running && A.toolItem === item)
         );
-        if (regenerating) { delete item.dataset.zStopped; forgetHalted(item); }
+        if (regenerating) { delete item.dataset.rlStopped; forgetHalted(item); }
         const stopped = !regenerating && (
-          item.dataset.zStopped === "1" ||
+          item.dataset.rlStopped === "1" ||
           (A.userStopped && item === P.lastAssistant()) ||
           isRememberedHalted(item, txt));
         // Self-heal: a site re-render that swapped this turn's node wiped the
         // dataset marker - re-stamp it so the stop survives the next wipe of
         // the A.userStopped latch (a fresh user message clears it by design).
-        if (stopped && item.dataset.zStopped !== "1") {
-          item.dataset.zStopped = "1";
-          diag("chip.rehalt", { name: ZSParse.toolNameFromText(txt) });
+        if (stopped && item.dataset.rlStopped !== "1") {
+          item.dataset.rlStopped = "1";
+          diag("chip.rehalt", { name: RLParse.toolNameFromText(txt) });
         }
         // The loop already SETTLED this very call (tool finished, we're waiting
         // for the model's next turn) but the site swapped the turn's DOM node,
-        // wiping the chip, the zloop ownership AND the __zsChip opts. Without
+        // wiping the chip, the rlLoop ownership AND the __rlChip opts. Without
         // this, the fresh node re-classifies as a spinning "run" chip (A.running
         // is still true) on an already-executed call. Re-own it with the settled
         // outcome. The count guard skips this once the model's NEXT turn exists,
@@ -2535,7 +2555,7 @@
               ? P.lastAssistantId() === A.toolSettle.id
               : A.toolSettle.count === P.assistantCount()) &&
             item === P.lastAssistant() &&
-            ZSParse.toolNameFromText(txt) === A.toolName) {
+            RLParse.toolNameFromText(txt) === A.toolName) {
           diag("chip.reown", { name: A.toolName, phase: A.toolSettle.phase });
           this.toolBox(item, A.toolName, A.toolSettle.phase, A.toolSettle.detail,
             true, A.toolSettle.body, A.toolSettle.category);
@@ -2556,7 +2576,7 @@
         //    below it, so it settles to "done" instead of every old chip re-loading
         //    to a blue spinner (the Arena "all chips restarted loading" report).
         const resultAfter = next && P.isUserItem(next) &&
-          ZSParse.isInjectedFeedback(P.classifyText(next, ".rl-chip"));
+          RLParse.isInjectedFeedback(P.classifyText(next, ".rl-chip"));
         const inFlight = (A.running || A.starting) && !resultAfter;
         // Regenerate grace: keep the freshly-regenerated command turn "run" in the
         // gap between regenResume clearing the stop latch and the watchdog starting
@@ -2580,7 +2600,7 @@
         // injected result below it, and not in the off-DOM executed memory (the
         // memory keeps this virtualization-safe - a scrolled-back turn whose result
         // detached is still known-executed and never mislabelled).
-        const neverRun = !item.dataset.zloop && !resultAfter &&
+        const neverRun = !item.dataset.rlLoop && !resultAfter &&
           !isRememberedExecuted(item, txt);
         // Superseded orphan: abandoned command - a NEWER assistant turn exists below
         // it yet it never ran (e.g. stopped then regenerated into a fresh turn on
@@ -2626,7 +2646,7 @@
         // moment generation ends. When our error result lands below, the
         // error-aware settle just below is skipped (phase is no longer "done") so
         // the more precise "bad format" wording survives.
-        if (!stopped && !live && phase !== "err" && ZSParse.DSML_RE.test(txt)) {
+        if (!stopped && !live && phase !== "err" && RLParse.DSML_RE.test(txt)) {
           phase = "err"; detail = "wrong format";
         }
         // Error-aware settle: a command whose injected result RIGHT BELOW is an
@@ -2640,9 +2660,9 @@
           // reads "Output of '…': Error executing code…", which our ERROR prefix
           // test would miss - the Blender case), so a revisited conversation
           // re-settles it red, matching what the loop painted live.
-          if (ZSParse.isInjectedFeedback(nt) && feedbackIsError(nt)) {
+          if (RLParse.isInjectedFeedback(nt) && feedbackIsError(nt)) {
             phase = "err"; detail = "error";
-            if (item.dataset.zphase !== "err") diag("chip.errSettle", { name: ZSParse.toolNameFromText(txt) });
+            if (item.dataset.rlPhase !== "err") diag("chip.errSettle", { name: RLParse.toolNameFromText(txt) });
           }
         }
         // A command block that is VISIBLE right now (its hide classes live on
@@ -2660,20 +2680,20 @@
                  // wrapping a hidden child wrapper otherwise reads as visible
                  // forever (Arena code-block markup).
                  !e.querySelector(".rl-tool-hide") &&
-                 ZSParse.hasCommandShape(e.textContent || ""));
+                 RLParse.hasCommandShape(e.textContent || ""));
         // A tool learned to return images gets the "screen" chip even though its
         // name alone wouldn't reveal it (parity with Roblox screen_capture). The
         // fact can land AFTER this turn first settled (imageTools loads from
         // storage async, or the result turn below is classified later the same
         // pass), so repaint when the current chip's category is stale too - the
         // phase-only guard would otherwise freeze it on the generic wrench.
-        const nm = ZSParse.toolNameFromText(txt);
+        const nm = RLParse.toolNameFromText(txt);
         const cat = A.imageTools.has(bareToolName(nm)) ? "screen" : undefined;
         const chipNow = item.querySelector(".rl-chip");
         const catStale = cat === "screen" && chipNow && !chipNow.classList.contains("cat-screen");
         // Chip drift for chipAppend providers (Kimi): the RUN chip is painted by
-        // the SWEEP (owned=false, no zloop) until the loop takes over at
-        // tool.start ~2s later, so ensureOwnedChip's drift fix (zloop-only) does
+        // the SWEEP (owned=false, no rlLoop) until the loop takes over at
+        // tool.start ~2s later, so ensureOwnedChip's drift fix (rlLoop-only) does
         // NOT run during that window. Meanwhile Vue mounts the copy/regenerate
         // toolbar (chipTrailRef) and inserts it ABOVE our chip node, flashing the
         // action buttons over the chip until something repaints it. Detect that
@@ -2685,10 +2705,10 @@
           const trailRef = P.chipTrailRef ? P.chipTrailRef(item) : null;
           drifted = chipNow.parentElement === anchor && chipNow.nextElementSibling !== trailRef;
         }
-        if (item.dataset.zphase !== phase || chipGone || rawVisible || catStale || drifted) {
+        if (item.dataset.rlPhase !== phase || chipGone || rawVisible || catStale || drifted) {
           // Tracker: WHY the sweep chose this phase (only when it changes -
           // chipGone/rawVisible repaints of the same phase stay silent).
-          if (item.dataset.zphase !== phase) {
+          if (item.dataset.rlPhase !== phase) {
             // Extra suspicion flag: a command that settled ✓ done while it is
             // still the LAST assistant with NO injected result below it - the
             // exact shape of the "chip shows done but the model is still writing"
@@ -2701,7 +2721,7 @@
               stopped, live, inFlight, resumeGrace, pendingExec,
               isLast: item === P.lastAssistant(), resultAfter,
               gen: P.isGenerating(), run: A.running, starting: A.starting,
-              zStopped: item.dataset.zStopped === "1",
+              rlStopped: item.dataset.rlStopped === "1",
               remembered: isRememberedHalted(item, txt),
               lastGenAgoMs: Date.now() - A.lastGenAt,
               suspectDone,
@@ -2721,12 +2741,12 @@
       // run chip to "stopped" right here, BEFORE that guard. Idempotent: skips
       // once already at the err phase.
       const haltedTurn =
-        item.dataset.zStopped === "1" ||
+        item.dataset.rlStopped === "1" ||
         (A.userStopped && item === P.lastAssistant());
-      if (haltedTurn && P.isAssistantItem(item) && item.dataset.zphase !== "err"
+      if (haltedTurn && P.isAssistantItem(item) && item.dataset.rlPhase !== "err"
           && item.querySelector(".rl-chip")) {
         const tx = item.querySelector(".rl-chip-tx");
-        const name = ZSParse.toolNameFromText(txt) || (tx && tx.textContent) || "tool";
+        const name = RLParse.toolNameFromText(txt) || (tx && tx.textContent) || "tool";
         this.toolBox(item, name, "err", "stopped", false);
         return;
       }
@@ -2734,16 +2754,16 @@
       // Transient empty render (Angular swaps a turn's subtree before refilling
       // it): the text vanishes for a frame. Never strip a decorated turn on
       // that - the next sweep re-evaluates it with real content.
-      if (!txt.trim() && (item.dataset.zphase || item.dataset.rl)) return;
+      if (!txt.trim() && (item.dataset.rlPhase || item.dataset.rl)) return;
 
       // 4. Plain text turn. If this node still wears decoration (a recycled
       //    virtualized node), strip it so we never hide genuine content.
-      if (item.dataset.rl || item.dataset.zphase || item.querySelector(".rl-chip")) {
+      if (item.dataset.rl || item.dataset.rlPhase || item.querySelector(".rl-chip")) {
         // Tracker: a decorated node re-classified as PLAIN TEXT (virtualized
         // node recycled, or the turn's command text vanished) - its decoration
-        // (chip + zStopped marker) is stripped here. If a chip "un-settles"
+        // (chip + rlStopped marker) is stripped here. If a chip "un-settles"
         // mysteriously, this is the smoking gun to look for.
-        diag("chip.reset", { was: item.dataset.zphase || item.dataset.rl || "chip-only" });
+        diag("chip.reset", { was: item.dataset.rlPhase || item.dataset.rl || "chip-only" });
         resetDecoration(item);
       }
     },
@@ -2762,13 +2782,13 @@
       // message list. On Arena an A/B comparison renders each candidate as a
       // slide in the carousel's OWN nested <ol>, not the main flex-col-reverse
       // list - so allItems()/classify never see that node and a "run" spinner
-      // left by a Stop would spin forever. zStopped is only ever set on a
+      // left by a Stop would spin forever. rlStopped is only ever set on a
       // deliberate halt, so settling any run-phase chip under such a node is
       // safe wherever it lives. Idempotent: skips once at the err phase.
       for (const chip of document.querySelectorAll(".rl-chip.run")) {
         let item = chip.parentElement;
-        while (item && !(item.dataset && item.dataset.zStopped)) item = item.parentElement;
-        if (item && item.dataset.zphase !== "err") {
+        while (item && !(item.dataset && item.dataset.rlStopped)) item = item.parentElement;
+        if (item && item.dataset.rlPhase !== "err") {
           const tx = chip.querySelector(".rl-chip-tx");
           this.toolBox(item, (tx && tx.textContent) || "tool", "err", "stopped", false);
         }
@@ -2785,10 +2805,10 @@
             if (P.isUserItem(item)) continue;
             if (item.querySelector(".rl-chip")) continue;
             const txt = P.itemText(item);
-            if (!ZSParse.hasToolSignature(txt)) continue;
-            if (!ZSParse.parseToolCalls(txt).length) continue;
+            if (!RLParse.hasToolSignature(txt)) continue;
+            if (!RLParse.parseToolCalls(txt).length) continue;
             const nx = items[items.indexOf(item) + 1];
-            if (nx && P.isUserItem(nx) && ZSParse.isInjectedFeedback(P.classifyText(nx, ".rl-chip"))) continue;
+            if (nx && P.isUserItem(nx) && RLParse.isInjectedFeedback(P.classifyText(nx, ".rl-chip"))) continue;
             let spot = "null";
             try {
               const s = P.findToolBlockSpot ? P.findToolBlockSpot(item, null) : null;
@@ -2798,7 +2818,7 @@
               tag: (item.tagName || "?") + "." + String((item.className || "") + "").slice(0, 40),
               spot,
             });
-            this.toolBox(item, ZSParse.toolNameFromText(txt) || "tool", "idle", "not run", false);
+            this.toolBox(item, RLParse.toolNameFromText(txt) || "tool", "idle", "not run", false);
           } catch {}
         }
       }
@@ -2939,10 +2959,21 @@
     // startSession can read it synchronously.
     let customPrompt = "";
     try {
-      chrome.storage.local.get("zsCustomPrompt", (r) => {
-        if (r && typeof r.zsCustomPrompt === "string") {
-          customPrompt = r.zsCustomPrompt;
+      chrome.storage.local.get("rlCustomPrompt", (r) => {
+        if (r && typeof r.rlCustomPrompt === "string") {
+          customPrompt = r.rlCustomPrompt;
           syncMenuPrompt();
+        } else {
+          // legacy: one-time copy from the legacy key, then it ages out.
+          try {
+            chrome.storage.local.get("zsCustomPrompt", (r2) => {
+              if (r2 && typeof r2.zsCustomPrompt === "string") {
+                customPrompt = r2.zsCustomPrompt;
+                try { chrome.storage.local.set({ rlCustomPrompt: customPrompt }); } catch {}
+                syncMenuPrompt();
+              }
+            });
+          } catch {}
         }
       });
     } catch {}
@@ -2962,16 +2993,27 @@
     // the menu UI and is kept in sync with the bridge's server health.
     let customMcpServers = [];
     try {
-      chrome.storage.local.get("zsCustomMcpServers", (r) => {
-        if (r && Array.isArray(r.zsCustomMcpServers)) {
-          customMcpServers = r.zsCustomMcpServers;
+      chrome.storage.local.get("rlCustomMcpServers", (r) => {
+        if (r && Array.isArray(r.rlCustomMcpServers)) {
+          customMcpServers = r.rlCustomMcpServers;
           if (!menuEl.hidden) buildMenu();
+        } else {
+          // legacy: one-time copy from the legacy key, then it ages out.
+          try {
+            chrome.storage.local.get("zsCustomMcpServers", (r2) => {
+              if (r2 && Array.isArray(r2.zsCustomMcpServers)) {
+                customMcpServers = r2.zsCustomMcpServers;
+                try { chrome.storage.local.set({ rlCustomMcpServers: customMcpServers }); } catch {}
+                if (!menuEl.hidden) buildMenu();
+              }
+            });
+          } catch {}
         }
       });
     } catch {}
     function getCustomMcpServers() { return customMcpServers; }
     function saveCustomMcpServers() {
-      try { chrome.storage.local.set({ zsCustomMcpServers: customMcpServers }); } catch {}
+      try { chrome.storage.local.set({ rlCustomMcpServers: customMcpServers }); } catch {}
     }
     // The bridge (config.json + live health) is the SOURCE OF TRUTH for which
     // addon servers actually exist - chrome.storage.local is just a display-name
@@ -3093,7 +3135,7 @@
       ta.value = customPrompt;
       saveBtn.addEventListener("click", () => {
         customPrompt = ta.value;
-        try { chrome.storage.local.set({ zsCustomPrompt: customPrompt }); } catch {}
+        try { chrome.storage.local.set({ rlCustomPrompt: customPrompt }); } catch {}
         status.textContent = "Saved ✓";
         setTimeout(() => { status.textContent = ""; }, 1600);
       });
@@ -4284,8 +4326,8 @@
         A.userStopped = false;
         const it = P.lastAssistant();
         if (it) {
-          delete it.dataset.zStopped; delete it.dataset.zResume;
-          delete it.dataset.zResumeLen; delete it.dataset.zloop;
+          delete it.dataset.rlStopped; delete it.dataset.rlResume;
+          delete it.dataset.rlResumeLen; delete it.dataset.rlLoop;
           forgetHalted(it);
           // Strip the OLD command's chip immediately. The regenerate reuses this
           // turn node, and without this the previous execute_luau chip (with its
@@ -4380,7 +4422,7 @@
 
     // Tool is executing on the MCP → timer on its chip.
     if (A.toolRunning && A.toolItem) {
-      const s = elapsedOn(A.toolItem, "zsToolT0", A.toolStart).toFixed(1);
+      const s = elapsedOn(A.toolItem, "rlToolT0", A.toolStart).toFixed(1);
       setChipDetail(A.toolItem, (A.toolArg ? A.toolArg + " · " : "") + `${s}s`);
       return;
     }
@@ -4388,14 +4430,14 @@
     if (gen) {
       const item = P.lastAssistant();
       const reply = item ? P.itemText(item) : ""; // non-thinking only
-      const zphase = item && item.dataset.zphase;
+      const rlPhase = item && item.dataset.rlPhase;
       // Skip items already settled (done/err) - don't overwrite the finished chip.
-      if (item && zphase !== "done" && zphase !== "err" && ZSParse.hasToolSignature(reply)) {
+      if (item && rlPhase !== "done" && rlPhase !== "err" && RLParse.hasToolSignature(reply)) {
         // Live-correct the label as soon as the real name streams in.
-        const name = ZSParse.toolNameFromText(reply);
+        const name = RLParse.toolNameFromText(reply);
         if (name && name !== "command") setChipLabel(item, name);
         const tokens = Math.floor(reply.length / TOKEN_CHARS);
-        const s = Math.round(elapsedOn(item, "zsGenT0"));
+        const s = Math.round(elapsedOn(item, "rlGenT0"));
         setChipDetail(item, `~${formatCount(tokens)} tokens · ${s}s`);
         return;
       }
@@ -4454,14 +4496,25 @@
     if (!path) return;
     if (startedSessions.has(path)) return;
     startedSessions.add(path);
-    try { chrome.storage.local.set({ zsStartedSessions: [...startedSessions].slice(-300) }); } catch {}
+    try { chrome.storage.local.set({ rlStartedSessions: [...startedSessions].slice(-300) }); } catch {}
   }
   // Load the persisted set once, then re-sync.
   try {
-    chrome.storage.local.get("zsStartedSessions", (r) => {
-      if (r && Array.isArray(r.zsStartedSessions)) {
-        for (const p of r.zsStartedSessions) startedSessions.add(p);
+    chrome.storage.local.get("rlStartedSessions", (r) => {
+      if (r && Array.isArray(r.rlStartedSessions)) {
+        for (const p of r.rlStartedSessions) startedSessions.add(p);
         syncSessionState();
+      } else {
+        // legacy: one-time copy from the legacy key, then it ages out.
+        try {
+          chrome.storage.local.get("zsStartedSessions", (r2) => {
+            if (r2 && Array.isArray(r2.zsStartedSessions)) {
+              for (const p of r2.zsStartedSessions) startedSessions.add(p);
+              try { chrome.storage.local.set({ rlStartedSessions: [...startedSessions].slice(-300) }); } catch {}
+              syncSessionState();
+            }
+          });
+        } catch {}
       }
     });
   } catch {}
@@ -4469,7 +4522,7 @@
   // telltale artefact: the system-prompt marker, an injected tool-result /
   // system-note turn, or a RoLink command an assistant wrote. Works even
   // after a full cold start and regardless of scroll position.
-  function domHasZsSignal() {
+  function domHasRlSignal() {
     for (const it of P.allItems()) {
       const txt = it.textContent || "";
       if (txt.includes(RL.SYS_MARKER)) return true;
@@ -4485,7 +4538,7 @@
       // always followed by our injected "Output of '...'" feedback turn, which
       // the test above already catches. Virtualization (the marker turns
       // scrolling out of the DOM) is covered by the persisted per-conversation
-      // key set (startedSessions / zsStartedSessions in rememberSession), not
+      // key set (startedSessions / rlStartedSessions in rememberSession), not
       // by this heuristic.
     }
     return false;
@@ -4535,7 +4588,7 @@
     }
     if (A.starting || A.injecting || A.running) return;
     const path = P.conversationKey();
-    const markerInDom = domHasZsSignal();
+    const markerInDom = domHasRlSignal();
     if (markerInDom) rememberSession(path);
     let has;
     if (path && path === lastSyncPath) {
@@ -4605,7 +4658,7 @@
       if (item.classList.contains("rl-hidden")) continue;
       const txt = P.classifyText(item, ".rl-chip");
       if (txt.includes(RL.SYS_MARKER) ||
-          (P.isUserItem(item) && ZSParse.isInjectedFeedback(txt))) {
+          (P.isUserItem(item) && RLParse.isInjectedFeedback(txt))) {
         item.classList.add("rl-hidden");
       }
     }
@@ -4664,7 +4717,7 @@
       A.userStopped = false;
       A.stop = false;
       const it = P.lastAssistant();   // a real resume → drop the stopped marker
-      if (it) { delete it.dataset.zStopped; forgetHalted(it); }
+      if (it) { delete it.dataset.rlStopped; forgetHalted(it); }
       diag("nativeContinue");
     },
   });
@@ -4677,7 +4730,7 @@
   //   • lastGenAt recency - only resume a turn from a generation in the last
   //     few seconds; a turn rendered by load/scroll has no recent generation.
   //   • turnHalted - the turn itself carries the site's "stopped" marker.
-  // Each turn is still resumed at most once (zResume marker).
+  // Each turn is still resumed at most once (rlResume marker).
   // Freshness window for the resume watchdog. Widened from 8s to 3 minutes
   // (2026-08) because 8s was the ONLY thing standing between an orphaned command
   // and its execution, and it was firing on legitimate work: a long generation
@@ -4689,7 +4742,7 @@
   // nominally protecting: bootBaselineId (a reload-restored generation),
   // maxTurnId (a scrolled-back old turn), the result-below settled-history test
   // (survives a reload, unlike the executed map), the `executed` map, the
-  // zResume dedupe and A.userStopped. As the `executed` map's own comment puts
+  // rlResume dedupe and A.userStopped. As the `executed` map's own comment puts
   // it, re-execution is idempotent regardless of any lastGenAt misfire - "the
   // hard part (is this a live turn?) can be wrong without harm". The window is
   // kept, rather than removed, so a tab left open for hours still never
@@ -4702,7 +4755,7 @@
     if (P.isGenerating()) return;
     if (Date.now() - A.lastGenAt > RESUME_FRESH_MS) return; // not a fresh live turn
     const item = P.lastAssistant();
-    if (!item || item.dataset.zloop) return;
+    if (!item || item.dataset.rlLoop) return;
     // Never resume the turn that already existed when this session started - it is
     // a reload-restored generation, not a reply to one of our sends (see
     // A.bootBaselineId). Guards the "execute_luau leaked into the new chat" bug.
@@ -4733,9 +4786,9 @@
     const all = P.allItems();
     const after = all[all.indexOf(item) + 1];
     if (after && P.isUserItem(after) &&
-        ZSParse.isInjectedFeedback(P.classifyText(after, ".rl-chip"))) return;
+        RLParse.isInjectedFeedback(P.classifyText(after, ".rl-chip"))) return;
     const txt = P.itemText(item);
-    if (!ZSParse.hasToolSignature(txt)) return;
+    if (!RLParse.hasToolSignature(txt)) return;
     // Node-independent dedupe: this turn's command was already dispatched (by the
     // loop or a prior resume). The dataset guards below are wiped when the site
     // recreates the node on scroll, so without this off-DOM check the watchdog
@@ -4743,11 +4796,11 @@
     if (isRememberedExecuted(item, txt)) return;
     // Resume only when a COMPLETE, parseable command is present - and re-attempt
     // if the turn has GROWN since our last try.
-    if (!ZSParse.parseToolCalls(txt).length) return;
+    if (!RLParse.parseToolCalls(txt).length) return;
     const len = txt.length;
-    if (item.dataset.zResume && Number(item.dataset.zResumeLen || 0) >= len) return;
-    item.dataset.zResume = "1";
-    item.dataset.zResumeLen = String(len);
+    if (item.dataset.rlResume && Number(item.dataset.rlResumeLen || 0) >= len) return;
+    item.dataset.rlResume = "1";
+    item.dataset.rlResumeLen = String(len);
     rememberExecuted(item);
     diag("autoResume", { len });
     // The reply turn is ALREADY present - act on it immediately. Null token makes

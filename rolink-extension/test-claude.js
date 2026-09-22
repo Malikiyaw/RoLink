@@ -25,7 +25,7 @@ global.CustomEvent = class { constructor(t) { this.type = t; } };
 // Generic factory must load first (claude.js consumes window.makeGenericProvider).
 new Function(fs.readFileSync(__dirname + "/providers/generic.js", "utf8"))();
 const P = new Function(
-  fs.readFileSync(__dirname + "/providers/claude.js", "utf8") + "; return ZSProvider;"
+  fs.readFileSync(__dirname + "/providers/claude.js", "utf8") + "; return RLProvider;"
 )();
 
 const ok = (name, cond) => { console.log((cond ? "PASS" : "FAIL") + "  " + name); if (!cond) process.exitCode = 1; };

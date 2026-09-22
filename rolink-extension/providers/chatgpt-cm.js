@@ -35,8 +35,8 @@
 // and chatgpt.js falls back to joining .cm-line nodes (correct for short blocks).
 (() => {
   "use strict";
-  if (window.__zsChatgptCm) return;
-  window.__zsChatgptCm = true;
+  if (window.__rlChatgptCm) return;
+  window.__rlChatgptCm = true;
 
   const ATTR = "data-rl-cm";
   const LEN = "data-rl-cm-len";

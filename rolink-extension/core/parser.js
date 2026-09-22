@@ -6,7 +6,7 @@
 // - only the way a site's markdown may mangle them differs (the regexes below
 // are whitespace/dash tolerant for that reason).
 // eslint-disable-next-line no-unused-vars
-const ZSParse = (() => {
+const RLParse = (() => {
   "use strict";
 
   const START_M = "###MCP_TOOL###";

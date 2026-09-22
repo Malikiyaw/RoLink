@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // providers/gemini.js - the Google Gemini (gemini.google.com) provider.
-// Exports the same ZSProvider interface as providers/deepseek.js; the core
+// Exports the same RLProvider interface as providers/deepseek.js; the core
 // (core/main.js) is provider-agnostic. To DISABLE Gemini support, simply remove
 // this file from manifest.json (and its URL from background.js PROVIDER_URLS).
 //
@@ -23,7 +23,7 @@
 //  - No truncation "Continue" button; no per-turn "stopped" marker we can
 //    rely on → findContinueBtn/turnHalted return null/false.
 // eslint-disable-next-line no-unused-vars
-const ZSProvider = (() => {
+const RLProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let diag = () => {}; // injected by core via init()

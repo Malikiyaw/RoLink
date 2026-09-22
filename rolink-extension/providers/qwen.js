@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // providers/qwen.js - the Qwen (chat.qwen.ai, Alibaba Cloud) provider.
-// Exports the same ZSProvider interface as providers/deepseek.js and kimi.js;
+// Exports the same RLProvider interface as providers/deepseek.js and kimi.js;
 // the core (core/main.js) is provider-agnostic. To DISABLE Qwen support, remove
 // this file from manifest.json (and its URL from background.js PROVIDER_URLS +
 // main.js AI_SITES).
@@ -31,7 +31,7 @@
 //    through to S.composer). NOT in-flow barMount: `.message-input-container` is
 //    React-height-clamped + overflow:hidden, so a mounted child clips the input.
 // eslint-disable-next-line no-unused-vars
-const ZSProvider = (() => {
+const RLProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let diag = () => {};
@@ -93,7 +93,7 @@ const ZSProvider = (() => {
   // parsed" error). Both symptoms are this one disposal race.
   // Fix: while a block is still rendered (during streaming it is in view with ALL
   // view-lines present - Monaco does NOT virtualize, only DISPOSES off-screen), a
-  // MutationObserver snapshots its joined source into `pre.dataset.zsCode`,
+  // MutationObserver snapshots its joined source into `pre.dataset.rlCode`,
   // keeping the LONGEST capture. After disposal the full source survives in the
   // attribute, so codeText() below always returns the complete code.
   const codeLinesText = (pre) => {
@@ -103,13 +103,13 @@ const ZSProvider = (() => {
   function snapshotCode(pre) {
     const live = codeLinesText(pre);
     if (!live) return;
-    const prev = pre.dataset.zsCode || "";
-    if (live.length > prev.length) pre.dataset.zsCode = live;
+    const prev = pre.dataset.rlCode || "";
+    if (live.length > prev.length) pre.dataset.rlCode = live;
   }
   // Full code for a block: the cached snapshot if present/longer (survives
   // disposal), else the live view-lines, else raw textContent as a last resort.
   function codeText(pre) {
-    const cached = pre.dataset.zsCode || "";
+    const cached = pre.dataset.rlCode || "";
     const live = codeLinesText(pre);
     const best = cached.length >= live.length ? cached : live;
     return best || pre.textContent || "";
@@ -874,7 +874,7 @@ const ZSProvider = (() => {
   // shows. So we scan every open dropdown, cache name→capability (persisted to
   // localStorage so it survives reloads), seed the models already confirmed, and
   // DEFAULT-DENY any model we have never seen a description for.
-  const MODEL_VIS_LS = "zsQwenModelVision2"; // bumped: old key may hold a stale Max-Preview=false
+  const MODEL_VIS_LS = "rlQwenModelVision2"; // bumped: old key may hold a stale Max-Preview=false
   const modelVis = new Map([
     // Seed. Some of these are USER-CONFIRMED, not derivable from the description:
     // Qwen3.8-Max-Preview reads images (user-confirmed 2026-07) yet its selector
@@ -892,6 +892,16 @@ const ZSProvider = (() => {
   try {
     const saved = JSON.parse(localStorage.getItem(MODEL_VIS_LS) || "{}");
     for (const [k, v] of Object.entries(saved)) modelVis.set(k, !!v);
+  } catch {}
+  // legacy: one-time copy from the legacy key, then it ages out.
+  try {
+    if (!localStorage.getItem(MODEL_VIS_LS)) {
+      const old = JSON.parse(localStorage.getItem("zsQwenModelVision2") || "{}");
+      for (const [k, v] of Object.entries(old)) modelVis.set(k, !!v);
+      if (Object.keys(old).length) {
+        try { localStorage.setItem(MODEL_VIS_LS, JSON.stringify(old)); } catch {}
+      }
+    }
   } catch {}
 
   const currentModelName = () => {

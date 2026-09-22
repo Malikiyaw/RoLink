@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // providers/deepseek.js - the DeepSeek (chat.deepseek.com) provider.
 // EVERYTHING that knows DeepSeek's DOM, quirks, and UI strings lives here; the
-// core (core/main.js) only ever talks to the ZSProvider interface this file
+// core (core/main.js) only ever talks to the RLProvider interface this file
 // exports. To support another AI site, write a sibling file exporting the same
 // interface and list it (instead of this one) in the manifest's content_scripts.
 //
@@ -19,7 +19,7 @@
 //    REASONING phase there is NO stop button / spinner at all - only text growth
 //    says "still alive".
 // eslint-disable-next-line no-unused-vars
-const ZSProvider = (() => {
+const RLProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let diag = () => {}; // injected by core via init()
@@ -200,12 +200,12 @@ const ZSProvider = (() => {
     const ed = getEditor();
     if (!ed) return;
     if (on) {
-      if (!ed.dataset.zsPlaceholder) ed.dataset.zsPlaceholder = ed.getAttribute("placeholder") || "";
+      if (!ed.dataset.rlPlaceholder) ed.dataset.rlPlaceholder = ed.getAttribute("placeholder") || "";
       ed.setAttribute("readonly", "");
       ed.setAttribute("placeholder", "⏳ Agent working… please wait");
     } else {
       ed.removeAttribute("readonly");
-      if (ed.dataset.zsPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.zsPlaceholder);
+      if (ed.dataset.rlPlaceholder != null) ed.setAttribute("placeholder", ed.dataset.rlPlaceholder);
     }
   }
 
@@ -967,11 +967,11 @@ const ZSProvider = (() => {
   // children from the start marker through the end marker. Returns where to
   // insert the chip: {parent, ref} - or null if no tool block was found.
   function findToolBlockSpot(item, chip) {
-    const P = ZSParse;
+    const P = RLParse;
     const hasStart = (t) => P.LUA_START_RE.test(t) || t.includes("###mcp_tool###");
     const hasEnd = (t) => P.LUA_END_RE.test(t) || t.includes("###end_mcp_tool###") || t.includes("###end-mcp_tool###");
     const isJson = (t) => /\{\s*"(?:command|tool)"\s*:/.test(t);
-    // DeepSeek's own DSML tool-call markup (see ZSParse.DSML_RE). It is NOT a
+    // DeepSeek's own DSML tool-call markup (see RLParse.DSML_RE). It is NOT a
     // fenced block and NOT JSON - it renders as ordinary prose paragraphs - so
     // neither predicate above matched it and nothing got hidden: the chip
     // appeared but the raw tags stayed on screen next to it (reported live
@@ -1041,7 +1041,7 @@ const ZSProvider = (() => {
     init({ diag: d } = {}) {
       if (d) diag = d;
       // Version beacon: stamp the loaded build onto <html> so a reload can be
-      // confirmed from the page (read document.documentElement.dataset.zsDsVer).
+      // confirmed from the page (read document.documentElement.dataset.rlDsVer).
       // BUMP DS_VER on meaningful deepseek.js changes worth verifying live.
       try { document.documentElement.setAttribute("data-rl-ds-ver", "2026-09_unified-model"); } catch {}
     },

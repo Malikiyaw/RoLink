@@ -406,6 +406,35 @@ local EASE_FNS: { [string]: (number) -> number } = {
   sineInOut = function(t) return -(math.cos(math.pi * t) - 1) / 2 end,
 }
 local EASE_SUBDIV = 3
+-- Alias + typo tolerance: the model writes bare "quad" (or "Quad-In",
+-- "easeout") far more often than the exact enum. Normalize case, separators
+-- and bare family names instead of failing; only truly unknown names error,
+-- with a did-you-mean hint so the retry lands first try.
+local EASE_ALIASES: { [string]: string } = {
+  quad = "quadInOut", cubic = "cubicInOut", sine = "sineInOut",
+  easein = "quadIn", easeout = "quadOut", easeinout = "quadInOut",
+  ease_in = "quadIn", ease_out = "quadOut", ease_in_out = "quadInOut",
+}
+local EASE_LIST = "linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut"
+local function resolveEasing(name:string): (string?)
+  if EASE_FNS[name] then return name end
+  local norm = name:lower():gsub("[%s%-%_]", "")
+  for k in pairs(EASE_FNS) do
+    if k:lower() == norm then return k end
+  end
+  return EASE_ALIASES[norm]
+end
+local function easingHint(bad:string): string
+  local bl = bad:lower()
+  local out:{string} = {}
+  for k in pairs(EASE_FNS) do
+    local kl = k:lower()
+    if kl:find(bl, 1, true) or bl:find(kl, 1, true) then table.insert(out, k) end
+  end
+  table.sort(out)
+  if #out > 0 then return "did you mean " .. table.concat(out, "/") .. "? " end
+  return ""
+end
 local function bakeEased(kfData:{ [string]: any }): { [string]: any }
   local out:{ [string]: any } = {}
   for i, kfD in ipairs(kfData) do
@@ -415,9 +444,10 @@ local function bakeEased(kfData:{ [string]: any }): { [string]: any }
       error("keyframe times must be non-decreasing (keyframe " .. i .. " goes backwards)")
     end
     local easeName = tostring((kfD::any).easing or "linear")
-    local easeFn = EASE_FNS[easeName]
-    if not easeFn then error("unknown easing '" .. easeName:sub(1, 32) .. "' (linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut)") end
-    if i > 1 and easeName ~= "linear" then
+    local resolved = resolveEasing(easeName)
+    if not resolved then error("unknown easing '" .. easeName:sub(1, 32) .. "' " .. easingHint(easeName) .. "(" .. EASE_LIST .. ")") end
+    local easeFn = EASE_FNS[resolved]
+    if i > 1 and resolved ~= "linear" then
       local prev = kfData[i - 1]
       local t0 = math.max(0, num((prev::any).time, 0))
       local prevPoses:{ [string]: any } = {}
@@ -457,12 +487,25 @@ local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
   local kfData = args.keyframes
   if type(kfData) ~= "table" or #kfData == 0 then error("keyframes must be a non-empty array") end
   if #kfData > 200 then error("too many keyframes (max 200)") end
+  -- Instance budget: every pose becomes engine objects, and tens of thousands
+  -- of Instance.new calls wedge the single-flight queue past the bridge
+  -- timeout with zero answers (seen live: 60s hang on an M1 combo retry).
+  -- Fail fast with a split hint instead.
+  local totalPoses = 0
+  for _, kfD in ipairs(kfData) do
+    if type(kfD) == "table" then
+      local pp = (kfD::any).poses
+      if type(pp) == "table" then totalPoses += #pp end
+    end
+  end
+  if totalPoses > 1024 then error("too many animated parts (" .. totalPoses .. " total poses, max 1024) - split across tracks or use fewer keyframes") end
   kfData = bakeEased(kfData)
   local folder = game.Workspace:FindFirstChild("RoLinkAnimations")
   if not folder then folder = Instance.new("Folder"); folder.Name = "RoLinkAnimations"; folder.Parent = game.Workspace end
   local seq = Instance.new("KeyframeSequence")
   seq.Name = name
   if args.loop == true then seq.Loop = true end
+  local made = 0
   for _, kfD in ipairs(kfData) do
     if type(kfD) ~= "table" then error("keyframe must be an object") end
     local kf = Instance.new("Keyframe")
@@ -480,6 +523,10 @@ local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
       local sc = (pD::any).scale
       if type(sc) == "table" then pose.Weight = math.clamp(num((sc::any).x, 1), 0.01, 10) end
       pose.Parent = kf
+      made += 1
+      -- Yield regularly: thousands of back-to-back Instance ops starve the
+      -- poll task and read as a hang from the bridge side.
+      if made % 128 == 0 then task.wait() end
     end
     kf.Parent = seq
   end
@@ -1094,6 +1141,38 @@ local function reportResult(id:string, result:any, err:string?, elapsed:number)
   end)
 end
 
+-- Universal wall-clock guard for TOOL calls (the execute_luau-only
+-- runWithDeadline left every other tool able to wedge the single-flight
+-- queue: a 60s create_animation_track hang proved it). Runs the dispatch on
+-- its own coroutine with a deadline; an overrun reports a timeout error and
+-- releases the queue instead of burning the bridge timeout with zero answers.
+-- Coroutine context is equivalent for engine APIs (Instance.new, task.wait);
+-- yields inside tools resume via the scheduler as usual. Must stay under the
+-- bridge's claim expiry (~25s). Returns executeCommand's exact 4-tuple shape
+-- so the caller below is untouched.
+local TOOL_BUDGET_S = 20
+local function runToolDeadline(cmd:any): (boolean, any, any, number)
+  local done = false
+  local okE: boolean, rE: any, eE: any, elE: number = false, nil, nil, 0
+  local co = coroutine.create(function()
+    okE, rE, eE, elE = pcall(executeCommand, cmd)
+    done = true
+  end)
+  local t0 = os.clock()
+  local okStart, startErr = coroutine.resume(co)
+  if not okStart then return false, nil, tostring(startErr), 0 end
+  while not done do
+    if os.clock() - t0 > TOOL_BUDGET_S then
+      return true, nil, "timeout: tool '" .. tostring((cmd::any).tool or "?") ..
+        "' still running after " .. tostring(TOOL_BUDGET_S) ..
+        "s (likely an oversized build - split into smaller calls)", 0
+    end
+    task.wait(0.1)
+  end
+  if not okE then return false, nil, tostring(rE), 0 end
+  return true, rE, eE, elE or 0
+end
+
 local function poll()
   if not enabled then return end
   if _G.__RL_BUSY then return end
@@ -1117,10 +1196,11 @@ local function poll()
   local cmd=data.command; if not cmd then return end
   _G.__RL_BUSY = true
   log("executing "..cmd.id.." tool="..cmd.tool)
-  local okExec, result, err, elapsed = pcall(executeCommand, cmd)
+  local okExec, result, err, elapsed = runToolDeadline(cmd)
   _G.__RL_BUSY = false
   if not okExec then
-    result, err, elapsed = nil, "plugin_error: " .. tostring(result), 0
+    -- runToolDeadline reports failures in the err slot (result is nil).
+    result, err, elapsed = nil, "plugin_error: " .. tostring(err), 0
   end
   if elapsed and elapsed > 30 then
     warn("[RoLink] STILL RUNNING "..cmd.id.." "..tostring(cmd.tool).." after "

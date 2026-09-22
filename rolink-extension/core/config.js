@@ -443,7 +443,7 @@ If no answer to your commands ever arrives, just tell me plainly and we'll stop 
   ];
   function isRefusal(text) {
     const t = String(text || "");
-    if (!t || ZSParseSafeHasTool(t)) return false;
+    if (!t || RLParseSafeHasTool(t)) return false;
     let strong = false, weak = 0;
     for (const re of REFUSAL_STRONG) {
       try { if (re.test(t)) { strong = true; break; } } catch {}
@@ -459,7 +459,7 @@ If no answer to your commands ever arrives, just tell me plainly and we'll stop 
   // config.js must stay DOM-free and dependency-light for the node test
   // harness, so the tool-signature check above can't call into parser.js.
   // It mirrors hasToolSignature's cheapest reliable signal instead.
-  function ZSParseSafeHasTool(t) {
+  function RLParseSafeHasTool(t) {
     return /\{\s*"(?:command|tool)"\s*:/.test(t) || /###LUA###/.test(t);
   }
 

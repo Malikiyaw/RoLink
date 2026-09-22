@@ -14,7 +14,7 @@ It's a Chrome/Edge browser extension plus a small local bridge that connects the
 5. The extension is now active
 
 **Then set up the Bridge:**
-1. **Download the Bridge** from the [GitHub releases page](https://github.com/sebattfg/RoLink-Free)
+1. **Download the Bridge** from the [GitHub releases page](https://github.com/Malikiyaw/RoLink/releases)
 2. **Open Roblox Studio** and load a Place
 3. **Enable the MCP server in Roblox Studio** (first time only): click **Assistant AI** in the top bar, then **...** > **Manage MCP Servers** > **Enable Studio as MCP Server**
 4. **Run the Bridge** - double-click `start.bat` (Windows) or `MacOS_Start.command` (macOS); a small window opens, the Bridge is running. On macOS, the first launch shows a Gatekeeper warning (normal for any downloaded script): click **Done**, then **System Settings > Privacy & Security**, scroll down, and click **Open Anyway**.
@@ -30,41 +30,41 @@ The extension is split between a provider-agnostic core and per-AI-site provider
 
 ```
 core/config.js        system prompt, feedback strings, tool categories (global RL)
-core/parser.js        RoLink command parsing - pure string logic   (global ZSParse)
-core/main.js          agentic loop, UI, camouflage, session state      (uses ZSProvider)
+core/parser.js        RoLink command parsing - pure string logic   (global RLParse)
+core/main.js          agentic loop, UI, camouflage, session state      (uses RLProvider)
 providers/deepseek.js everything DeepSeek-specific: DOM selectors, generation
-                      detection, send mechanics, composer modes…       (global ZSProvider)
+                      detection, send mechanics, composer modes…       (global RLProvider)
 providers/gemini.js   same interface for Google Gemini (Angular DOM, Quill
-                      composer, code-block masking)                    (global ZSProvider)
+                      composer, code-block masking)                    (global RLProvider)
 providers/kimi.js     same interface for Kimi / Moonshot AI (Vue DOM, Lexical
-                      composer, segment-code masking)                  (global ZSProvider)
+                      composer, segment-code masking)                  (global RLProvider)
 providers/glm.js      same interface for GLM / Z.ai (Svelte DOM, code-block
-                      wrapper masking)                                 (global ZSProvider)
+                      wrapper masking)                                 (global RLProvider)
 providers/qwen.js     same interface for Qwen / chat.qwen.ai (Vue DOM, network-tap
-                      SSE stream, Monaco disposal guard)               (global ZSProvider)
+                      SSE stream, Monaco disposal guard)               (global RLProvider)
 providers/qwen-net.js MAIN-world fetch tap for Qwen SSE stream        (injected by manifest)
 providers/chatgpt.js  same interface for ChatGPT / chatgpt.com (React DOM,
-                      ProseMirror composer, CodeMirror reply reading) (global ZSProvider)
+                      ProseMirror composer, CodeMirror reply reading) (global RLProvider)
 providers/chatgpt-cm.js MAIN-world CodeMirror tap: republishes each code block's
                       TRUE document (the rendered DOM truncates long
                       lines)                                          (injected by manifest)
 providers/arena.js    same interface for Arena / arena.ai (React DOM, multi-model
-                      playground, A/B-comparison auto-commit, Direct-mode gate) (global ZSProvider)
-providers/generic.js  base ZSProvider factory for new sites (selector overrides,
+                      playground, A/B-comparison auto-commit, Direct-mode gate) (global RLProvider)
+providers/generic.js  base RLProvider factory for new sites (selector overrides,
                       volatile-chrome stripping, isGeneratingExtra hook) (global makeGenericProvider)
 providers/agent.js    Arena Agent Mode / arena.ai/agent via the generic factory
                       (ProseMirror composer, orchestration detection, human vote
-                      gate - supervised only, never votes) (global ZSProvider)
+                      gate - supervised only, never votes) (global RLProvider)
 providers/meta.js     same interface for Meta AI / meta.ai (React DOM, textarea
-                      composer, JSON-viewer + code-collapse masking)   (global ZSProvider)
+                      composer, JSON-viewer + code-collapse masking)   (global RLProvider)
 providers/claude.js   Claude / claude.ai via the generic factory (layered
                       composer discovery, extended-thinking exclusion, chat-only
-                      commands, usage-cap economy)                     (global ZSProvider)
+                      commands, usage-cap economy)                     (global RLProvider)
 background.js         WebSocket to the local bridge (provider-agnostic)
 ```
 
 `core/main.js` never touches the host site's DOM directly - it only calls the
-`ZSProvider` interface. To integrate another AI site: write a new
+`RLProvider` interface. To integrate another AI site: write a new
 `providers/<site>.js` exporting the same interface, then add its URL pattern to
 `manifest.json` (`content_scripts` + `host_permissions`) and to
 `PROVIDER_URLS` in `background.js`. No core change required.
@@ -89,4 +89,4 @@ Both print `PASS`/`FAIL` per case and exit non-zero on failure.
 
 ## Support
 
-☕ [Ko-fi](https://ko-fi.com/sebattfg) - Robux tip passes available in the extension panel
+Found a bug? Open an issue with your bridge log (`logs/bridge_debug.log`).

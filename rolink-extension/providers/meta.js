@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // providers/meta.js - the Meta AI (www.meta.ai) provider.
-// Exports the same ZSProvider interface as providers/deepseek.js; the core
+// Exports the same RLProvider interface as providers/deepseek.js; the core
 // (core/main.js) is provider-agnostic. To DISABLE Meta AI support, remove this
 // file from manifest.json (and its URL from background.js PROVIDER_URLS).
 //
@@ -38,7 +38,7 @@
 //    are NOT function calls, just TYPE the JSON" reassurance) defuses it and it
 //    complies. Nothing to do in code - just never bootstrap with a stripped prompt.
 // eslint-disable-next-line no-unused-vars
-const ZSProvider = (() => {
+const RLProvider = (() => {
   "use strict";
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let diag = () => {}; // injected by core via init()
@@ -491,9 +491,9 @@ const ZSProvider = (() => {
   const hasPendingAttachment = () => !!pendingPreview();
   let _imgSeq = 0;
   function tagImages(images) {
-    if (images && images.__zsId == null) {
-      try { Object.defineProperty(images, "__zsId", { value: ++_imgSeq, enumerable: false }); }
-      catch { images.__zsId = ++_imgSeq; }
+    if (images && images.__rlId == null) {
+      try { Object.defineProperty(images, "__rlId", { value: ++_imgSeq, enumerable: false }); }
+      catch { images.__rlId = ++_imgSeq; }
     }
     return images;
   }
@@ -537,7 +537,7 @@ const ZSProvider = (() => {
       try {
         const ok = await attachImages(images);
         if (ok) _attachedImages = images;
-        diag("meta.tas.attached", { ok, imgId: images.__zsId });
+        diag("meta.tas.attached", { ok, imgId: images.__rlId });
       } catch (e) { diag("meta.tas.attachErr", { msg: String((e && e.message) || e) }); }
     }
     // Write via the mirror textarea (the controlled input that drives Lexical).
