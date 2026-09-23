@@ -1,14 +1,14 @@
-# RoLink 2.3.0 — AI → Roblox Studio
+# RoLink 2.4.0 — AI → Roblox Studio
 
-**Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena, Arena Agent, Meta AI, or Claude into a Roblox Studio agent.** Browser extension + local bridge + MCP. Download through GitHub, no build needed.
+**Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena, Arena Agent, Meta AI, Claude, HF Chat, or Dola into a Roblox Studio agent.** Browser extension + local bridge + MCP. Download through GitHub, no build needed.
 
 > 🌐 Free alternative for building Roblox games with AI.
 
-Ten providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** (`kimi.ai`), **GLM** (`chat.z.ai`), **Qwen** (`chat.qwen.ai`), **Arena** (`arena.ai`, Direct mode), **Arena Agent** (`arena.ai/agent`, supervised), **Meta AI**, **Claude** (`claude.ai`, fresh support). Images off on ChatGPT free tier (separate quota); Gemini/Kimi may drop tools in long sessions; Arena chat keep **Direct** mode (Battle / Side-by-Side unsupported); Agent Mode runs supervised — it reads settled output, pauses at human prompts, and never votes for you.
+Twelve providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** (`kimi.ai`), **GLM** (`chat.z.ai`), **Qwen** (`chat.qwen.ai`), **Arena** (`arena.ai`, Direct mode), **Arena Agent** (`arena.ai/agent`, supervised), **Meta AI**, **Claude** (`claude.ai`), **HF Chat** (`huggingface.co/chat`, fresh support, login required), **Dola** (`dola.com`, fresh support, text-only). Pi (`pi.ai`) is unsupported — its abuse filters escalate to account bans; do not use RoLink there. Images off on ChatGPT free tier (separate quota); Gemini/Kimi may drop tools in long sessions; Arena chat keep **Direct** mode (Battle / Side-by-Side unsupported); Agent Mode runs supervised — it reads settled output, pauses at human prompts, and never votes for you.
 
-## New in 2.3.0
+## New in 2.4.0
 
-See [CHANGELOG.md](CHANGELOG.md): Claude provider, injection-refusal recovery, background-task hardening, supervised Arena Agent support, animation easing aliases + execution deadline, Studio sandbox builtins, and a full cleanup (ZeroScript identifiers gone).
+See [CHANGELOG.md](CHANGELOG.md): execution-truth envelopes on every tool, `execute_luau` preflight + atomic batches, tools 120–124, Studio truth + project memory, HF Chat and Dola providers, proof-gated session start, account-restriction handling, and hardened Dola/HF reads.
 
 ## How it works
 
@@ -42,7 +42,7 @@ Open Studio and load a Place, then enable MCP (first time only):
 - Click **Manage MCP Servers**
 - Click **Enable Studio as MCP Server**
 
-### 2b. Install the RoLink Studio plugin (unlocks all 119 tools)
+### 2b. Install the RoLink Studio plugin (unlocks all 124 tools)
 
 Roblox's built-in MCP only speaks ~27 commands. The rest of the catalog runs
 through our own plugin:
@@ -63,16 +63,16 @@ A small window opens — the Bridge is running.
 
 ### 4. Start a session
 
-Open a new chat on https://chat.deepseek.com (recommended), https://chatgpt.com, https://gemini.google.com, https://www.kimi.ai, https://chat.z.ai, https://chat.qwen.ai, https://arena.ai, https://arena.ai/agent, https://www.meta.ai, or https://claude.ai. The RoLink bar appears above the input box. Click **Start session** and type what you want to build. The model should call `list_commands` first for the full live reference.
+Open a new chat on https://chat.deepseek.com (recommended), https://chatgpt.com, https://gemini.google.com, https://www.kimi.ai, https://chat.z.ai, https://chat.qwen.ai, https://arena.ai, https://arena.ai/agent, https://www.meta.ai, https://claude.ai, https://huggingface.co/chat, or https://dola.com. The RoLink bar appears above the input box. Click **Start session** and type what you want to build. The model should call `list_commands` first for the full live reference.
 
 ## Version check (all four must match)
 
 | Where | What to look for |
 | --- | --- |
-| Bridge terminal banner | `BRIDGE START v2.3.0` (proves which folder you launched) |
+| Bridge terminal banner | `BRIDGE START v2.4.0` (proves which folder you launched) |
 | Bridge `plugin vX` line | Must equal the bridge version — a mismatch means Studio loaded a stale plugin; redo step 2b with Studio fully quit |
-| Extension bar/popup | `v2.3.0` next to the RoLink name |
-| Studio Output on launch | `RoLink 2.3.0 loaded` |
+| Extension bar/popup | `v2.4.0` next to the RoLink name |
+| Studio Output on launch | `RoLink 2.4.0 loaded` |
 
 If any one differs, that component came from a different install — reinstall it from this release.
 
@@ -83,7 +83,9 @@ If any one differs, that component came from a different install — reinstall i
 - Build terrain, UI, particles, lighting, animations (keyframe tracks — easing names need their suffix: `quadIn`, not bare `quad`; max 1024 poses per track)
 - Generate assets, levels, quests, sounds; browse the Creator Store
 - Control play-testing, debug with breakpoints and watches
-- **Remember your project across sessions** (persistent project memory)
+- Scan Output errors, inspect UI rects, map the viewport schematically
+- Verify gameplay with scenario playtests, migrate systems atomically
+- **Remember your project across sessions** (structured project memory: architecture, services, bugs, decisions)
 
 ## Panel status
 

@@ -591,5 +591,32 @@
     "action": "test",
     "assetId": "test",
     "projectId": "test"
+  },
+  "scan_errors": {
+    "limit": 30,
+    "projectId": "test"
+  },
+  "inspect_ui": {
+    "root": "StarterGui",
+    "maxDepth": 4,
+    "projectId": "test"
+  },
+  "screenshot_studio": {
+    "projectId": "test"
+  },
+  "playtest_scenario": {
+    "scenario": "test",
+    "seconds": 5,
+    "expect": "test",
+    "projectId": "test"
+  },
+  "migrate_system": {
+    "system": "test",
+    "goal": "test",
+    "sources": [
+      "test"
+    ],
+    "plan_only": true,
+    "projectId": "test"
   }
 }

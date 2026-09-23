@@ -27,6 +27,16 @@ global.MutationObserver = class { observe() {} disconnect() {} };
 global.setInterval = () => 0;
 global.getComputedStyle = () => ({});
 global.CustomEvent = class { constructor(t) { this.type = t; } };
+// The provider's discovery caches are time-keyed (marker scan cooldown 3s,
+// shadow-scope rescan 5s, marker turn cache 10s). The whole suite runs in
+// well under one wall-clock second, so the FIRST (inevitably failed) scan of
+// an early fixture used to poison every later fixture: cooldown never
+// expired, shadow roots found later were never rescanned. Each withDoc
+// fixture advances this clock by 10s - one fixture = one later moment -
+// while staying constant INSIDE a fixture so intra-call deltas are untouched.
+const realNow = Date.now.bind(Date);
+let clockSkew = 0;
+Date.now = () => realNow() + clockSkew;
 
 // Generic factory must load first (agent.js consumes window.makeGenericProvider).
 new Function(fs.readFileSync(__dirname + "/providers/generic.js", "utf8"))();
@@ -114,6 +124,18 @@ function fakeEditable(o) {
   };
 }
 const realQSA = global.document.querySelectorAll;
+// Captured HERE, before any helper's first call: withEdits and withDoc both
+// restore these in `finally`. The originals lived next to withDoc (line ~287)
+// but withDoc is first CALLED at line 138, so the `const` was still in its
+// temporal dead zone - the finally threw ReferenceError and killed the whole
+// suite before the turn-discovery pins ever ran.
+const realQS = global.document.querySelector;
+// Selector-engine constant, declared BEFORE the first withDoc fixture runs:
+// matchTok's helpers are function declarations (hoisted), but this const would
+// be a TDZ ReferenceError inside getEditor's try - swallowed as a silent null
+// ("vote dialog" pins failing with no candidate ever collected). Same trap as
+// the old stubQSA crash, one level down.
+const TOK_SPLIT = /(?:[^\s\[\]]|\[[^\]]*\])+/g;
 function withEdits(edits, fn) {
   global.document.querySelectorAll = (sel) => {
     if (/contenteditable|textbox|tiptap|ProseMirror/i.test(sel)) return edits;
@@ -186,9 +208,16 @@ function matchTok(el, tok) {
   }
   return true;
 }
+// Token split must ignore whitespace INSIDE brackets: the ` i]` case-
+// insensitive flag contains a space, and a naive /\s+/ split tore
+// `[class*='artifact' i]` into `[class*='artifact'` + `i]`, whose second
+// token matched tag "I" - so EVERY case-insensitive attribute selector
+// silently matched nothing (SEL_TRACE missed artifacts, THOUGHT_SEL and
+// CODE_CHROME_SEL never stripped, VOLATILE_SEL fast-path never fired).
+// (TOK_SPLIT itself is declared before the first fixture - see above.)
 function matchSel(el, sel) {
   for (const alt of sel.split(",")) {
-    const toks = alt.trim().split(/\s+/).filter(Boolean);
+    const toks = alt.trim().match(TOK_SPLIT) || [];
     if (!toks.length || toks[toks.length - 1] === ">") continue;
     if (!matchTok(el, toks[toks.length - 1])) continue;
     let n = el.parent, ti = toks.length - 2, found = true;
@@ -219,6 +248,12 @@ function mkel(tag, o) {
     getAttribute(n) { return n in this.attrs ? this.attrs[n] : null; },
     hasAttribute(n) { return n in this.attrs; },
     get isConnected() { return !this.hidden; },
+    // Real-DOM aliases: climbTurn/turnForCodeBlock walk parentElement (code +
+    // marker turn anchoring) and getEditor's ProseMirror pick reads
+    // classList.contains - the stub only had `parent`/`classes`, so every
+    // climb returned null and the wide-net selector (.tiptap, .ProseMirror)
+    // threw inside matchTok, which the outer catch turned into a silent null.
+    get parentElement() { return this.parent; },
     get isContentEditable() {
       const v = this.attrs.contenteditable;
       return v != null && v !== "false";
@@ -228,7 +263,18 @@ function mkel(tag, o) {
       for (const k of this.kids) s += (k.nodeType === 1 ? k.textContent : (k.nodeValue || ""));
       return s;
     },
-    get innerText() { return this.collapsed ? "" : this.textContent; },
+    // innerText (not textContent): an element's own text sits on its own line
+    // before child content. The viewer fixture's container carries ownText
+    // "12" plus a child holding the JSON - without the break reads glue to
+    // `12{...}` (gutter-chrome pollution pin); with it they read `12\n{...}`.
+    // Collapsed turns still read "" while textContent stays intact.
+    get innerText() {
+      if (this.collapsed) return "";
+      let s = this.ownText;
+      if (s && this.kids.length) s += "\n";
+      for (const k of this.kids) s += (k.nodeType === 1 ? k.innerText : (k.nodeValue || ""));
+      return s;
+    },
     // DOM-faithful child list (elements + text), for marker own-text scans.
     get childNodes() {
       const out = [];
@@ -278,20 +324,31 @@ function mkel(tag, o) {
     },
     querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
   };
+  const cls = o.cls || [];
+  if (!cls.contains) cls.contains = (c) => cls.includes(c);
+  el.classes = cls;
+  el.classList = cls;
   (o.kids || []).forEach((k) => {
     if (typeof k === "string") { el.ownText += k; return; }
     k.parent = el; el.kids.push(k);
   });
   return el;
 }
-const stubQSA = global.document.querySelectorAll;
-const stubQS = global.document.querySelector;
 function withDoc(root, fn) {
   global.document.querySelectorAll = (sel) => (root ? root.querySelectorAll(sel) : []);
-  global.document.querySelector = (sel) => (root ? root.querySelector(sel) : null);
+  // document.querySelector can return the tree's TOP element (real documents
+  // match any element in the tree); root.querySelector only walks descendants,
+  // so `document.querySelector("main")` missed a main-rooted fixture and
+  // markerTurns lost its scope (body is null on the stub).
+  global.document.querySelector = (sel) => {
+    if (!root) return null;
+    try { if (matchSel(root, sel)) return root; } catch {}
+    return root.querySelector(sel);
+  };
   try { return fn(); } finally {
-    global.document.querySelectorAll = stubQSA;
-    global.document.querySelector = stubQS;
+    clockSkew += 10000; // next fixture happens later; provider caches expire
+    global.document.querySelectorAll = realQSA;
+    global.document.querySelector = realQS;
   }
 }
 const CMD_JSON = '{"command": "list_commands"}';

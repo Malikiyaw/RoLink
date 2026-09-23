@@ -37,12 +37,12 @@
     // config.js is the source of truth when loaded as a content script).
     var n = String(tool || "").toLowerCase();
     if (/take_snapshot|get_snapshot|rollback|get_instances|find_instance/.test(n)) return "inspect";
-    if (/execute_luau|set_script|create_|delete_|clone|move_|set_properties/.test(n)) return "edit";
+    if (/execute_luau|set_script|create_|delete_|clone|move_|set_properties|migrate_system/.test(n)) return "edit";
     if (/generate_|compile_visual/.test(n)) return "generate";
     if (/search_asset|import_asset|apply_material/.test(n)) return "asset";
-    if (/create_ui|animation|lighting|particle|play_sound|send_notification/.test(n)) return "visual";
+    if (/create_ui|inspect_ui|screenshot_studio|animation|lighting|particle|play_sound|send_notification/.test(n)) return "visual";
     if (/run_tests|simulate|run_in_sandbox|playtest|step_|watch_variable|_breakpoint|continue_execution|discard_sandbox|confirm_sandbox/.test(n)) return "test";
-    if (/get_|list_|search_|find_|validate_|suggest_|explain_|resolve_|ensure_/.test(n)) return "read";
+    if (/get_|list_|search_|find_|validate_|suggest_|explain_|resolve_|ensure_|scan_errors/.test(n)) return "read";
     return "tool";
   }
 

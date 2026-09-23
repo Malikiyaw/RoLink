@@ -1,0 +1,12 @@
+{
+  "verified": 119,
+  "partial": [
+    "diff_snapshots",
+    "get_performance_stats",
+    "get_datastore_value",
+    "search_asset",
+    "explain_code"
+  ],
+  "failing": [],
+  "note": "failing/partial tools stay listed but prompts should steer the model to verified alternatives until fixed"
+}

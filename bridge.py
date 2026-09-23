@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.3.0"
+BRIDGE_VERSION = "2.4.0"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", "17613")))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -85,7 +85,7 @@ PRIMARY_SERVER_ID = "roblox"
 
 # ── RoLink unified catalog (Option A: single WS, bridge answers local tools) ──
 # Workflow stays RoLink-identical: extension -> bridge :17613 -> StudioMCP.
-# StudioMCP only knows Roblox-native tools. RoLink's 119-catalog adds pure-local
+# StudioMCP only knows Roblox-native tools. RoLink's 124-catalog adds pure-local
 # tools (time, validation, ordering, analytics stubs, planning helpers). Those
 # are answered HERE with deterministic handlers so they work even when Studio
 # is offline. Studio-mutating tools always go via mgr.call (StudioMCP/addons).
@@ -147,7 +147,9 @@ def _local_validate_command(args):
         if _pre:
             return {"ok": False, "kind": "validation_error",
                     "error": "validate_command: Luau pre-flight failed: " + _pre}
-        return {"ok": True, "text": json.dumps({"tool": tool, "allowed": valid, "luau": "ok"})}
+        _risk = _luau_risk(code)
+        return {"ok": True, "text": json.dumps({"tool": tool, "allowed": valid, "luau": "ok",
+                                                "risk": _risk, "summary": _risk_summary(_risk)})}
     return {"ok": True, "text": json.dumps({"tool": tool, "allowed": valid})}
 
 def _local_suggest_ordering(args):
@@ -252,6 +254,250 @@ def _local_plugin_status(args):
         "consecutive_timeouts": _queue_consec_timeouts[0],
     })}
 
+def _local_get_studio_state(args):
+    """Aggregated Studio truth: connectivity + play state + selection + load.
+
+    Never raises, never waits on StudioMCP (probe_studio is a cache read).
+    The plugin probe is best-effort: offline fields report "unknown" instead
+    of failing the whole call."""
+    try:
+        st = probe_studio()
+    except Exception:
+        st = {"app": None, "place": None}
+    app, place = st.get("app"), st.get("place")
+    if app is True and place is True:
+        studio = "ready"
+    elif app is True:
+        studio = "no-place" if place is False else "unknown"
+    elif app is False:
+        studio = "offline"
+    else:
+        studio = "unknown"
+    play_state, selected, plugin_ver = "unknown", [], (_plugin_version[0] or None)
+    if _plugin_alive():
+        try:
+            # Internal probe: bypasses safe_call name validation on purpose.
+            pr = _queue_call("studio_probe", {"projectId": (args or {}).get("projectId", "default")}, 10)
+            if pr.get("ok"):
+                try:
+                    body = json.loads(pr.get("text") or "{}")
+                    inner = body.get("result") if isinstance(body.get("result"), dict) else body
+                    play_state = inner.get("playState", "unknown")
+                    selected = inner.get("selection", []) or []
+                    plugin_ver = inner.get("pluginVersion", plugin_ver)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    try:
+        with _queue_lock:
+            pending = sum(1 for c in _queue_cmds.values() if c.get("status") in ("queued", "claimed"))
+    except Exception:
+        pending = 0
+    return {"ok": True, "text": json.dumps({
+        "studio": studio,
+        "place": place if place is not None else "unknown",
+        "playState": play_state,
+        "selected": selected,
+        "plugin": plugin_ver,
+        "bridge": BRIDGE_VERSION,
+        "pendingTasks": pending,
+        "project": (args or {}).get("projectId", _active_project["name"]),
+    })}
+
+# ── Structured project memory (offline JSON store, per project) ──────────
+# Sections mirror how Roblox games are actually organized so the AI can pull
+# ONE relevant section instead of a dumped context blob.
+_MEMORY_SECTIONS = ("architecture", "services", "remotes", "instances",
+                    "conventions", "ui", "dependencies", "bugs", "tasks", "decisions")
+
+def _memory_path(project):
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (project or "default")) or "default"
+    d = os.path.join(HERE, "memory")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(d, safe + ".json")
+
+def _memory_load(project):
+    p = _memory_path(project)
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {s: "" for s in _MEMORY_SECTIONS}
+
+def _memory_save(project, data):
+    p = _memory_path(project)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, p)
+
+def _local_get_memory(args):
+    """get_memory{project?, section?}: one section, or a TOC with sizes.
+
+    The prompt rule: ask for the section the task needs (ui task -> "ui" +
+    "remotes"), never the whole store."""
+    a = args or {}
+    project = a.get("project", a.get("projectId", _active_project["name"])) or "default"
+    section = (a.get("section") or "").strip()
+    data = _memory_load(project)
+    if section:
+        if section not in _MEMORY_SECTIONS:
+            return {"ok": False, "kind": "validation_error",
+                    "error": f"get_memory: unknown section '{section}' - one of {', '.join(_MEMORY_SECTIONS)}"}
+        return {"ok": True, "text": json.dumps({"project": project, "section": section,
+                                                "content": data.get(section, "")})}
+    toc = {s: len(data.get(s, "") or "") for s in _MEMORY_SECTIONS}
+    return {"ok": True, "text": json.dumps({"project": project, "sections": list(_MEMORY_SECTIONS),
+                                            "chars": toc,
+                                            "hint": "call get_memory with one section name"})}
+
+def _local_update_memory(args):
+    """update_memory{project?, section*, content*, mode=replace|append}."""
+    a = args or {}
+    project = a.get("project", a.get("projectId", _active_project["name"])) or "default"
+    section = (a.get("section") or "").strip()
+    content = a.get("content", "")
+    mode = (a.get("mode") or "replace").strip()
+    if section not in _MEMORY_SECTIONS:
+        return {"ok": False, "kind": "validation_error",
+                "error": f"update_memory: section must be one of {', '.join(_MEMORY_SECTIONS)}"}
+    if not isinstance(content, str) or not content.strip():
+        return {"ok": False, "kind": "validation_error",
+                "error": "update_memory: 'content' must be a non-empty string"}
+    if mode not in ("replace", "append"):
+        return {"ok": False, "kind": "validation_error",
+                "error": "update_memory: mode must be 'replace' or 'append'"}
+    if len(content) > 20000:
+        return {"ok": False, "kind": "validation_error",
+                "error": f"update_memory: content too large ({len(content)} chars, max 20000) - summarize first"}
+    data = _memory_load(project)
+    data[section] = (data.get(section, "") + "\n" + content if mode == "append" and data.get(section) else content)
+    try:
+        _memory_save(project, data)
+    except Exception as e:
+        return {"ok": False, "kind": "execution_error", "error": f"update_memory: save failed: {e}"}
+    return {"ok": True, "text": json.dumps({"project": project, "section": section,
+                                            "mode": mode, "chars": len(data[section])})}
+
+def _local_playtest_scenario(args):
+    """playtest_scenario{scenario*, seconds?, watch?, expect?}: composed flow.
+
+    take_snapshot -> plugin observe window (ticks + Output) -> scan_errors ->
+    check `expect` substring in output. Edit-mode observation: starting Play
+    itself needs a human click, so this verifies logic, not rendering."""
+    a = args or {}
+    scenario = (a.get("scenario") or "").strip()
+    if not scenario:
+        return {"ok": False, "kind": "validation_error",
+                "error": "playtest_scenario: 'scenario' is required (e.g. 'new player joins and purchases a sword')"}
+    seconds = a.get("seconds", 5)
+    try:
+        seconds = max(0.5, min(float(seconds), 10.0))
+    except Exception:
+        return {"ok": False, "kind": "validation_error",
+                "error": "playtest_scenario: 'seconds' must be a number 0.5-10"}
+    project = a.get("projectId", "default") or "default"
+    snap = safe_call("take_snapshot", {"projectId": project}, 30)
+    # Queue-direct (not safe_call): this handler OWNS the name
+    # "playtest_scenario", so safe_call would recurse into itself.
+    obs = _queue_call("playtest_scenario", {"seconds": seconds, "watch": a.get("watch", ""),
+                                            "projectId": project}, 30)
+    errs = safe_call("scan_errors", {"limit": 20, "projectId": project}, 30)
+    checks, output_text = [], ""
+    expect = (a.get("expect") or "").strip()
+    obs_body: dict = {}
+    if obs.get("ok"):
+        try:
+            obs_body = json.loads(obs.get("text") or "{}").get("result", {})
+            output_text = json.dumps(obs_body.get("output", []))[:4000]
+        except Exception:
+            pass
+    err_list = []
+    if errs.get("ok"):
+        try:
+            err_list = json.loads(errs.get("text") or "{}").get("result", {}).get("errors", [])
+        except Exception:
+            pass
+    if expect:
+        found = expect.lower() in output_text.lower()
+        checks.append({"check": f"output contains '{expect}'", "passed": found})
+    checks.append({"check": "no new Studio errors", "passed": len(err_list) == 0,
+                   "detail": f"{len(err_list)} error(s) in window"})
+    passed = all(c.get("passed") for c in checks)
+    return {"ok": passed, "kind": None if passed else "execution_error",
+            "text": json.dumps({"scenario": scenario, "passed": passed, "seconds": seconds,
+                                "playState": obs_body.get("playState", "unknown"),
+                                "checks": checks, "errors": err_list[:10],
+                                "snapshotOk": bool(snap.get("ok"))}),
+            **({} if passed else {"error": f"playtest_scenario '{scenario}' failed: " +
+                  "; ".join(c["check"] for c in checks if not c.get("passed"))})}
+
+def _local_migrate_system(args):
+    """migrate_system{system*, goal*, sources[]?, steps[]?, plan_only?, confirm?}.
+
+    Reads current implementation, returns a heuristic plan; applies NOTHING
+    unless confirm:true with explicit steps[], which run as an ATOMIC batch
+    (rollback on failure). The AI authors steps; the bridge validates shape,
+    applies, and verifies."""
+    a = args or {}
+    system = (a.get("system") or "").strip()
+    goal = (a.get("goal") or "").strip()
+    if not system or not goal:
+        return {"ok": False, "kind": "validation_error",
+                "error": "migrate_system: 'system' and 'goal' are required"}
+    sources = a.get("sources", []) or []
+    if not isinstance(sources, list):
+        return {"ok": False, "kind": "validation_error",
+                "error": "migrate_system: 'sources' must be an array of script paths"}
+    project = a.get("projectId", "default") or "default"
+    readback = []
+    for path in sources[:10]:
+        try:
+            r = safe_call("get_script_content", {"path": path, "projectId": project}, 30)
+            body = (r.get("text") or "")[:2000]
+            readback.append({"path": path, "ok": bool(r.get("ok")), "head": body})
+        except Exception as e:
+            readback.append({"path": path, "ok": False, "head": str(e)[:200]})
+    requires = sorted({m for rb in readback for m in
+                       __import__("re").findall(r"require\(\s*([^)]+)\)", rb.get("head", ""))})
+    plan = {"system": system, "goal": goal,
+            "steps": [{"order": i + 1,
+                       "action": "move to module" if i == 0 else "update require",
+                       "detail": "author concrete edits from the readback above"}
+                      for i in range(min(len(readback), 5))] or
+                     [{"order": 1, "action": "add module",
+                       "detail": "no sources read - pass sources[] first"}],
+            "requiresFound": requires[:20],
+            "readback": readback}
+    steps = a.get("steps", []) or []
+    if a.get("plan_only", True) or not steps or not (a.get("confirm") is True):
+        return {"ok": True, "text": json.dumps(
+            {"planOnly": True, "plan": plan,
+             "toApply": "re-send with plan_only:false, confirm:true, and steps:[{tool,args}] "
+                        "(create_module/set_script_content only) to apply atomically"})}
+    allowed = {"create_module", "set_script_content"}
+    for i, s in enumerate(steps):
+        if not isinstance(s, dict) or s.get("tool") not in allowed or not isinstance(s.get("args"), dict):
+            return {"ok": False, "kind": "validation_error",
+                    "error": f"migrate_system: step {i} must be {{tool, args}} with tool in {sorted(allowed)}"}
+    applied = _local_batch_queue({"commands": steps, "mode": "atomic",
+                                  "projectId": project}, 60)
+    try:
+        applied_body = json.loads(applied.get("error") or applied.get("text") or "{}")
+    except Exception:
+        applied_body = {"raw": (applied.get("error") or applied.get("text") or "")[:500]}
+    ok = bool(applied.get("ok"))
+    return {"ok": ok, "kind": None if ok else "execution_error",
+            "text": json.dumps({"planOnly": False, "plan": plan, "applied": applied_body}),
+            **({} if ok else {"error": "migrate_system: atomic apply failed - rolled back"})}
+
 # Deterministic local handlers: work with no Studio, no MCP server alive.
 # Anything not listed here falls through to mgr.call (StudioMCP/addons) or a
 # structured unknown-tool error — never a hang, never an exception leak.
@@ -268,6 +514,11 @@ LOCAL_HANDLERS = {
     "list_sessions": _local_list_sessions,
     "session_users": _local_session_users,
     "plugin_status": _local_plugin_status,
+    "get_studio_state": _local_get_studio_state,
+    "get_memory": _local_get_memory,
+    "update_memory": _local_update_memory,
+    "playtest_scenario": _local_playtest_scenario,
+    "migrate_system": _local_migrate_system,
 }
 
 def _local_batch_queue(args, timeout):
@@ -278,17 +529,70 @@ def _local_batch_queue(args, timeout):
     the plugin executes on a single thread, so larger batches reliably wedge
     it — prefer single commands, keep batches small and independent. Stops at
     the first stuck/timeout failure instead of hammering the rest. Never raises.
+
+    Modes: best_effort (default) leaves completed steps in place; atomic takes
+    a take_snapshot first and, on the first failure, issues rollback for every
+    succeeded Studio step and verifies the tree hash matches. Atomic requires
+    a live plugin — snapshot/rollback/DataStore effects cannot be restored.
     """
+    import hashlib as _hl
     cmds = (args or {}).get("commands", [])
     if not isinstance(cmds, list) or not cmds:
         return {"ok": False, "kind": "validation_error", "error": "batch_queue: 'commands' must be a non-empty array"}
     if len(cmds) > 10:
         return {"ok": False, "kind": "validation_error", "error": "batch_queue: max 10 commands per batch - split into smaller batches or single commands"}
+    mode = (args or {}).get("mode", "best_effort")
+    if mode not in ("atomic", "best_effort"):
+        return {"ok": False, "kind": "validation_error",
+                "error": "batch_queue: mode must be 'atomic' or 'best_effort'"}
+
+    def _snap_hash():
+        """(hash, detail) of the current tree, header line stripped (it carries
+        wall-clock/FPS that legitimately differs run to run)."""
+        try:
+            r = safe_call("take_snapshot", {"projectId": (args or {}).get("projectId", "default")}, 30)
+        except Exception as e:
+            return None, f"snapshot call raised: {e}"
+        if not r.get("ok"):
+            return None, f"snapshot failed: {(r.get('error') or '')[:160]}"
+        try:
+            body = json.loads(r.get("text") or "{}")
+            snap = (body.get("result") or {}).get("snapshot", "") if isinstance(body.get("result"), dict) else ""
+            if not snap and isinstance(body.get("snapshot"), str):
+                snap = body["snapshot"]
+        except Exception:
+            snap = r.get("text") or ""
+        lines = snap.split("\n")
+        core = "\n".join(lines[1:] if len(lines) > 1 else lines)
+        return _hl.md5(core.encode("utf-8", "replace")).hexdigest(), "ok"
+
+    pre_hash, pre_detail = (None, "best_effort: no snapshot")
+    if mode == "atomic":
+        pre_hash, pre_detail = _snap_hash()
+        if pre_hash is None:
+            return {"ok": False, "kind": "execution_error",
+                    "error": "batch_queue atomic: cannot guarantee rollback without a pre-snapshot - " + pre_detail}
+
+    def _canonical(t):
+        try:
+            return _TOOL_ALIASES.get(t, t)
+        except Exception:
+            return t
+
+    def _is_undoable(tool_name):
+        c = _canonical(tool_name)
+        try:
+            return c in STUDIO_QUEUE_TOOLS or c in _QUEUE_EXTRA_TOOLS
+        except Exception:
+            return False
+
     results = []
+    failed = None
     for i, c in enumerate(cmds):
         if not isinstance(c, dict):
             results.append({"index": i, "ok": False, "error": "command must be an object"})
-            continue
+            failed = results[-1]
+            break
         sub_name = c.get("tool", "")
         sub_args = c.get("args", {})
         if not isinstance(sub_args, dict):
@@ -297,6 +601,7 @@ def _local_batch_queue(args, timeout):
             # No nested batches (contract): reject instead of recursing.
             results.append({"index": i, "tool": sub_name, "ok": False, "kind": "validation_error",
                             "error": "batch_queue: nested batches are not allowed"})
+            failed = results[-1]
             break
         # Recurse via safe_call (defined later) — resolved at call time.
         try:
@@ -304,12 +609,49 @@ def _local_batch_queue(args, timeout):
         except Exception as e:
             r = {"ok": False, "kind": "execution_error", "error": str(e)}
         results.append({"index": i, "tool": sub_name, **r})
-        if r.get("kind") in ("stuck-execution", "plugin_offline", "timeout"):
-            results.append({"index": i + 1, "tool": "batch_queue", "ok": False, "kind": "validation_error",
-                            "error": "batch_queue: stopping early - Studio stopped answering; call plugin_status, then retry remaining commands singly"})
+        if not r.get("ok"):
+            failed = results[-1]
+            if r.get("kind") in ("stuck-execution", "plugin_offline", "timeout"):
+                results.append({"index": i + 1, "tool": "batch_queue", "ok": False, "kind": "validation_error",
+                                "error": "batch_queue: stopping early - Studio stopped answering; call plugin_status, then retry remaining commands singly"})
             break
     ok_count = sum(1 for r in results if r.get("ok"))
-    return {"ok": True, "text": json.dumps({"batched": len(results), "succeeded": ok_count, "results": results})}
+    if failed is None:
+        body = {"mode": mode, "status": "success", "batched": len(results),
+                "succeeded": ok_count, "partialCommitAllowed": mode != "atomic",
+                "results": results}
+        return {"ok": True, "text": json.dumps(body)}
+    if mode != "atomic":
+        body = {"mode": mode, "status": "stopped-at-first-failure", "batched": len(results),
+                "succeeded": ok_count, "partialCommitAllowed": True, "results": results}
+        return {"ok": True, "text": json.dumps(body)}
+    # Atomic: roll back every succeeded Studio step, then verify the tree.
+    undo_steps = sum(1 for r in results if r.get("ok") and _is_undoable(r.get("tool", "")))
+    rolled_back, verify = False, {"checked": False}
+    if undo_steps:
+        try:
+            rb = safe_call("rollback", {"steps": undo_steps,
+                                        "projectId": (args or {}).get("projectId", "default")}, 30)
+            rolled_back = bool(rb.get("ok"))
+            rb_note = "" if rb.get("ok") else f"rollback call failed: {(rb.get('error') or '')[:160]}"
+        except Exception as e:
+            rb_note = f"rollback raised: {e}"
+        post_hash, post_detail = _snap_hash()
+        if post_hash is not None and pre_hash is not None:
+            verify = {"checked": True, "passed": post_hash == pre_hash,
+                      "detail": "tree hash matches pre-batch snapshot" if post_hash == pre_hash
+                                else "tree differs from pre-batch snapshot - manual review needed"}
+        else:
+            verify = {"checked": True, "passed": False, "detail": (rb_note + "; " + post_detail).strip("; ")}
+    else:
+        verify = {"checked": True, "passed": True, "detail": "no Studio steps had succeeded - nothing to revert"}
+        rolled_back = True
+    body = {"mode": "atomic", "status": "rolled_back" if (rolled_back and verify.get("passed")) else "rollback_failed",
+            "batched": len(results), "succeeded": ok_count, "rolledBack": rolled_back,
+            "undoneSteps": undo_steps, "partialCommitAllowed": False,
+            "verification": verify, "results": results}
+    return {"ok": False, "kind": "execution_error", "error_code": "TX_ROLLBACK",
+            "error": json.dumps(body), "verification": verify}
 
 def _luau_preflight(code):
     """Mirror of mcp-server validateLuau for the WS path (no Node needed).
@@ -401,6 +743,183 @@ def _luau_preflight(code):
     ):
         return "probable infinite loop with no yield - add task.wait() inside the loop"
     return None
+
+def _strip_luau_noise(code):
+    """Code with string literals and comments blanked (length preserved).
+
+    Risk scans must not count `Destroy` inside a comment or `"http"` inside a
+    dialogue string. Mirrors the string-aware walk in _luau_preflight."""
+    out = list(code)
+    i, n = 0, len(code)
+    def blank(a, b):
+        for k in range(a, min(b, n)):
+            if out[k] != "\n":
+                out[k] = " "
+    while i < n:
+        c = code[i]
+        if c == "-" and i + 1 < n and code[i + 1] == "-":
+            if code[i + 2:i + 4] == "[[":
+                end = code.find("]]", i + 4)
+                blank(i, n if end == -1 else end + 2)
+                i = n if end == -1 else end + 2
+                continue
+            nl = code.find("\n", i + 2)
+            blank(i, n if nl == -1 else nl)
+            i = n if nl == -1 else nl
+            continue
+        if c == '"' or c == "'":
+            j = i + 1
+            while j < n:
+                if code[j] == "\\":
+                    j += 2
+                    continue
+                if code[j] == c:
+                    break
+                j += 1
+            blank(i, j + 1)
+            i = j + 1
+            continue
+        if c == "[" and i + 1 < n and code[i + 1] == "[":
+            end = code.find("]]", i + 2)
+            blank(i, n if end == -1 else end + 2)
+            i = n if end == -1 else end + 2
+            continue
+        i += 1
+    return "".join(out)
+
+
+def _luau_risk(code):
+    """Preflight risk analysis for execute_luau-class tools (offline, heuristic).
+
+    Returns {"level": LOW|MEDIUM|HIGH, "dangers": [...], "services": [...],
+             "scope": {...}, "requiresConfirm": bool}. Estimates are honest
+    approximations (counts + breadth), never fake precision. Non-undoable
+    operations (DataStore writes, HTTP, broad destroy) require confirmation.
+    """
+    import re as _re
+    if not isinstance(code, str) or not code.strip():
+        return {"level": "LOW", "dangers": [], "services": [], "scope": {},
+                "requiresConfirm": False}
+    clean = _strip_luau_noise(code)
+    low = clean.lower()
+    dangers = []
+    # Service names live INSIDE string literals (blanked above), so extract
+    # from the raw source. Commented-out GetService lines may count — this is
+    # a heuristic estimate, and the summary says so.
+    services = sorted(set(_re.findall(r"getservice\(\s*['\"]([\w]+)['\"]", code, _re.I)))
+    scope = {}
+
+    def count(pat):
+        return len(_re.findall(pat, low))
+
+    # — DataStore —
+    has_ds = "getdatastore" in low or "getordereddatastore" in low
+    ds_write = has_ds and any(k in low for k in ("setasync", "updateasync", "removeasync", "incrementasync"))
+    if ds_write:
+        dangers.append({"id": "datastore-write", "severity": "HIGH",
+                        "detail": "writes live player data (Set/Update/RemoveAsync) - cannot be undone via rollback",
+                        "confirm": True})
+    elif has_ds:
+        dangers.append({"id": "datastore-read", "severity": "LOW",
+                        "detail": "reads player data only", "confirm": False})
+
+    # — HTTP —
+    if "httpservice" in low or "requestasync" in low or "httpget" in low or "httppost" in low:
+        dangers.append({"id": "http-request", "severity": "HIGH",
+                        "detail": "contacts the external network - side effects leave Studio",
+                        "confirm": True})
+
+    # — Destruction —
+    destroys = count(r":destroy\s*\(")
+    clears = count(r"clearallchildren\s*\(")
+    broad = ("getdescendants" in low and destroys > 0) or clears > 0 or \
+            (destroys > 0 and any(k in low for k in ("workspace:destroy", "game:destroy", "game.workspace:destroy")))
+    scope["destroyCalls"] = destroys
+    if broad:
+        dangers.append({"id": "broad-destroy", "severity": "HIGH",
+                        "detail": f"{destroys} Destroy call(s) over a subtree (GetDescendants/ClearAllChildren) - confirm scope before running",
+                        "confirm": True})
+    elif destroys > 0:
+        dangers.append({"id": "targeted-destroy", "severity": "MEDIUM",
+                        "detail": f"{destroys} targeted Destroy call(s) - undoable via rollback",
+                        "confirm": False})
+
+    # — Mass creation (loop-aware: one Instance.new inside a 200-iteration
+    # loop is ~200 parts, not ~1) —
+    news = count(r"instance\.new\s*\(")
+    in_loop = news > 0 and ("for " in low or "while " in low)
+    bounds = []
+    for m in _re.finditer(r"for\s+\w+\s*=\s*[^,]+,\s*(\d+)", low):
+        try:
+            bounds.append(int(m.group(1)))
+        except Exception:
+            pass
+    scope["instanceNewCalls"] = news
+    estimated = news * (max(bounds) if bounds else 100) if in_loop else news
+    if news > 0 and estimated > 50:
+        dangers.append({"id": "mass-create", "severity": "HIGH",
+                        "detail": f"~{news} Instance.new call site(s) inside loops (~{estimated} estimated instances) - may stall the viewport; split into smaller batches",
+                        "confirm": False})
+        scope["estimatedInstances"] = f"~{estimated}"
+    elif news > 0:
+        scope["instancesAffected"] = f"~{news} new instance(s)"
+
+    # — Script source writes —
+    if ".source" in low and "=" in low:
+        dangers.append({"id": "script-write", "severity": "MEDIUM",
+                        "detail": "modifies script source at runtime - undoable via rollback, prefer set_script_content for kept changes",
+                        "confirm": False})
+        scope["scriptsAffected"] = scope.get("scriptsAffected", ">=1")
+
+    # — Large bounded loops —
+    big = False
+    for m in _re.finditer(r"for\s+\w+\s*=\s*[^,]+,\s*(\d+)", low):
+        try:
+            if int(m.group(1)) > 10000:
+                big = True
+        except Exception:
+            pass
+    if big:
+        dangers.append({"id": "large-loop", "severity": "MEDIUM",
+                        "detail": "loop bound over 10000 iterations - must still terminate in seconds (20s budget)",
+                        "confirm": False})
+
+    # — External content —
+    if "getobjects" in low or "loadstring" in low:
+        dangers.append({"id": "external-content", "severity": "MEDIUM",
+                        "detail": "loads external/by-id content or dynamic code - verify the source",
+                        "confirm": False})
+
+    if services:
+        scope["servicesAffected"] = services
+    level = "LOW"
+    if any(d["severity"] == "HIGH" for d in dangers):
+        level = "HIGH"
+    elif dangers:
+        level = "MEDIUM"
+    return {"level": level, "dangers": dangers, "services": services, "scope": scope,
+            "requiresConfirm": any(d.get("confirm") for d in dangers)}
+
+
+def _risk_summary(risk):
+    """One-line human summary the AI sees before execution."""
+    ds = "; ".join(f"{d['id']}: {d['detail']}" for d in risk.get("dangers", []))
+    scope = risk.get("scope", {})
+    bits = []
+    if scope.get("servicesAffected"):
+        bits.append(f"{len(scope['servicesAffected'])} service(s): " + ", ".join(scope["servicesAffected"][:5]))
+    if scope.get("instanceNewCalls"):
+        bits.append(f"~{scope['instanceNewCalls']} Instance.new")
+    if scope.get("destroyCalls"):
+        bits.append(f"{scope['destroyCalls']} Destroy")
+    head = f"Preflight risk {risk.get('level', 'LOW')}"
+    if bits:
+        head += " (" + ", ".join(bits) + ")"
+    if ds:
+        head += " - " + ds
+    if risk.get("requiresConfirm"):
+        head += " [CONFIRM REQUIRED: re-send with confirm:true]"
+    return head
 
 # Full per-tool param guidance for the advertised catalog (drives the live
 # list_commands output even when Studio is offline). Generated file; the
@@ -1467,14 +1986,16 @@ class MCPManager:
                 tt["name"] = advertised
                 tt["server"] = sid
                 out.append(tt)
-        # Extended 119-tool catalog: advertise local/studio tools even when
+        # Extended 124-tool catalog: advertise local/studio tools even when
         # Studio is offline, with param guidance so list_commands stays useful.
         # Never collides: names already advertised by a live server are skipped
         # here (collisions are resolved by the ownership step below instead).
-        # Plus plugin_status (bridge built-in) and the native search extras.
+        # Plus bridge built-ins (plugin_status, get_studio_state, get_memory,
+        # update_memory) and the native search extras.
         try:
             _seen = {e.get("name") for e in out}
-            for _n in list(ROLINK_TOOL_NAMES) + ["plugin_status"] + sorted(_QUEUE_EXTRA_TOOLS):
+            for _n in list(ROLINK_TOOL_NAMES) + ["plugin_status", "get_studio_state",
+                                                 "get_memory", "update_memory"] + sorted(_QUEUE_EXTRA_TOOLS):
                 if _n and _n not in _seen:
                     _e = _local_tool_entry(_n)
                     if _e is not None:
@@ -1701,7 +2222,7 @@ def safe_call(name, arguments, timeout):
     # registry, the alias map, or a connected server's advertised set.
     _PASSTHROUGH = frozenset(("list_commands", "list_tools", "list_mcp_servers",
                               "get_studio_state", "list_roblox_studios",
-                              "plugin_status"))
+                              "plugin_status", "get_memory", "update_memory"))
     if name not in _PASSTHROUGH and canonical not in _PASSTHROUGH:
         try:
             _known = (set(ROLINK_TOOL_NAMES) | set(_QUEUE_EXTRA_TOOLS)
@@ -1736,10 +2257,27 @@ def safe_call(name, arguments, timeout):
     # Luau pre-flight: reject code Studio's loadstring is guaranteed to fail
     # ("Failed to parse command code") with a structured error the model can
     # fix, instead of forwarding it. Mirrors mcp-server validateLuau.
+    _pending_risk = None
     if canonical in ("execute_luau", "run_in_sandbox") and isinstance(arguments.get("code"), str):
         _pre = _luau_preflight(arguments["code"])
         if _pre:
             return {"ok": False, "error": _ai_readable_error("validation_error", _pre, name), "kind": "validation_error"}
+        # Risk gate: non-undoable operations (DataStore writes, HTTP, broad
+        # destroy) need an explicit confirm:true — the AI re-sends the SAME
+        # call as JSON {"command": name, "params": {..., "confirm": true}}.
+        # Bare ###LUA### blocks cannot carry the flag, hence the re-send.
+        _risk = _luau_risk(arguments["code"])
+        if _risk.get("requiresConfirm") and not (arguments.get("confirm") is True):
+            return {"ok": False, "tool": name, "executionId": "rl_rejected",
+                    "status": "confirm_required", "durationMs": 0,
+                    "kind": "confirm_required", "error_code": "CONFIRM_REQUIRED",
+                    "error": (_ai_readable_error("validation_error", _risk_summary(_risk), name)
+                              + "\nTo proceed, re-send this exact call as JSON with \"confirm\": true in params. "
+                              + "To abort, do something else."),
+                    "preflight": _risk, "verification": {"checked": False}}
+        # Kept aside for the success path below so the AI sees scope with the
+        # output. Never forwarded: the plugin must not see bridge internals.
+        _pending_risk = _risk
     # Marker leak guard: transport wrappers must never persist into files.
     for _k in ("content", "exports", "code", "handlerCode"):
         if isinstance((arguments or {}).get(_k), str) and "###LUA" in arguments[_k]:
@@ -1763,7 +2301,43 @@ def safe_call(name, arguments, timeout):
                         "plugin_offline",
                         "the last queue calls timed out - the Studio plugin stopped answering; "
                         "restart Studio (or re-run install-plugin.bat) and retry", name)}
-        return _queue_call(canonical, arguments, timeout)
+        _res = _queue_call(canonical, arguments, timeout)
+        if _pending_risk is not None and isinstance(_res, dict):
+            _res["preflight"] = _pending_risk
+            # MEDIUM/HIGH scope rides WITH the output so the model reasons
+            # about blast radius without a second call. LOW stays quiet.
+            if _pending_risk.get("level") in ("MEDIUM", "HIGH") and _res.get("ok"):
+                _res["text"] = _risk_summary(_pending_risk) + "\nProceeding...\n" + (_res.get("text") or "")
+        return _res
+    # Registry tools must never be forwarded to StudioMCP blindly: it only
+    # knows ~28 native names, so a queue tool sent there comes back as a
+    # confusing "unknown tool" instead of actionable guidance (seen live with
+    # get_context_summary answering in 0.05s). Two cases:
+    #  - StudioMCP natively knows this exact spelling (overlap): fall through
+    #    and let it execute (preserves setups without the plugin).
+    #  - Otherwise: instant plugin_offline guidance, no burnt waits, no MCP hop.
+    if canonical in STUDIO_QUEUE_TOOLS or canonical in _QUEUE_EXTRA_TOOLS:
+        try:
+            _live = set(getattr(mgr, "index", {}) or {})
+        except Exception:
+            _live = set()
+        if name not in _live and canonical not in _live:
+            if _queue_server_on[0]:
+                if _queue_last_poll[0] <= 0:
+                    _why = ("the Studio plugin was never seen polling - install it "
+                            "(run install-plugin.bat), restart Studio fully, then in the "
+                            "command bar run game:GetService(\"HttpService\").HttpEnabled = true")
+                else:
+                    _age = int(time.time() - _queue_last_poll[0])
+                    _why = (f"the Studio plugin last polled {_age}s ago - it stopped "
+                            f"(Studio closed or place changed?). Reopen Studio with a place loaded")
+            else:
+                _why = ("embedded queue not running - restart the bridge "
+                        "(start.bat) so the Studio plugin has a queue to poll")
+            return {"ok": False, "tool": name, "executionId": "rl_noplugin", "status": "error",
+                    "durationMs": 0, "kind": "plugin_offline", "error_code": "PLUGIN_OFFLINE",
+                    "error": _ai_readable_error("plugin_offline", _why, name),
+                    "verification": {"checked": False}}
     if not mgr.any_alive():
         return {"ok": False, "error": _ai_readable_error("mcp_offline", "no MCP server alive", name), "kind": "mcp_offline"}
     # Studio usability check before calling studio tools
@@ -1786,6 +2360,18 @@ def safe_call(name, arguments, timeout):
         return {"ok": False, "error": _ai_readable_error(kind, raw, name), "kind": kind}
     except Exception as e:
         raw = str(e)
+        # Race backstop for the routing above: liveness flipped mid-call and
+        # Studio answered "unknown tool" for a registry name. Never surface
+        # that raw - it reads as a model mistake instead of a missing plugin.
+        if "unknown tool" in raw.lower() and (name in ROLINK_TOOL_NAMES
+                or canonical in STUDIO_QUEUE_TOOLS or canonical in _QUEUE_EXTRA_TOOLS):
+            return {"ok": False, "tool": name, "executionId": "rl_noplugin", "status": "error",
+                    "durationMs": 0, "kind": "plugin_offline", "error_code": "PLUGIN_OFFLINE",
+                    "error": _ai_readable_error("plugin_offline",
+                        f"Studio answered 'unknown tool' for '{name}' - it only knows ~28 native "
+                        "commands. Install the RoLink Studio plugin (run install-plugin.bat), "
+                        "restart Studio fully, then retry", name),
+                    "verification": {"checked": False}}
         kind = _classify_bridge_error(raw)
         return {"ok": False, "error": _ai_readable_error(kind, raw, name), "kind": kind}
 
@@ -2179,7 +2765,8 @@ async def studio_watch(initial_app, initial_place=None):
                 # class of bug as the startup banner, see roblox_total above).
                 rc = mgr.clients.get("roblox")
                 roblox_now = len(rc.tools_cache) if rc else 0
-                log(f"Roblox Studio connected - {roblox_now} tools ready.", "gr")
+                log(f"Roblox Studio connected - {roblox_now} native tools "
+                    f"(+ {len(ROLINK_TOOL_NAMES)} RoLink catalog tools via the Studio plugin).", "gr")
                 ever_connected = True
                 disconnected_since = None
                 update_suspected = False
@@ -2354,9 +2941,30 @@ _CLAIM_TIMEOUT_S = 25.0
 
 
 def _queue_new_id():
+    # Execution id — the ONLY correlation the AI sees (rl_*). Queue id and
+    # execution id are identical so Studio logs, bridge logs and AI chips agree.
     with _queue_lock:
         _queue_seq[0] += 1
-        return f"q{_queue_seq[0]}_{int(time.time() * 1000) % 100000}"
+        import random as _rnd
+        return f"rl_{int(time.time() * 1000) % 1000000:06d}_{_rnd.randrange(36**4, 36**5):04x}"
+
+
+def _make_envelope(tool, cid, status, t0, result=None, code=None, message=None):
+    """Terminal ExecutionEnvelope dict. Always includes ok/text for back-compat."""
+    dur = int((time.time() - t0) * 1000)
+    if status == "success":
+        text = result if isinstance(result, str) else json.dumps(result, default=str)
+        return {"ok": True, "tool": tool, "executionId": cid, "status": "success",
+                "durationMs": dur, "text": (text or "")[:12000], "images": [],
+                "verification": {"checked": False}}
+    kind = "timeout" if status == "timeout" else ("plugin_offline" if code == "PLUGIN_OFFLINE" else "execution_error")
+    if code == "STUCK_EXECUTION":
+        kind = "stuck-execution"
+    return {"ok": False, "tool": tool, "executionId": cid, "status": status,
+            "durationMs": dur, "kind": kind,
+            "error": _ai_readable_error(kind if kind != "execution_error" else "execution_error",
+                                       f"[{code}] {message}" if code else str(message), tool),
+            "error_code": code or "STUDIO_EXECUTION_FAILED"}
 
 
 def queue_enqueue(tool, command, args, projectId="default"):
@@ -2394,7 +3002,10 @@ def queue_take(projectId=None):
             if c.get("status") == "claimed" and now - c.get("claimed_at", 0) < _CLAIM_TIMEOUT_S:
                 return None
         for cid, cmd in _queue_cmds.items():
-            if cmd["status"] == "done":
+            # Terminal states never re-queue: a failed command re-claimed here
+            # would execute again on every poll (infinite error loop that also
+            # starves every command behind it — seen live with atomic batches).
+            if cmd["status"] in ("done", "failed"):
                 continue
             if projectId and cmd.get("projectId") not in (None, projectId):
                 continue
@@ -2411,7 +3022,7 @@ def queue_complete(cid, result, error, timings=None):
         cmd = _queue_cmds.get(cid)
         if cmd is None:
             return False
-        if cmd.get("status") == "done":
+        if cmd.get("status") in ("done", "failed"):
             try:
                 log(f"[queue] late result for {cid} (already settled, dropped)", "dim", terminal=False)
             except Exception:
@@ -2620,9 +3231,9 @@ STUDIO_QUEUE_TOOLS = frozenset(
     [t for t in ROLINK_TOOL_NAMES if t and t not in LOCAL_HANDLERS and t != "batch_queue"]
 )
 
-# Native plugin tools that live OUTSIDE the 119 registry (real search
+# Native plugin tools that live OUTSIDE the 124 registry (real search
 # implementations, not aliases): routed + advertised exactly like registry
-# tools, so the registry file and all 119-counts stay untouched.
+# tools, so the registry file and all 124-counts stay untouched.
 _QUEUE_EXTRA_TOOLS = frozenset(("script_search", "script_grep", "search_game_tree"))
 _QUEUE_EXTRA_DESC = {
     "script_search": ("Tool. Full-text search across Script/ModuleScript/LocalScript "
@@ -2635,6 +3246,16 @@ _QUEUE_EXTRA_DESC = {
 _PLUGIN_STATUS_DESC = ("Tool. Instant in-Studio plugin health "
                        "(queue up, polling, version, pending). Call FIRST when "
                        "a Studio command fails - never hammer a failing call.")
+_LOCAL_EXTRA_DESC = {
+    "get_studio_state": ("Tool. Aggregated Studio truth: connectivity, place, playState "
+                         "(edit/play), current Selection, plugin/bridge versions, pending tasks. "
+                         "Ask this when reasoning about reality - never assume. No args except projectId?."),
+    "get_memory": ("Tool. Structured project memory: one section (architecture, services, "
+                   "remotes, instances, conventions, ui, dependencies, bugs, tasks, decisions) "
+                   "or a table of contents. Pull only the section the task needs."),
+    "update_memory": ("Tool. Write project memory: section*, content* (max 20000 chars), "
+                      "mode replace|append. Record architecture, decisions, bugs, conventions as you learn them."),
+}
 
 
 def _local_tool_entry(name):
@@ -2643,6 +3264,8 @@ def _local_tool_entry(name):
     the padding below and the single-ownership override."""
     if name == "plugin_status":
         return {"name": name, "description": _PLUGIN_STATUS_DESC, "server": "local"}
+    if name in _LOCAL_EXTRA_DESC:
+        return {"name": name, "description": _LOCAL_EXTRA_DESC[name], "server": "local"}
     if name in _QUEUE_EXTRA_TOOLS:
         return {"name": name, "description": _QUEUE_EXTRA_DESC.get(name, "RoLink tool"),
                 "server": "local"}
@@ -2655,10 +3278,12 @@ def _local_tool_entry(name):
 
 
 def _queue_call(name, args, timeout):
-    """Enqueue for the Studio plugin and wait. Never raises."""
+    """Enqueue for the Studio plugin and wait. Never raises. Always terminal envelope."""
     if not _queue_server_on[0]:
-        return {"ok": False, "kind": "plugin_offline",
-                "error": _ai_readable_error("plugin_offline", "embedded queue not running", name)}
+        return {"ok": False, "tool": name, "executionId": "rl_noqueue", "status": "error",
+                "durationMs": 0, "kind": "plugin_offline", "error_code": "PLUGIN_OFFLINE",
+                "error": _ai_readable_error("plugin_offline", "embedded queue not running", name),
+                "verification": {"checked": False}}
     if not _plugin_alive():
         if _queue_last_poll[0] <= 0:
             _why = ("the Studio plugin was never seen polling - install it "
@@ -2668,16 +3293,20 @@ def _queue_call(name, args, timeout):
             _age = int(time.time() - _queue_last_poll[0])
             _why = (f"the Studio plugin last polled {_age}s ago - it stopped "
                     f"(Studio closed or place changed?). Reopen Studio with a place loaded")
-        return {"ok": False, "kind": "plugin_offline",
-                "error": _ai_readable_error("plugin_offline", _why, name)}
+        return {"ok": False, "tool": name, "executionId": "rl_noplugin", "status": "error",
+                "durationMs": 0, "kind": "plugin_offline", "error_code": "PLUGIN_OFFLINE",
+                "error": _ai_readable_error("plugin_offline", _why, name),
+                "verification": {"checked": False}}
     project = (args.get("projectId", "default") if isinstance(args, dict) else "default") or "default"
     # Large script writes hang the plugin recompile: fail fast with a chunk
     # hint instead of burning a 60s queue timeout (WaveSystem stall).
     if name == "set_script_content" and isinstance((args or {}).get("content"), str):
         _n = len(args["content"])
         if _n > 100000:
-            return {"ok": False, "kind": "validation_error",
-                    "error": _ai_readable_error("validation_error", f"content too large ({_n} chars, max 100000) - split into smaller writes", name)}
+            return {"ok": False, "tool": name, "executionId": "rl_rejected", "status": "error",
+                    "durationMs": 0, "kind": "validation_error", "error_code": "VALIDATION",
+                    "error": _ai_readable_error("validation_error", f"content too large ({_n} chars, max 100000) - split into smaller writes", name),
+                    "verification": {"checked": False}}
     # Code-carrying tools: the plugin runs cmd.command as Luau (Node's
     # convention), so the code itself must travel as the command payload -
     # sending the tool name would "succeed" without running anything.
@@ -2689,6 +3318,7 @@ def _queue_call(name, args, timeout):
     # 120s budget so a dead poller fails in a minute, not two.
     _wait = max(1.0, min(float(timeout or 30), 60.0))
     cid = queue_enqueue(name, _payload, args, project)
+    t0 = time.time()
     log(f"[{name}] queued for Studio plugin ({cid})", "cy", terminal=False)
     result, err = queue_wait(cid, _wait)
     if err == "timeout waiting for plugin result":
@@ -2709,20 +3339,24 @@ def _queue_call(name, args, timeout):
             _snap = ""
         # Plugin still polling but a claim never resolved = hung execution,
         # not a missing install. Keep plugin_offline only for dead pollers.
+        # Terminal envelope: the AI must NEVER treat this as success.
         if _plugin_alive():
-            return {"ok": False, "kind": "stuck-execution",
-                    "error": _ai_readable_error("stuck-execution", f"no plugin answer in {_wait:.0f}s{_snap}", name)}
-        return {"ok": False, "kind": "plugin_offline",
-                "error": _ai_readable_error("plugin_offline", f"no plugin answer in {_wait:.0f}s{_snap}", name)}
+            env = _make_envelope(name, cid, "timeout", t0, code="STUCK_EXECUTION",
+                                 message=f"no plugin answer in {_wait:.0f}s{_snap}")
+            env["kind"] = "stuck-execution"
+            return env
+        env = _make_envelope(name, cid, "timeout", t0, code="PLUGIN_OFFLINE",
+                             message=f"no plugin answer in {_wait:.0f}s{_snap}")
+        env["kind"] = "plugin_offline"
+        return env
     _queue_consec_timeouts[0] = 0
     if err:
-        return {"ok": False, "error": str(err), "kind": "execution_error"}
+        return _make_envelope(name, cid, "error", t0, code="STUDIO_EXECUTION_FAILED", message=str(err))
     with _queue_lock:
         _el = (_queue_cmds.get(cid) or {}).get("elapsed")
     if _el is not None:
         log(f"[{name}] plugin executed in {_el:.2f}s", "dim", terminal=False)
-    text = result if isinstance(result, str) else json.dumps(result, default=str)
-    return {"ok": True, "text": text[:12000], "images": []}
+    return _make_envelope(name, cid, "success", t0, result=result)
 
 
 async def main():
@@ -2732,7 +3366,7 @@ async def main():
         log(f"tool catalog: {len(ROLINK_TOOL_NAMES)} extended tools loaded", "gr")
     else:
         action_banner([
-            "The 119-tool catalog did NOT load - only live Studio tools",
+            "The 124-tool catalog did NOT load - only live Studio tools",
             "will be listed. Re-extract the release zip into a CLEAN",
             f"folder (this run: {_CATALOG_ERROR or 'empty catalog'}).",
         ])

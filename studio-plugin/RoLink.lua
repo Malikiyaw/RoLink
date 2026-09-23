@@ -1,4 +1,4 @@
--- RoLink.lua — Studio Plugin (119 tools, production)
+-- RoLink.lua — Studio Plugin (124 tools, production)
 -- Place in Studio Plugins folder or Rojo. Polls MCP every 200ms, executes, snapshots, heals, reports.
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
@@ -7,10 +7,10 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.3.0"
+local PLUGIN_VERSION = "2.4.0"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
-local btn = toolbar:CreateButton("RoLink", "AI bridge (119 tools, poll 200ms)", "rbxassetid://0")
+local btn = toolbar:CreateButton("RoLink", "AI bridge (124 tools, poll 200ms)", "rbxassetid://0")
 btn.ClickableWhenViewportHidden = true
 local enabled = true
 
@@ -648,8 +648,24 @@ local function summarizeSequence(seq: Instance, animId: string): { [string]: any
   table.sort(parts)
   local ret:{ [string]: any } = { animationId = animId, name = (seq::any).Name, path = (seq::any):GetFullName(),
     keyframeCount = #kfs, duration = dur, parts = parts, keyframes = detail, loop = (seq::any).Loop }
-  local twin = findClipTwin(seq)
-  if twin then ret.clip = twin:GetFullName(); ret.clipCurves = clipCurvesSummary(twin) end
+  -- Clip-twin enrichment is optional and must NEVER fail the read: a stale
+  -- plugin copy missing findClipTwin (seen live as Script:651 "attempt to
+  -- call a nil value") used to turn a good info call into a crash.
+  local twinOk, twin = pcall(function()
+    local finder:any = findClipTwin
+    if type(finder) ~= "function" then error("no clip-twin helper in this plugin copy - reinstall it") end
+    return finder(seq)
+  end)
+  if twinOk and twin then
+    local okPath, fullName = pcall(function() return (twin::any):GetFullName() end)
+    if okPath then ret.clip = fullName end
+    local okC, curves = pcall(function()
+      local summarizer:any = clipCurvesSummary
+      if type(summarizer) ~= "function" then error("no clip-curves helper in this plugin copy") end
+      return summarizer(twin)
+    end)
+    if okC then ret.clipCurves = curves end
+  end
   return ret
 end
 local function getAnimationInfo(args:{ [string]: any }): { [string]: any }
@@ -843,7 +859,9 @@ local function exportAnimationClip(args:{ [string]: any }): { [string]: any }
   local clip: Instance? = nil
   local okNew, newInst = pcall(function() return Instance.new("AnimationClip") end)
   if not okNew or not newInst then
-    error("validation_error: this Studio version cannot create AnimationClip (update Studio) - use the KeyframeSequence path instead")
+    error("validation_error: this Studio version cannot create AnimationClip (update Studio). "
+      .. "Do NOT retry prepare here - keep the KeyframeSequence, publish it via Studio's Animation Editor "
+      .. "(human click), then publish_animation{action:register, assetId:rbxassetid://...} with the real ID.")
   end
   clip = newInst
   ;(clip::any).Name = seq.Name .. "Clip"
@@ -901,6 +919,150 @@ local function registerAnimation(args:{ [string]: any }): { [string]: any }
   animCache[assetId] = got
   return { animationId = assetId, cached = true, name = got.Name,
     note = "Use play_animation/get_animation_info with this ID. Temp hashes die with the session; this ID ships." }
+end
+
+
+-- ── Diagnostics + inspection probes (tools 120-124) ──────────────────────
+-- Small, read-only, heavily pcapped: a probe must never fail the session.
+
+local function probeStudio(_args:{ [string]: any }): { [string]: any }
+  local playState = "edit"
+  pcall(function()
+    if game:GetService("RunService"):IsRunning() then playState = "play" end
+  end)
+  local sel:{ string } = {}
+  pcall(function()
+    for _, inst in ipairs(game:GetService("Selection"):Get()) do
+      table.insert(sel, inst:GetFullName())
+      if #sel >= 20 then break end
+    end
+  end)
+  return { playState = playState, selection = sel, pluginVersion = PLUGIN_VERSION }
+end
+
+local function outputHistory(limit:number): { [string]: any }
+  local out:{ [string]: any } = {}
+  pcall(function()
+    local hist = game:GetService("LogService"):GetLogHistory()
+    for i = #hist, 1, -1 do
+      local e = hist[i]
+      local t = tostring(e.messageType or "")
+      if t:find("Error") or t:find("Warning") then
+        table.insert(out, { type = t:match("Message(%w+)") or t, message = tostring(e.message or ""):sub(1, 300) })
+        if #out >= limit then break end
+      end
+    end
+  end)
+  return out
+end
+
+local function scanOutputLog(args:{ [string]: any }): { [string]: any }
+  local limit = math.clamp(math.floor(tonumber(args.limit or 30) or 30), 1, 100)
+  local entries = outputHistory(limit)
+  local errors, warnings = 0, 0
+  for _, e in ipairs(entries) do
+    if (e.type or ""):find("Error") then errors += 1 else warnings += 1 end
+  end
+  return { errors = entries, errorCount = errors, warningCount = warnings,
+    scanned = #entries, note = "Studio Output errors/warnings, newest first. Pair with get_script_content on the named scripts." }
+end
+
+local function inspectUI(args:{ [string]: any }): { [string]: any }
+  local rootName = tostring(args.root or "StarterGui")
+  local root: Instance? = game:FindFirstChildOfClass(rootName) or game:FindFirstChild(rootName)
+  if not root then
+    local ok, svc = pcall(function() return game:GetService(rootName) end)
+    if ok then root = svc end
+  end
+  if not root then error("inspect_ui: root '" .. rootName .. "' not found - try StarterGui") end
+  local maxDepth = math.clamp(math.floor(tonumber(args.maxDepth or 4) or 4), 1, 8)
+  local nodes:{ [string]: any } = {}
+  local function props(inst: Instance): { [string]: any }
+    local p:{ [string]: any } = { path = inst:GetFullName(), class = inst.ClassName, name = inst.Name }
+    pcall(function()
+      if inst:IsA("GuiObject") then
+        p.visible = (inst::any).Visible
+        local ap = (inst::any).AbsolutePosition
+        local as = (inst::any).AbsoluteSize
+        p.rect = { math.floor(ap.X), math.floor(ap.Y), math.floor(as.X), math.floor(as.Y) }
+        p.layoutOrder = (inst::any).LayoutOrder
+      end
+    end)
+    return p
+  end
+  local function walk(inst: Instance, depth: number)
+    if #nodes >= 300 then return end
+    table.insert(nodes, props(inst))
+    if depth >= maxDepth then return end
+    for _, c in ipairs(inst:GetChildren()) do walk(c, depth + 1) end
+  end
+  walk(root, 0)
+  return { root = root:GetFullName(), count = #nodes, truncated = #nodes >= 300, tree = nodes,
+    note = "rect = {x, y, w, h} in screen px. Compare siblings' rects for overlap/layout bugs." }
+end
+
+local function xmlEsc(s: string): string
+  return s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;")
+end
+
+local function studioSceneMap(args:{ [string]: any }): { [string]: any }
+  local W, H = 320, 180
+  local cam = workspace.CurrentCamera
+  if not cam then error("screenshot_studio: no CurrentCamera in this place") end
+  local vp = cam.ViewportSize
+  local sx, sy = W / math.max(vp.X, 1), H / math.max(vp.Y, 1)
+  local dots:{ string } = {}
+  local plotted, skipped = 0, 0
+  for _, d in ipairs(workspace:GetDescendants()) do
+    if plotted >= 150 then skipped += 1
+    elseif d:IsA("BasePart") then
+      local ok, sp, vis = pcall(function() return cam:WorldToScreenPoint((d::any).Position) end)
+      if ok and vis then
+        plotted += 1
+        table.insert(dots, string.format('<circle cx="%.1f" cy="%.1f" r="2" fill="#4cc2ff"><title>%s</title></circle>',
+          math.clamp(sp.X * sx, 0, W), math.clamp(sp.Y * sy, 0, H), xmlEsc(d:GetFullName())))
+      end
+    end
+  end
+  local rects:{ string } = {}
+  local uiCount = 0
+  pcall(function()
+    for _, g in ipairs(game.StarterGui:GetDescendants()) do
+      if g:IsA("GuiObject") and uiCount < 60 then
+        local ok, ap, as = pcall(function() return (g::any).AbsolutePosition, (g::any).AbsoluteSize end)
+        if ok and as.X > 0 and as.Y > 0 then
+          uiCount += 1
+          table.insert(rects, string.format('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="none" stroke="#ffb454"><title>%s</title></rect>',
+            ap.X * sx, ap.Y * sy, as.X * sx, as.Y * sy, xmlEsc(g:GetFullName())))
+        end
+      end
+    end
+  end)
+  local svg = string.format('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d"><rect width="%d" height="%d" fill="#0b0e14"/>%s%s</svg>',
+    W, H, W, H, W, H, table.concat(dots), table.concat(rects))
+  return { svg = svg, width = W, height = H, partsPlotted = plotted, partsSkipped = skipped,
+    uiRects = uiCount, viewport = { math.floor(vp.X), math.floor(vp.Y) },
+    note = "Schematic projection from CurrentCamera, not pixels: Studio exposes no pixel capture to plugins. Circles = parts, orange rects = UI. Use it for overlap/layout reasoning, not art review." }
+end
+
+local function playtestObserve(args:{ [string]: any }): { [string]: any }
+  local secs = math.clamp(tonumber(args.seconds) or 5, 0.5, 10)
+  local watch = tostring(args.watch or "")
+  for _ = 1, math.floor(secs * 10) do RunService.Heartbeat:Wait() end
+  local playState = "edit"
+  pcall(function()
+    if game:GetService("RunService"):IsRunning() then playState = "play" end
+  end)
+  local entries = outputHistory(40)
+  local hits:{ [string]: any } = {}
+  if watch ~= "" then
+    for _, e in ipairs(entries) do
+      if (e.message or ""):lower():find(watch:lower(), 1, true) then table.insert(hits, e) end
+    end
+  end
+  return { simulated = true, seconds = secs, playState = playState,
+    errorCount = #entries, output = entries, watch = watch, watchHits = hits,
+    note = "Edit-mode observation window (Heartbeat ticks + Output). Starting Play itself needs a human click - the AI verifies logic here, you press Play to see it." }
 end
 
 
@@ -1105,6 +1267,13 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="adjust_difficulty" or tool=="set_difficulty_profile" then pcall(function() local rs=game:GetService("ReplicatedStorage"); local f=rs:FindFirstChild("RoLinkDDA") or Instance.new("Folder", rs); f.Name="RoLinkDDA" end); result={dda=true}
     elseif tool=="generate_sound" or tool=="generate_sound_pack" then result={sound="procedural"}
     elseif tool=="play_sound" then result={played=true}
+    -- 120-124 Diagnostics + inspection (state truth, errors, UI, scene, playtest)
+    elseif tool=="studio_probe" then result=probeStudio(args)
+    elseif tool=="scan_errors" then result=scanOutputLog(args)
+    elseif tool=="inspect_ui" then result=inspectUI(args)
+    elseif tool=="screenshot_studio" then result=studioSceneMap(args)
+    elseif tool=="playtest_scenario" then result=playtestObserve(args)
+    elseif tool=="migrate_system" then result={composed=true, note="migration plans apply bridge-side via atomic batch_queue - this stub only satisfies the dispatcher"}
     else
       -- generic fallback: try run_code
       local ok2, ret2=sandboxRun(cmd.command or ""); if not ok2 then error(ret2) end; result={tool=tool, returned=ret2}
@@ -1135,10 +1304,45 @@ local function executeCommand(cmd:any): (any, string?)
   return result, err, os.clock()-start
 end
 
-local function reportResult(id:string, result:any, err:string?, elapsed:number)
-  pcall(function()
-    HttpService:RequestAsync({Url=MCP_URL.."/queue/result", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode({id=id, result=result, error=err, timings={elapsed=elapsed}})})
+-- JSON-safe sanitizer for queue results. HttpService:JSONEncode THROWS on
+-- Instances, functions, userdata and cyclic tables - and a throw inside
+-- reportResult used to silently drop an already-computed result (bridge burns
+-- a full 60s timeout with zero answers). Every value that reaches the wire
+-- goes through here first; unencodables become tagged strings.
+local function jsonSafe(v:any, depth:number?, seen:{ [any]: boolean }?): any
+  depth = depth or 0
+  if depth > 6 then return "[truncated depth]" end
+  local t = typeof(v)
+  if t == "string" or t == "number" or t == "boolean" then return v end
+  if t == "nil" then return nil end
+  if t ~= "table" then
+    return "[" .. t .. " " .. tostring(v):sub(1, 80) .. "]"
+  end
+  seen = seen or {}
+  if seen[v] then return "[cycle]" end
+  seen[v] = true
+  local out:{ [string]: any } = {}
+  local ok = pcall(function()
+    for k, val in pairs(v) do
+      local ks = (type(k) == "string" or type(k) == "number") and tostring(k) or "[key]"
+      out[ks] = jsonSafe(val, (depth or 0) + 1, seen)
+    end
   end)
+  if not ok then return "[unencodable table]" end
+  return out
+end
+
+local function reportResult(id:string, result:any, err:string?, elapsed:number)
+  -- ExecutionEnvelope part: bridge derives terminal status from err==nil.
+  -- pluginVersion lets the bridge warn on stale plugins immediately.
+  -- Sanitized + double-guarded: a result must never die in transit while the
+  -- bridge waits a full timeout for it (seen live: 60s stuck-execution burns).
+  local okPost, postErr = pcall(function()
+    HttpService:RequestAsync({Url=MCP_URL.."/queue/result", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode({id=id, result=jsonSafe(result), error=err, timings={elapsed=elapsed}, status=(err and "error" or "success"), pluginVersion=PLUGIN_VERSION})})
+  end)
+  if not okPost then
+    warn("[RoLink] result POST failed for " .. tostring(id) .. " (" .. tostring(postErr):sub(1, 120) .. ") - bridge will time out; do not resend blindly, check plugin_status.")
+  end
 end
 
 -- Universal wall-clock guard for TOOL calls (the execute_luau-only
@@ -1175,7 +1379,25 @@ end
 
 local function poll()
   if not enabled then return end
-  if _G.__RL_BUSY then return end
+  if _G.__RL_BUSY then
+    -- Watchdog: a claim span that throws outside pcall (or a poll task that
+    -- dies mid-flight) used to hold BUSY forever - every later poll returned
+    -- early while /queue/next kept answering, i.e. "polling but never
+    -- finishing" with full 60s burns (seen live across all tools at once).
+    -- Legit executions always finish inside TOOL_BUDGET_S, so anything older
+    -- than budget + grace is a wedge, not work: clear it loudly.
+    local heldFor = _G.__RL_BUSY_AT and (os.clock() - _G.__RL_BUSY_AT) or nil
+    if heldFor and heldFor > (TOOL_BUDGET_S + 15) then
+      warn("[RoLink] BUSY held by '" .. tostring(_G.__RL_BUSY_TOOL or "?") .. "' for "
+        .. string.format("%.0f", heldFor) .. "s - force-clearing so the queue can move. "
+        .. "Do not resend the stuck command; call plugin_status first.")
+      _G.__RL_BUSY = false
+      _G.__RL_BUSY_AT = nil
+      _G.__RL_BUSY_TOOL = nil
+    else
+      return
+    end
+  end
   -- Unfiltered: project scoping happens bridge-side. A filtered poll would
   -- starve commands enqueued under any other project id (pending forever,
   -- full timeout burn, no error) with zero visible cause.
@@ -1194,21 +1416,38 @@ local function poll()
     end
   end
   local cmd=data.command; if not cmd then return end
+  -- Malformed queue entries must never wedge the single-flight guard: a nil
+  -- id/tool used to throw in the log line below with BUSY already held.
+  if type(cmd) ~= "table" or type(cmd.id) ~= "string" or cmd.id == "" then
+    warn("[RoLink] ignoring malformed queue command (no id) - bridge will time it out, not the plugin.")
+    return
+  end
   _G.__RL_BUSY = true
-  log("executing "..cmd.id.." tool="..cmd.tool)
-  local okExec, result, err, elapsed = runToolDeadline(cmd)
+  _G.__RL_BUSY_AT = os.clock()
+  _G.__RL_BUSY_TOOL = tostring(cmd.tool or "?")
+  -- The whole claim span runs protected with the busy-reset OUTSIDE the pcall:
+  -- no throw anywhere below (execute, encode, POST, warn) may hold BUSY.
+  local okPoll, pollErr = pcall(function()
+    log("executing "..cmd.id.." tool="..tostring(cmd.tool or "?"))
+    local okExec, result, err, elapsed = runToolDeadline(cmd)
+    if not okExec then
+      -- runToolDeadline reports failures in the err slot (result is nil).
+      result, err, elapsed = nil, "plugin_error: " .. tostring(err), 0
+    end
+    if elapsed and elapsed > 30 then
+      warn("[RoLink] STILL RUNNING "..cmd.id.." "..tostring(cmd.tool).." after "
+        .. string.format("%.0f", elapsed) .. "s - probable infinite loop in the code. "
+        .. "Toggle the RoLink button off/on or restart Studio to clear it; do not resend the same code.")
+    end
+    reportResult(cmd.id, result, err, elapsed or 0)
+    if err then warn("[RoLink] "..tostring(err)) end
+  end)
   _G.__RL_BUSY = false
-  if not okExec then
-    -- runToolDeadline reports failures in the err slot (result is nil).
-    result, err, elapsed = nil, "plugin_error: " .. tostring(err), 0
+  _G.__RL_BUSY_AT = nil
+  _G.__RL_BUSY_TOOL = nil
+  if not okPoll then
+    warn("[RoLink] claim span failed (" .. tostring(pollErr):sub(1, 160) .. ") - busy flag cleared, queue released.")
   end
-  if elapsed and elapsed > 30 then
-    warn("[RoLink] STILL RUNNING "..cmd.id.." "..tostring(cmd.tool).." after "
-      .. string.format("%.0f", elapsed) .. "s - probable infinite loop in the code. "
-      .. "Toggle the RoLink button off/on or restart Studio to clear it; do not resend the same code.")
-  end
-  reportResult(cmd.id, result, err, elapsed or 0)
-  if err then warn("[RoLink] "..err) end
 end
 
 btn.Click:Connect(function() enabled=not enabled; btn:SetActive(enabled); log(enabled and "enabled" or "disabled") end)
@@ -1218,4 +1457,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.3.0 loaded - 119 tools ready, polling "..MCP_URL)
+log("RoLink 2.4.0 loaded - 124 tools ready, polling "..MCP_URL)

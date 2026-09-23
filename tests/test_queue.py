@@ -43,7 +43,7 @@ class QueueTest(unittest.TestCase):
         code, body = http("GET", "/health")
         self.assertEqual(code, 200)
         self.assertTrue(body["ok"])
-        self.assertEqual(body["tools"], 119)
+        self.assertEqual(body["tools"], 124)
 
     def test_plugin_status_live(self):
         import json as _json
@@ -139,12 +139,15 @@ class QueueTest(unittest.TestCase):
         self.assertTrue(out["res"]["ok"], out["res"])
 
     def test_plugin_never_polled_falls_through(self):
-        # No plugin ever seen: degrade to the StudioMCP path (mcp_offline
-        # here since no server was started), never burn a queue timeout.
+        # No plugin ever seen: instant plugin_offline install guidance (never
+        # burn a queue timeout, never forward registry names to StudioMCP for
+        # a confusing "unknown tool"). Overlaps a live server knows still fall
+        # through - covered in test_stuck_routing.py.
         bridge._queue_last_poll[0] = 0.0
         res = bridge.safe_call("create_instance", {"className": "Part"}, 5)
         self.assertFalse(res["ok"])
-        self.assertEqual(res["kind"], "mcp_offline")
+        self.assertEqual(res["kind"], "plugin_offline")
+        self.assertIn("install-plugin", res.get("error", ""))
 
     def test_queue_server_disabled(self):
         bridge._queue_server_on[0] = False

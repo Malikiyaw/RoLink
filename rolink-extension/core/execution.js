@@ -199,16 +199,22 @@
         req.result = res.text||"";
         req.kind = "success";
         if(this.trace) this.trace.push({ ts: Date.now(), level:"ok", msg:`Studio ✓ ${tool} ${String(res.text||"done").slice(0,80)}` });
-        emitEv("success", { result: res.text || "" });
-        return { id, ok:true, kind:"success", error:"", text: res.text||"", images: res.images||[] };
+        emitEv("success", { result: res.text || "", executionId: res.executionId || id, durationMs: res.durationMs, verification: res.verification });
+        // Terminal ExecutionEnvelope passthrough: the AI must read status/executionId,
+        // never infer success from anything else.
+        return { id: res.executionId || id, ok:true, kind:"success", error:"", text: res.text||"", images: res.images||[],
+          tool, status: res.status || "success", executionId: res.executionId || id,
+          durationMs: res.durationMs, verification: res.verification || { checked:false } };
       } else {
         const norm = normalizeError(res);
         req.status = norm.kind === "timeout" ? STATUS.TIMEOUT : STATUS.ERROR;
         req.kind = norm.kind;
         req.error = norm.error;
         if(this.trace) this.trace.push({ ts: Date.now(), level:"error", msg:`Studio ✗ ${tool} ${norm.kind}: ${String(norm.error).slice(0,120)}` });
-        emitEv(norm.kind === "timeout" ? "timeout" : "error", { result: norm.error });
-        return { id, ok:false, kind: norm.kind, error: norm.error, text: res.text||"" };
+        emitEv(norm.kind === "timeout" ? "timeout" : "error", { result: norm.error, executionId: res.executionId, durationMs: res.durationMs });
+        return { id: res.executionId || id, ok:false, kind: norm.kind, error: norm.error, text: res.text||"",
+          tool, status: res.status || "error", executionId: res.executionId,
+          durationMs: res.durationMs, error_code: res.error_code, verification: res.verification || { checked:false } };
       }
     }
 

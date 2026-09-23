@@ -2,7 +2,7 @@
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
   "generatedAt": "2026-09-02T12:20:58.726Z",
-  "toolCount": 119,
+  "toolCount": 124,
   "toolFields": {
     "get_instances": [
       "path",
@@ -473,6 +473,28 @@
       "assetId",
       "projectId",
       "trackPath"
+    ],
+    "scan_errors": [
+      "projectId"
+    ],
+    "inspect_ui": [
+      "root",
+      "projectId"
+    ],
+    "screenshot_studio": [
+      "projectId"
+    ],
+    "playtest_scenario": [
+      "scenario",
+      "watch",
+      "expect",
+      "projectId"
+    ],
+    "migrate_system": [
+      "system",
+      "goal",
+      "sources[]",
+      "projectId"
     ]
   },
   "stringFields": [
@@ -497,9 +519,11 @@
     "duration",
     "effect",
     "event",
+    "expect",
     "exports",
     "fromId",
     "functionName",
+    "goal",
     "handlerCode",
     "id",
     "key",
@@ -520,21 +544,26 @@
     "property",
     "query",
     "region",
+    "root",
     "sandboxId",
+    "scenario",
     "sessionId",
     "shots",
     "snapshot",
     "snapshotId",
     "soundId",
+    "sources",
     "store",
     "studio_id",
+    "system",
     "target",
     "template",
     "theme",
     "toId",
     "tool",
     "trackPath",
-    "variable"
+    "variable",
+    "watch"
   ],
   "codeLikeFields": [
     "code",

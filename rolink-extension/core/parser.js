@@ -348,6 +348,23 @@ const RLParse = (() => {
     return "command";
   }
 
+  // Placeholder names a small model types INSTEAD of a real tool: it copies
+  // the instruction example verbatim ({"command": "command_name"} - seen live
+  // on HF Chat with a small runner). Returns the placeholder text or null.
+  // Matches ONLY the command/tool VALUE position, so prose mentioning the
+  // word, and our own parse-error notes quoting {"command": "name"}, never hit.
+  const PLACEHOLDER_NAMES = new Set(["command_name", "tool_name", "commandname",
+    "toolname", "command", "tool", "name", "string", "tool-name", "command-name"]);
+  function placeholderCall(txt) {
+    try {
+      const m = /"(?:command|tool)"\s*:\s*"([^"]{1,60})/.exec(txt || "");
+      if (!m) return null;
+      const nm = (m[1] || "").trim().toLowerCase();
+      if (nm && PLACEHOLDER_NAMES.has(nm)) return m[1].trim();
+      return null;
+    } catch { return null; }
+  }
+
   // A turn the EXTENSION injected (always sent as a user turn): a tool result, an
   // ERROR, or a "(System note: …)" control message. Matched ONLY by the fixed
   // shapes we emit - never by command-like keywords, since a parse-error note
@@ -376,7 +393,7 @@ const RLParse = (() => {
 
   return {
     START_M, END_M, LUA_START_RE, LUA_END_RE, CMD_KEY_RE, DSML_RE,
-    findLuaStart, findLuaEnd, matchBrace, extractJson, normalizeCall,
+    findLuaStart, findLuaEnd, matchBrace, extractJson, normalizeCall, placeholderCall,
     hasToolSignature, hasOpenToolBlock, parseToolCalls, salvageCutOff, toolNameFromText,
     isInjectedFeedback, hasCommandShape,
   };

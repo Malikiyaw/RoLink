@@ -1,7 +1,7 @@
 :: SPDX-License-Identifier: GPL-3.0-or-later
 :: install-plugin.bat - installs the RoLink Studio plugin (third-party MCP path).
 :: Copies studio-plugin\RoLink.lua into Roblox Studio's Plugins folder so the
-:: 119 registry tools execute inside Studio via the bridge's :3001 queue.
+:: 124 registry tools execute inside Studio via the bridge's :3001 queue.
 @echo off
 setlocal
 cd /d "%~dp0"

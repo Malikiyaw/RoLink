@@ -28,6 +28,12 @@ function mkel(tag, o) {
     },
     get innerText() { return this.textContent; },
     getClientRects() { return this.isConnected ? [{}] : []; },
+    // Real-DOM alias: providers/arena.js walks parentElement (barAnchor's
+    // rounded-card walk, rememberCard's width probe). The stub only had
+    // `parent`, so every parent-walk silently terminated at the starting
+    // node and all three anchor pins failed. `parent` is reassigned during
+    // tree assembly, so a live getter stays correct.
+    get parentElement() { return this.parent; },
     getBoundingClientRect() { return this.isConnected
       ? { width: 700, height: 120, left: 10, right: 710, top: 10, bottom: 130 }
       : { width: 0, height: 0, left: 0, right: 0, top: 0, bottom: 0 }; },
@@ -101,8 +107,25 @@ function matchTok(el, tok) {
     if (!el.classList.contains(cm.slice(1))) return false;
   }
   for (const am of tok.match(/\[[^\]]+\]/g) || []) {
-    const m = am.slice(1, -1).match(/^\s*([\w-]+)\s*$/);
-    if (!m || el.getAttribute(m[1]) == null) return false;
+    // Value form too ([role="textbox"], [attr*="v" i]): the providers' layer
+    // chains query value selectors, and the bare-name-only matcher silently
+    // rejected every one of them (seen: role=textbox layer never matching).
+    const spec = am.slice(1, -1);
+    const bare = spec.match(/^\s*([\w-]+)\s*$/);
+    if (bare) { if (el.getAttribute(bare[1]) == null) return false; continue; }
+    const m = spec.match(/^\s*([\w-]+)\s*(?:(\*?=)\s*(.+?))\s*$/);
+    if (!m) return false;
+    const v = m[1] === "class" ? (el.classes || []).join(" ") : el.getAttribute(m[1]);
+    if (v == null) return false;
+    let val = m[3] || "", ci = false;
+    const q = val.match(/^(['"])(.*)\1\s*(i)?$/);
+    if (q) { val = q[2]; ci = !!q[3]; }
+    else { const qi = val.match(/^(.*?)\s+i$/); if (qi) { val = qi[1]; ci = true; } }
+    const sv = String(v);
+    const hit = m[2] === "="
+      ? (ci ? sv.toLowerCase() === val.toLowerCase() : sv === val)
+      : (ci ? sv.toLowerCase().includes(val.toLowerCase()) : sv.includes(val));
+    if (!hit) return false;
   }
   return true;
 }

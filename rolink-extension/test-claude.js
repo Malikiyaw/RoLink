@@ -114,6 +114,53 @@ ok("core sends one de-escalation", /RL\.FEEDBACK\.deescalate/.test(mainSrc));
 ok("core honors two-step bootstrap", /P\.bootOpener/.test(mainSrc));
 ok("core passes the compact flag", /compact: P\.compactPrompt/.test(mainSrc));
 
+// ── Core execution-truth pins (relocated from test-pi.js when Pi was removed) ──
+// These guard provider-agnostic bootstrap logic; they belong to no single
+// provider, so they live here with the other core wiring pins.
+{
+  ok("proveIt is a top-level FEEDBACK key",
+    typeof RL.FEEDBACK.proveIt === "string" && RL.FEEDBACK.proveIt.length > 0);
+  ok("proveIt demands list_commands",
+    /list_commands/.test(RL.FEEDBACK.proveIt));
+  ok("proveIt never reproduces an example envelope",
+    !/"command":\s*"(?!list_commands)/.test(RL.FEEDBACK.proveIt));
+  ok("proof round reads proveIt directly", /RL\.FEEDBACK\.proveIt/.test(mainSrc));
+
+  // Account restriction (throttle/ToS notice): terminal everywhere. Classified
+  // BEFORE refusal so a throttled account never gets de-escalated or retried.
+  const RESTR =
+    "We have detected a number of violations of our Terms of Service in your " +
+    "recent messages. We have temporarily restricted your ability to talk. " +
+    "You will be able to resume your conversation in 1 minute.";
+  ok("restriction classifies", RL.isRestricted(RESTR) === true);
+  ok("ToS question is not a restriction",
+    RL.isRestricted("What are the terms of service?") === false);
+  ok("command JSON never restricts",
+    RL.isRestricted('{"command": "list_commands"}') === false);
+  ok("classify checks restriction before refusal",
+    mainSrc.indexOf("RL.isRestricted") !== -1 &&
+    mainSrc.indexOf("RL.isRestricted") < mainSrc.indexOf("RL.isRefusal"));
+  ok("loop stops on restriction", /kind === "restricted"/.test(mainSrc));
+  ok("restriction banner waits it out", /do NOT click Start|wait it out/i.test(mainSrc));
+  ok("restriction aborts every bootstrap path", (mainSrc.match(/start\.restricted/g) || []).length >= 3);
+
+  // Proof gate: A.started may only flip after an executed command.
+  ok("started gated on execution",
+    /if \(!bootRanTool\) \{[\s\S]{0,400}?didn't emit a command/.test(mainSrc));
+  ok("chatty model gets one proof round",
+    (mainSrc.match(/RL\.FEEDBACK\.proveIt/g) || []).length === 1);
+  ok("no-tool bootstrap banners honestly",
+    /didn't emit a command/.test(mainSrc));
+
+  // Input-budget: results capped with a marked gap; the system prompt never.
+  ok("core caps results via capResult", /P\.capResult\(&& |P\.capResult &&/.test(mainSrc) ||
+    /text = P\.capResult\(text\)/.test(mainSrc));
+  ok("core never caps the system prompt", /SYS_MARKER\) === -1/.test(mainSrc));
+
+  // Stuck-lock guard: an idle bar force-clears composer locks.
+  ok("idle bar releases stuck locks", /__unlockAt/.test(mainSrc));
+}
+
 // Invite rotation: exactly one Discord URL in the shipped extension, the new
 // one (pure node - no grep dependency on Windows).
 {

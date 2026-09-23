@@ -1,8 +1,13 @@
 /**
- * RoLink Wire Protocol v1 — shared between extension, bridge, MCP, plugin
+ * RoLink Wire Protocol v2 — shared between extension, bridge, MCP, plugin
  * Snake_case WireMethod, id-correlated JSON frames
+ *
+ * v2 adds the ExecutionEnvelope: every Studio tool MUST resolve to a
+ * terminal envelope (success/error/timeout), never a bare {queued:true}.
+ * queued/claimed/running are lifecycle signals only; the AI may only treat
+ * status==="success"|"verified" as done.
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export type Role = "extension" | "plugin" | "mcp";
 
@@ -47,12 +52,74 @@ export interface EnqueuePayload {
 
 export interface QueuedCommand extends EnqueuePayload {
   id: string;
-  status: "queued" | "claimed" | "done" | "failed";
+  /** Execution id (rl_*) — identical to id, exposed to the AI as executionId. */
+  executionId?: string;
+  status: "queued" | "claimed" | "running" | "done" | "failed";
   attempts: number;
   createdAt: number;
   claimedAt?: number;
+  startedAt?: number;
+  endedAt?: number;
   result?: unknown;
   error?: string;
+}
+
+/** Terminal execution states the AI is allowed to trust. */
+export type ExecutionStatus =
+  | "success"
+  | "error"
+  | "timeout"
+  | "confirm_required";
+
+export type ErrorCode =
+  | "VALIDATION"
+  | "STUDIO_EXECUTION_FAILED"
+  | "PLUGIN_OFFLINE"
+  | "STUCK_EXECUTION"
+  | "TIMEOUT"
+  | "VERIFY_FAILED"
+  | "TX_ROLLBACK"
+  | "CONFIRM_REQUIRED"
+  | "MCP_OFFLINE"
+  | "STUDIO_OFFLINE";
+
+/**
+ * ExecutionEnvelope — the ONLY success signal the AI may trust.
+ * Transport: JSON string inside MCP content[].text and inside bridge
+ * tool_result {ok,text}. `text` remains the human/AI-readable payload;
+ * the envelope fields are duplicated top-level on bridge frames for
+ * cheap access (executionId, status, durationMs).
+ */
+export interface ExecutionEnvelope {
+  ok: boolean;
+  tool: string;
+  executionId: string;
+  status: ExecutionStatus | "success" | "error" | "timeout";
+  durationMs: number;
+  result?: unknown;
+  verification?: { checked: boolean; passed?: boolean; detail?: string };
+  preflight?: { syntax: string; risk: string; notes?: string[] };
+  error?: { code: ErrorCode | string; message: string };
+}
+
+export function makeExecutionEnvelope(
+  tool: string,
+  executionId: string,
+  status: ExecutionEnvelope["status"],
+  durationMs: number,
+  result?: unknown,
+  error?: ExecutionEnvelope["error"],
+): ExecutionEnvelope {
+  return {
+    ok: status === "success",
+    tool,
+    executionId,
+    status,
+    durationMs,
+    ...(result !== undefined ? { result } : {}),
+    verification: { checked: false },
+    ...(error ? { error } : {}),
+  };
 }
 
 export interface HealthResponse {
@@ -64,7 +131,7 @@ export interface HealthResponse {
 }
 
 export function makeId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+  return `rl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
 export type BridgeState =

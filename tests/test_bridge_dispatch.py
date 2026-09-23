@@ -73,11 +73,15 @@ class BridgeDispatchTest(unittest.TestCase):
         self.assertEqual(bridge.mgr.calls, [])
 
     def test_valid_name_reaches_mcp(self):
-        # valid path: mgr.call IS called. We don't assert on the result here
+        # valid path: mgr.call IS called when a live server natively knows
+        # the name (overlap). We don't assert on the result here
         # (probe_studio would need a full mock for that); we just want to
         # confirm the validation does NOT swallow a valid call.
         # Stub probe_studio so the valid path doesn't blow up on mgr.index.
         bridge.probe_studio = lambda: {"app": True, "place": True}
+        # Simulate StudioMCP natively advertising the name: the queue-tools
+        # guard lets known-live spellings fall through to mgr.call.
+        bridge.mgr.index = {"create_instance": (None, "create_instance")}
         r = bridge.handle_call_tool("create_instance", {"className": "Part"}, 30)
         # mgr.call WAS called
         self.assertEqual(len(bridge.mgr.calls), 1)

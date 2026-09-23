@@ -956,8 +956,48 @@ window.ROLINK_TOOL_PROMPTS = {
     "args_guide": "action* prepare|register. prepare: trackPath?|animationId? (one required). register: assetId* rbxassetid://.... Studio gotcha: publishing is human-only (auth + dialog); the model must ask the user to click it.",
     "example_call": "###MCP_TOOL###\n{\"tool\":\"publish_animation\",\"args\":{\"action\":\"prepare\",\"trackPath\":\"Workspace/RoLinkAnimations/HelloWave\"}}",
     "output": "prepare → {ready, checklist, publishSteps}. register → {animationId, cached:true}. Then play_animation/get_animation_info with the ID.",
-    "pitfalls": "1) Never invent asset IDs — register only IDs the human pasted back. 2) Temp hashes die with the session; published IDs ship."
-  }
+    "pitfalls": "1) Never invent asset IDs — register only IDs the human pasted back. 2) Temp hashes die with the session; published IDs ship. 3) On a Studio without AnimationClip, prepare fails fast by design — do not retry; publish the KeyframeSequence in the Animation Editor (human) then register."
+  },
+  "scan_errors": {
+  "persona": "You are a triage nurse for Roblox projects who reads the Output first and asks questions never. You turn red text into a named suspect, a file, and a next step. You never say 'looks fine' when errors exist.",
+  "when_to_use": "First call for ANY bug report, failed playtest, or after a batch of edits. Replaces asking the user 'what went wrong?'. Studio equivalent: View → Output filter Errors.",
+  "args_guide": "limit 1-100 default 30. No path needed — scans the whole Output log newest-first.",
+  "example_call": "###MCP_TOOL###\n{\"tool\":\"scan_errors\",\"args\":{\"limit\":30}}",
+  "output": "Terminal envelope → {errors[{type,message}], errorCount, warningCount}. Open the named scripts with get_script_content next.",
+  "pitfalls": "1) Output scrolls — always re-scan after a fix, never trust a stale list. 2) Warnings are not errors; fix errors first."
+},
+  "inspect_ui": {
+  "persona": "You are a UI inspector who sees layout the way the renderer does: rects, parents, siblings. You spot the overlapping button, the invisible frame swallowing clicks, the LayoutOrder fighting the grid. You never guess positions from names.",
+  "when_to_use": "Any UI bug, overlap complaint, or before editing StarterGui. Pair with screenshot_studio for the visual cross-check. Studio equivalent: Explorer + Properties on GUI objects.",
+  "args_guide": "root default StarterGui. maxDepth 1-8 default 4. Returns path/class/rect per node (cap 300).",
+  "example_call": "###MCP_TOOL###\n{\"tool\":\"inspect_ui\",\"args\":{\"root\":\"StarterGui\"}}",
+  "output": "Terminal envelope → {root, count, tree[{path,class,rect}]}. rect = {x,y,w,h} screen px — compare siblings for overlaps.",
+  "pitfalls": "1) AbsolutePosition can be 0,0 in Edit without device emulation — treat zeros as unknown, not top-left. 2) PlayerGui is per-player; StarterGui is the source of truth in Edit."
+},
+  "screenshot_studio": {
+  "persona": "You are a layout reviewer who works from a schematic, not pixels. You read the camera-projected map the way a minimap is read: clusters, outliers, overlaps. You never critique art style from it.",
+  "when_to_use": "Map/UI layout questions ('does the button overlap?', 'is the spawn inside the arena?'). Costs one call; prefer it over ten get_instances. Studio equivalent: glancing at the viewport.",
+  "args_guide": "No args. Returns an SVG schematic (320x180) plus counts.",
+  "example_call": "###MCP_TOOL###\n{\"tool\":\"screenshot_studio\",\"args\":{}}",
+  "output": "Terminal envelope → {svg, partsPlotted, uiRects, viewport}. Circles = parts, orange rects = UI. Not pixels — no pixel capture API exists for plugins.",
+  "pitfalls": "1) Cap 150 parts — a dense map plots a sample, not everything. 2) Never claim visual/polish judgments from the schematic."
+},
+  "playtest_scenario": {
+  "persona": "You are a QA engineer who writes the scenario, runs the observation window, and reports pass/fail with evidence. You check the expected string actually appeared and the error list is empty. You never declare 'works' without both.",
+  "when_to_use": "Verifying gameplay logic end to end ('purchase a sword updates balance'). Runs snapshot → ticks → Output check. For visible rendering, ask the human to press Play. Studio equivalent: Playtest + Output.",
+  "args_guide": "scenario* (plain words). seconds 0.5-10 default 5. watch optional keyword filter. expect optional substring that must appear in Output.",
+  "example_call": "###MCP_TOOL###\n{\"tool\":\"playtest_scenario\",\"args\":{\"scenario\":\"buy a sword updates balance\",\"seconds\":5,\"expect\":\"Balance\"}}",
+  "output": "Terminal envelope → {passed, checks[{check,passed}], errors[]}. Failed checks name the suspect system — follow with scan_errors detail.",
+  "pitfalls": "1) Edit-mode observation only — Play-specific replication will not show. 2) Keep seconds small; the window caps at 10s."
+},
+  "migrate_system": {
+  "persona": "You are a careful refactoring lead who reads before moving. You map requires, propose module moves, and apply only explicit confirmed steps through an atomic batch — rolled back whole on any failure. You never improvise edits during a migration.",
+  "when_to_use": "Modernizing existing systems (leaderboard → modules). Default returns a plan (no writes). Apply only with user-approved steps + confirm:true. Studio equivalent: manual refactor with ChangeHistory undo.",
+  "args_guide": "system* + goal*. sources[] (up to 10 paths, read first). Plan-only by default. To apply: plan_only:false, confirm:true, steps[] of create_module/set_script_content (max 10).",
+  "example_call": "###MCP_TOOL###\n{\"tool\":\"migrate_system\",\"args\":{\"system\":\"leaderboard\",\"goal\":\"modular services\",\"sources\":[\"ServerScriptService/Leaderboard\"]}}",
+  "output": "Plan → {plan{steps, requiresFound, readback}, toApply}. Apply → atomic batch result (rolled back whole on failure).",
+  "pitfalls": "1) Never apply without sources[] readback — blind moves break requires. 2) Only create_module/set_script_content steps are accepted."
+}
 };
 // Additive lookup shim (Sprint A): window.RLPrompts.get(name) returns the
 // full record including persona. Old window.ROLINK_TOOL_PROMPTS readers

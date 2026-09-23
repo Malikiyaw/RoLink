@@ -11,7 +11,7 @@ window.ROLINK_CODE_FIELDS = {
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
   "generatedAt": "2026-09-02T12:20:58.726Z",
-  "toolCount": 119,
+  "toolCount": 124,
   "toolFields": {
     "get_instances": [
       "path",
@@ -482,6 +482,28 @@ window.ROLINK_CODE_FIELDS = {
       "assetId",
       "projectId",
       "trackPath"
+    ],
+    "scan_errors": [
+      "projectId"
+    ],
+    "inspect_ui": [
+      "root",
+      "projectId"
+    ],
+    "screenshot_studio": [
+      "projectId"
+    ],
+    "playtest_scenario": [
+      "scenario",
+      "watch",
+      "expect",
+      "projectId"
+    ],
+    "migrate_system": [
+      "system",
+      "goal",
+      "sources[]",
+      "projectId"
     ]
   },
   "stringFields": [
@@ -506,9 +528,11 @@ window.ROLINK_CODE_FIELDS = {
     "duration",
     "effect",
     "event",
+    "expect",
     "exports",
     "fromId",
     "functionName",
+    "goal",
     "handlerCode",
     "id",
     "key",
@@ -529,21 +553,26 @@ window.ROLINK_CODE_FIELDS = {
     "property",
     "query",
     "region",
+    "root",
     "sandboxId",
+    "scenario",
     "sessionId",
     "shots",
     "snapshot",
     "snapshotId",
     "soundId",
+    "sources",
     "store",
     "studio_id",
+    "system",
     "target",
     "template",
     "theme",
     "toId",
     "tool",
     "trackPath",
-    "variable"
+    "variable",
+    "watch"
   ],
   "codeLikeFields": [
     "code",

@@ -18,7 +18,7 @@ It's a Chrome/Edge browser extension plus a small local bridge that connects the
 2. **Open Roblox Studio** and load a Place
 3. **Enable the MCP server in Roblox Studio** (first time only): click **Assistant AI** in the top bar, then **...** > **Manage MCP Servers** > **Enable Studio as MCP Server**
 4. **Run the Bridge** - double-click `start.bat` (Windows) or `MacOS_Start.command` (macOS); a small window opens, the Bridge is running. On macOS, the first launch shows a Gatekeeper warning (normal for any downloaded script): click **Done**, then **System Settings > Privacy & Security**, scroll down, and click **Open Anyway**.
-5. **Go to https://chat.deepseek.com** (recommended), https://chatgpt.com, https://gemini.google.com, https://www.kimi.com, https://chat.z.ai, https://chat.qwen.ai, https://arena.ai, https://www.meta.ai, or https://claude.ai, open a new chat (only works on these exact addresses; on Arena use Direct mode)
+5. **Go to https://chat.deepseek.com** (recommended), https://chatgpt.com, https://gemini.google.com, https://www.kimi.com, https://chat.z.ai, https://chat.qwen.ai, https://arena.ai, https://www.meta.ai, https://claude.ai, https://huggingface.co/chat, or https://dola.com, open a new chat (only works on these exact addresses; on Arena use Direct mode)
 6. Click **Start session** in the RoLink panel
 7. Type what you want to build
 
@@ -60,6 +60,12 @@ providers/meta.js     same interface for Meta AI / meta.ai (React DOM, textarea
 providers/claude.js   Claude / claude.ai via the generic factory (layered
                       composer discovery, extended-thinking exclusion, chat-only
                       commands, usage-cap economy)                     (global RLProvider)
+providers/hfchat.js   HF Chat / huggingface.co/chat via the generic factory
+                      (textarea composer, model-variance + login rules,
+                      text-only until validated)                       (global RLProvider)
+providers/dola.js     Dola / dola.com via the generic factory (layered
+                      composer discovery, mode-chip/disabled-send guards,
+                      native-tool drift rules, anchored card)           (global RLProvider)
 background.js         WebSocket to the local bridge (provider-agnostic)
 ```
 
@@ -84,6 +90,11 @@ Smoke tests (plain Node, no dependencies - run them from this directory):
 - `node test-claude.js` - Claude contract (`providers/claude.js`): identity,
   vision flag, thinking hook, prompt rules, single send click path, plus
   manifest/background wiring pins.
+- `node test-hfchat.js` - HF Chat contract (`providers/hfchat.js`): identity,
+  text-only flag, login/model rules, single send click path, wiring pins.
+- `node test-dola.js` - Dola contract (`providers/dola.js`): identity,
+  text-only flag, mode-chip/disabled-send guards, drift rules, anchored
+  card, wiring pins.
 
 Both print `PASS`/`FAIL` per case and exit non-zero on failure.
 

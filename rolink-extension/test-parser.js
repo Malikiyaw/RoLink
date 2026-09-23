@@ -87,6 +87,22 @@ ok("dsml bare opener + prose",
    RLParse.DSML_RE.test('<|DSML|>tool_calls>\n\n<section>Let me explore the remaining key services.</section>'));
 // DeepSeek writes its special tokens with the FULL-WIDTH bar (U+FF5C).
 ok("dsml full-width bar", RLParse.DSML_RE.test('<｜DSML｜>invoke name="script_read">'));
+
+// ── Placeholder commands (small models copying the example) ─────────────
+// A model that types {"command": "command_name"} MEANT it as a call (seen
+// live on HF Chat) - the loop must correct it, not idle. Prose merely
+// mentioning the word stays untouched: only the command/tool VALUE position
+// counts.
+ok("placeholder command_name detected",
+  RLParse.placeholderCall('```json\n{"command": "command_name", "params": {}}\n```') === "command_name");
+ok("placeholder tool_name detected",
+  RLParse.placeholderCall('{"tool": "tool_name"}') === "tool_name");
+ok("real names are not placeholders",
+  RLParse.placeholderCall('{"command": "list_commands"}') === null);
+ok("prose mention is not a placeholder call",
+  RLParse.placeholderCall("Use the command key with your tool name.") === null);
+ok("example-envelope value flags too",
+  RLParse.placeholderCall('{"command": "name"}') === "name");
 // The form as it appeared in user screenshots - doubled bars with spaces. The
 // live capture (2026-08-22) showed DeepSeek actually emits plain ASCII bars and
 // that this spacing is only the site's rendering, but the detector stays

@@ -1,5 +1,82 @@
 # Changelog
 
+## [2.4.0] - 2026-09-23
+
+Execution truth, two new providers (10 → 12), Dola/HF hardening.
+
+- **Pi rejected**: `pi.ai` was evaluated and dropped before release —
+  Inflection's abuse filters escalated from a one-minute throttle to a full
+  account ban during normal bootstrap traffic. Do not use RoLink on `pi.ai`.
+- **Account-restriction classifier stays in core** (`RL.isRestricted`): any
+  provider can throttle an account. A ToS/throttle notice is terminal —
+  no de-escalation, no retry, no nudge (every further send extends the
+  wait), with a wait-it-out banner on all four response paths.
+- **Proof-gated session start**: `A.started` only flips green after a
+  `list_commands` round actually executed; a chatty "I'm ready" gets one
+  `proveIt` nudge, then an honest banner — never a phantom "Agent active".
+- **Stuck-input guard**: an idle bar force-clears any composer lock our code
+  set (typed-but-mute input seen live on Dola); never fires while a loop or
+  bootstrap owns the lock.
+- **No-turn banner**: a send that lands but gets no answer reports honestly
+  instead of muting.
+- **HF Chat placeholder teach-back**: literal `command_name` placeholders are
+  caught and answered with the correct call instead of being run.
+- **`proveIt` restored**: the key had been nested inside `parseError`'s notes,
+  so `RL.FEEDBACK.proveIt` was undefined and the proof round threw. Hoisted to
+  top-level `FEEDBACK` (call site unchanged).
+- **Agent Mode phantom-turn guard**: the flat prose strategy now skips
+  containers holding a code block — inline code words (`` `list_commands` ``)
+  no longer inflate discovery counts; code-bearing turns come from the
+  shaped/gated code strategy only.
+- **Contract suites revived**: `test-agent.js` (TDZ crash) and `test-arena.js`
+  selector engine were repaired so both run green; stub-DOM fidelity fixes
+  (parentElement, classList, case-insensitive attribute selectors, per-fixture
+  clock) back every pin above.
+
+- **Dola support** (`dola.com`): generic-factory provider with layered
+  composer discovery, mode-chip/disabled-send guards (never click a greyed
+  send or a mode chip), native skill/task drift rules (RoLink JSON only),
+  and the anchored-card bar pattern from the HF fix. Text-only until a live
+  image pass. Marked unstable pending live validation.
+
+- **RoLink bar sits above the chat on HF Chat**: chat-ui lays the composer
+  out as a horizontal flex row, so the generic in-flow mount landed the bar
+  beside the input. HF Chat now uses the anchored pattern (Kimi/Qwen
+  precedent): no in-flow mount into Svelte-reconciled DOM, the bar hugs the
+  rounded composer card at full width via `barAnchor()` with a cached,
+  geometry-read (never class-name) card lookup. Stub-DOM anchor tests pin
+  card-not-row selection and teardown degradation.
+
+- **HF Chat support** (`huggingface.co/chat`): generic-factory provider with
+  layered composer discovery, streaming-chrome exclusion, login + model-variance
+  rules (small models mangle the protocol — ask to switch models, never shrink
+  commands), text-only until a live image pass. Marked unstable pending live
+  validation.
+- **Every tool returns the truth**: terminal ExecutionEnvelopes
+  (`status success|error|timeout`, `executionId`, `durationMs`) on both the
+  bridge and Node paths — `queued:true` is never a result. Failed queue
+  commands are terminal (fixed an infinite error re-claim that starved the queue).
+- **`execute_luau` preflight**: risk levels (LOW/MEDIUM/HIGH), scope
+  estimates, and a `confirm:true` gate for non-undoable operations
+  (DataStore writes, HTTP, broad destroy).
+- **Atomic batches**: `batch_queue{mode:atomic}` snapshots first, rolls back
+  succeeded Studio steps on failure, and verifies the tree hash
+  (`partialCommitAllowed:false`).
+- **New tools 120-124**: `scan_errors` (Output triage), `inspect_ui`
+  (rects for overlap reasoning), `screenshot_studio` (schematic SVG scene
+  map — Studio exposes no pixel capture to plugins), `playtest_scenario`
+  (snapshot → ticks → Output check), `migrate_system` (plan by default,
+  atomic apply only with `confirm:true`).
+- **Studio truth + memory**: `get_studio_state` (connectivity, playState,
+  selection, versions, pending) and structured project memory
+  (`get_memory`/`update_memory`, 10 sections, pull-one-per-task).
+- **Narrative build HUD**: in-page panel narrating goal, phases, batch
+  progress, and the current tool (subscribes to the ToolEvent bus).
+- **Tool audit**: `scripts/audit_tools.py` proves schema → envelope →
+  plugin → prompt → sample per tool and writes
+  `generated/tool-quarantine.json` (current: 119 verified, 5 partial
+  mocks, 0 failing).
+
 ## [2.3.0] - 2026-09-22
 
 New provider, hardening, and cleanup.

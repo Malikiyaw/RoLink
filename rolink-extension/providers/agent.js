@@ -491,6 +491,12 @@ const RLProvider = (() => {
             if (t.length < 40 && !isFresh(d)) continue;
             if (!isShown(d)) continue;
             if (ed && (d === ed || d.contains(ed))) continue;
+            // Bare prose only (the contract above: "no roles, classes, or
+            // code"). A container holding a code block belongs to the code
+            // strategy, shaped + length-gated there; letting flat claim it
+            // too counts inline code words as phantom prose turns and
+            // inflates the counts (pin: "inline code words anchor no turns").
+            if (d.querySelector("pre, code")) continue;
             flats.push(d);
           } catch {}
         }

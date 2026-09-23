@@ -117,5 +117,10 @@
   "create_motion_effect",
   "create_vfx",
   "export_animation_clip",
-  "publish_animation"
+  "publish_animation",
+  "scan_errors",
+  "inspect_ui",
+  "screenshot_studio",
+  "playtest_scenario",
+  "migrate_system"
 ]

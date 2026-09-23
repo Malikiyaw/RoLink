@@ -125,6 +125,8 @@
     { name: "Arena", url: "https://arena.ai/text/direct" },
     { name: "Arena Agent", url: "https://arena.ai/agent" },
     { name: "Claude", url: "https://claude.ai/new" },
+    { name: "HF Chat", url: "https://huggingface.co/chat" },
+    { name: "Dola", url: "https://dola.com/" },
     { name: "Meta AI", url: "https://www.meta.ai/" },
   ];
 
@@ -286,6 +288,16 @@
 
   async function submitAndGetBase(text, images) {
     captureSendToken();
+    // Provider output budgets: Pi's composer refuses anything past 4000 chars
+    // (seen live) and the full list_commands result alone is tens of KB. Cap
+    // OUTGOING tool results via P.capResult so oversize results arrive marked
+    // instead of dying silently. The bootstrap/system prompt (SYS_MARKER) is
+    // NEVER capped - truncating instructions breaks the session; providers
+    // whose prompt exceeds a site limit must use compactPrompt instead.
+    try {
+      text = String(text);
+      if (P.capResult && text.indexOf(RL.SYS_MARKER) === -1) text = P.capResult(text);
+    } catch { text = String(text); }
     diag("send", { text: String(text).slice(0, 60), busy: P.isBusyNow() });
     A.injecting = true;
     ui.inputCover(true);
@@ -357,6 +369,20 @@
         ui.banner("warn", "Message could not be sent",
           `${P.displayName} did not accept the injected message after ${tries} attempts. ` +
           `Send a short message yourself (e.g. "continue") to resume the agent.`);
+      } else if (messageSent && !landed() && !A.stop) {
+        // Sent-but-invisible: the composer cleared (optimistic UI) yet no turn
+        // rendered - seen live on Dola as a blank page with a mute "Starting"
+        // spinner. The old code treated "cleared" as landed and the loop then
+        // waited a full timeout on a reply that will never come. Bound it:
+        // one extra window for the turn, then say so honestly.
+        diag("send.noTurn", { tries });
+        const turnAppeared = await waitFor(() => landed(), 15000);
+        if (!turnAppeared && !A.stop) {
+          diag("send.noTurnTimeout");
+          ui.banner("warn", "Message sent but not showing",
+            `${P.displayName} took the text but no reply thread appeared. Wait a moment - ` +
+            `if nothing arrives, send a short message yourself, or open a New chat and Start again.`);
+        }
       }
       return base;
     } finally {
@@ -744,6 +770,20 @@
         if (nm && nm !== "command" && (A.toolNames.has(nm) || A.toolNames.has(bareToolName(nm)))) {
           return { kind: "parse_error", reason: "malformed", raw: r, item: d.item };
         }
+        // A turn that ONLY contains a placeholder command: a small model copied
+        // the instruction example verbatim ({"command": "command_name"} - seen
+        // live on HF Chat) and MEANT it as a call. The gate above deliberately
+        // ignores placeholders (DeepSeek explanations quote the format), so
+        // distinguish attempt from explanation: strip fenced/block JSON - if
+        // almost nothing remains, correct the model; otherwise it's prose
+        // quoting the format and stays ignored.
+        try {
+          const ph = RLParse.placeholderCall ? RLParse.placeholderCall(r) : null;
+          if (ph) {
+            const stripped = r.replace(/```[\s\S]*?```/g, " ").replace(/\{[\s\S]*?\}/g, " ").trim();
+            if (stripped.length < 40) return { kind: "parse_error", reason: "placeholder", raw: r, item: d.item };
+          }
+        } catch {}
       }
       // The model answered in its OWN native tool-call markup instead of a
       // RoLink command - DeepSeek's DSML invoke/parameter tags (reported by
@@ -811,6 +851,13 @@
       // never terminal text - so the loop can answer it once (de-escalation)
       // instead of dying silently. isRefusal already excludes command-shaped
       // replies, so a real call can never land here.
+      // Account restriction (Pi: ToS violation notice + temporary throttle)
+      // checks FIRST: it also matches refusal-adjacent wording, but the
+      // response is opposite - full stop, never de-escalate or retry.
+      if (RL.isRestricted && RL.isRestricted(r)) {
+        diag("cmd.restricted", { len: r.length });
+        return { kind: "restricted", raw: r, item: d.item };
+      }
       if (RL.isRefusal && RL.isRefusal(r)) {
         diag("cmd.refusal", { len: r.length });
         return { kind: "refusal", raw: r, item: d.item };
@@ -1140,13 +1187,19 @@
     }
     // The Roblox MCP also reports Luau PARSE/RUNTIME errors as a SUCCESS whose
     // text is the executor's own stack trace ("…ExecuteLuauTool:139: …
-    // CommandExecution:54: <real error>" - validated live). Genuine script
+    // CommandExecution:54: <real error>" - validated live). AssistantCommand:90:
+    // is the same frame from the assistant-side executor (seen live with a
+    // "compare number < string" runtime error). Genuine script
     // output never contains those internal paths. Re-shape into a real ERROR so
     // the model gets the fix-it hints below and the chip settles red, not ✓
     // green - and strip the internal frames so only the useful part remains.
+    // The frame line number is kept: it refers to the snippet WE sent.
     if (r.ok && bareName === "execute_luau" && r.text &&
-        /\b(?:ExecuteLuauTool|CommandExecution):\d+:/.test(r.text)) {
-      r = { ok: false, error: r.text.replace(/^(?:\S*(?:ExecuteLuauTool|CommandExecution):\d+:\s*)+/, "").trim() || r.text };
+        /\b(?:ExecuteLuauTool|CommandExecution|AssistantCommand):\d+:/.test(r.text)) {
+      const fm = (r.text || "").match(/^(?:\S*(?:ExecuteLuauTool|CommandExecution|AssistantCommand):(\d+):\s*)+/);
+      const frameLine = (fm && fm[1]) || null;
+      r = { ok: false, frameLine,
+        error: r.text.replace(/^(?:\S*(?:ExecuteLuauTool|CommandExecution|AssistantCommand):\d+:\s*)+/, "").trim() || r.text };
     }
     if (r.ok) {
       if (r.images && r.images.length && !P.supportsVision) {
@@ -1196,6 +1249,7 @@
     }
     if (name === "execute_luau") {
       const err = r.error || "";
+      const frameNote = r.frameLine ? ` (line ${r.frameLine} of the snippet you sent)` : "";
       // "Failed to parse command code" is StudioMCP's GENERIC parse rejection: an
       // empty/mis-marked block is only ONE of its causes. The others are ordinary
       // Luau syntax errors and - seen live on Meta AI 2026-08-13 - code that is
@@ -1206,12 +1260,18 @@
       // payload and fails again (the reported spam of parse errors). Only give the
       // marker advice when the code we actually sent really was empty.
       const luaCode = args.code || "";
+      // Type-comparison errors name both sides ("attempt to compare number <
+      // string"): the fix is always coercion, never an API lookup. Match it
+      // before the generic runtime branch below.
+      const cmp = err.match(/attempt to compare (\S+)\s*(<=|>=|==|~=|<|>)\s*(\S+)/i);
       const hint = err.includes("Failed to parse command code")
         ? !luaCode.trim()
           ? "Your code block was empty or the marker was wrong. Use exactly ###LUA### (three hashes) - never ###LUA---. The code must be between ###LUA### and ###END_LUA###."
           : `Roblox refused to PARSE the code (${luaCode.length} chars sent, so it was not empty). Either the Luau syntax is invalid, or the code is too large/complex for the parser - a single huge expression or a very long script can be rejected outright. Check the syntax first; if it looks correct, split the work into several smaller calls.`
-        : err.includes("attempt to") || err.includes("nil value")
-          ? "Lua runtime error. Check that the API you are calling exists (use game:GetService() to access services). Make sure you use 'return' to output values, not 'print()'."
+        : cmp
+          ? `Type mismatch${frameNote}: you compared a ${cmp[1]} with '${cmp[2]}' against a ${cmp[3]} - Luau needs both sides the same type. Coerce one side (tonumber() for numbers, tostring() for text)${frameNote ? " at the marked line" : ""} and retry.`
+          : err.includes("attempt to") || err.includes("nil value")
+          ? `Lua runtime error${frameNote}. Check that the API you are calling exists (use game:GetService() to access services). Make sure you use 'return' to output values, not 'print()'.`
           : "Check your Lua syntax, make sure you use 'return' to output values (not 'print()'), and that all APIs you call exist in the current Roblox Studio context.";
       return `ERROR in execute_luau: ${err}\n\n${hint}\n\nFix the code and retry.`;
     }
@@ -1313,6 +1373,12 @@
   async function agentLoop(base) {
     if (A.running) return;
     A.running = true;
+    // Narrative build HUD: announce the loop so the panel can narrate phases.
+    // Guarded — the panel file may be absent on older installs.
+    try {
+      var __bp = (typeof window !== "undefined" && window.RolinkBuildPanel) || null;
+      if (__bp && typeof __bp.notifyLoopStart === "function") __bp.notifyLoopStart();
+    } catch (e) {}
     A.resumeArmed = false; // loop now owns the turn; drop the regenerate grace
     A.stop = false;
     A.stopping = false; // clean slate: never inherit a stale "Stopping…" from a
@@ -1416,6 +1482,7 @@
             const detail = res.reason === "unclosed" ? "cut off"
               : res.reason === "luaOpener" ? "missing ###LUA###"
               : res.reason === "envelope" ? "bad format"
+              : res.reason === "placeholder" ? "placeholder name"
               // DSML is not JSON at all - it is DeepSeek's own markup - so the
               // default "bad JSON" would send the user (and anyone reading a bug
               // report) looking for a syntax slip that does not exist.
@@ -1430,6 +1497,17 @@
           continue;
         }
         if (res.kind === "text") break; // final answer
+
+        // Account restriction: the site throttled the account (Pi ToS notice).
+        // Full stop with a wait-it-out banner - no de-escalation, no retry, no
+        // nudge. ANY further send during the window can extend the throttle.
+        if (res.kind === "restricted") {
+          diag("restricted.stop");
+          ui.banner("warn", `${P.displayName} restricted this account`,
+            `${P.displayName} flagged the session and throttled the account (usually lifts in about a minute). ` +
+            `Wait it out - do NOT click Start, retry, or send anything until it lifts, or the wait gets longer.`);
+          break;
+        }
 
         // Injection-skepticism refusal: answer ONCE with the user-voiced
         // de-escalation (falsifiable test + genuine opt-out). A second refusal
@@ -2069,6 +2147,15 @@
           const openRes = await waitForResponse(base0);
           if (!alive()) return;
           if (A.stop || openRes.kind === "stopped") { diag("start.aborted", { kind: openRes.kind }); return; }
+          // Restricted (Pi throttled the account): stop everything now. No
+          // de-escalation, no full prompt, no retry - any send extends it.
+          if (openRes.kind === "restricted") {
+            diag("start.restricted");
+            ui.banner("warn", `${P.displayName} restricted this account`,
+              `${P.displayName} flagged the session and throttled the account (usually lifts in about a minute). ` +
+              `Wait it out - do NOT click Start, retry, or send anything until it lifts, or the wait gets longer.`);
+            return;
+          }
           if (openRes.kind === "refusal") {
             A.deescalated = true;
             diag("start.openerRefused");
@@ -2102,6 +2189,15 @@
         // The user halted the bootstrap (our Stop or the site's native stop). Do
         // NOT declare the session ready - abort quietly so "Start" stays available.
         if (A.stop || startRes.kind === "stopped") { diag("start.aborted", { kind: startRes.kind }); return; }
+        // Restricted mid-bootstrap (throttle landed on the full prompt after a
+        // clean opener): same full stop as the opener path - no de-escalation.
+        if (startRes.kind === "restricted") {
+          diag("start.restricted");
+          ui.banner("warn", `${P.displayName} restricted this account`,
+            `${P.displayName} flagged the session and throttled the account (usually lifts in about a minute). ` +
+            `Wait it out - do NOT click Start, retry, or send anything until it lifts, or the wait gets longer.`);
+          return;
+        }
         // A refusal of the full prompt gets the single de-escalation (unless the
         // opener path already spent it). A second refusal ends with guidance.
         if (startRes.kind === "refusal") {
@@ -2128,12 +2224,17 @@
         }
       }
 
-      // If the model calls list_commands as instructed, run it and wait for the "ready" reply.
-      const firstName = startRes.calls && startRes.calls[0] && startRes.calls[0].tool;
-      if (startRes.kind === "tool" && startRes.calls && startRes.calls.length === 1 &&
-          (firstName === "list_commands" || firstName === "list_tools")) {
-        decorate.toolBox(startRes.item, "Loading commands", "run", "", true);
-        const toolFeedback = await runTool(startRes.calls[0]);
+      // Runs the bootstrap list_commands round (tool -> result -> ready reply).
+      // Returns true only when a tool ACTUALLY executed: the session is
+      // provably live. A chatty "I'm ready" with no JSON must never flip the
+      // bar green (phantom "Agent active" with zero round-trips, seen live on
+      // Pi) - callers gate A.started on this.
+      const runBootListCommands = async (res) => {
+        const firstName = res && res.calls && res.calls[0] && res.calls[0].tool;
+        if (!(res && res.kind === "tool" && res.calls && res.calls.length === 1 &&
+            (firstName === "list_commands" || firstName === "list_tools"))) return false;
+        decorate.toolBox(res.item, "Loading commands", "run", "", true);
+        const toolFeedback = await runTool(res.calls[0]);
         // Roblox down short-circuits list_commands into a plain "offline" note
         // (main.js, list_commands handler) instead of the real catalogue - detect
         // that and show it as such, rather than the STALE cached tool count below
@@ -2141,7 +2242,7 @@
         // attached, so A.toolList still has 25+ entries that were never actually
         // usable this boot).
         if (/Roblox Studio is currently OFFLINE/.test(toolFeedback)) {
-          decorate.toolBox(startRes.item, "Loading commands", "err", "Roblox offline", true);
+          decorate.toolBox(res.item, "Loading commands", "err", "Roblox offline", true);
         } else {
           // Count what the model ACTUALLY received: list_commands is scoped to the
           // primary Roblox server (main.js ~629), so showing A.toolList.length (every
@@ -2153,12 +2254,48 @@
             const srv = t.server || "roblox";
             return srv === "roblox" || srv === "local";
           }).length;
-          decorate.toolBox(startRes.item, "Loading commands", "done", `${robloxCount} commands`, true);
+          decorate.toolBox(res.item, "Loading commands", "done", `${robloxCount} commands`, true);
         }
         const base2 = await submitAndGetBase(toolFeedback);
         const readyRes = await waitForResponse(base2); // wait for "I'm ready" reply
+        if (!alive()) return false;
+        if (A.stop || readyRes.kind === "stopped") { diag("start.aborted", { kind: readyRes.kind }); return false; }
+        return true;
+      };
+      let bootRanTool = await runBootListCommands(startRes);
+      if (!alive()) return;
+      // One proof round: the model talked (text or a non-list tool) but no
+      // runnable command executed. Ask once for the list_commands JSON instead
+      // of declaring a dead session live. Refusals/stops/restrictions skip this
+      // - their paths already returned above with guidance.
+      if (!bootRanTool && !A.stop && startRes &&
+          (startRes.kind === "text" || startRes.kind === "tool")) {
+        diag("start.proveIt");
+        const baseN = await submitAndGetBase(RL.FEEDBACK.proveIt);
         if (!alive()) return;
-        if (A.stop || readyRes.kind === "stopped") { diag("start.aborted", { kind: readyRes.kind }); return; }
+        decorate.sweep();
+        const nudgeRes = await waitForResponse(baseN);
+        if (!alive()) return;
+        if (nudgeRes.kind === "restricted") {
+          diag("start.restricted");
+          ui.banner("warn", `${P.displayName} restricted this account`,
+            `${P.displayName} flagged the session and throttled the account (usually lifts in about a minute). ` +
+            `Wait it out - do NOT click Start, retry, or send anything until it lifts, or the wait gets longer.`);
+          return;
+        }
+        if (!A.stop && nudgeRes.kind !== "stopped") {
+          bootRanTool = await runBootListCommands(nudgeRes);
+          if (!alive()) return;
+        }
+      }
+      if (!bootRanTool) {
+        // Nothing runnable was emitted in the whole bootstrap (chatty "I'm
+        // ready" with no JSON, repeated non-commands). A.started stays false
+        // so Start remains available instead of a fake-green bar.
+        diag("start.noTool", { kind: (startRes && startRes.kind) || "none" });
+        ui.banner("warn", `${P.displayName} didn't emit a command`,
+          `The model replied without a RoLink command, so nothing is running. Click "▶︎ Start" to retry, or type your request and tell it to write the list_commands JSON.`);
+        return;
       }
       A.started = true;
       rememberSession(P.conversationKey()); // survives virtualization AND reloads
@@ -2433,7 +2570,12 @@
       // 2. Injected result / ERROR / note turns. ALWAYS a user turn we sent,
       //    keyed off our fixed output shapes (never command keywords).
       if (P.isUserItem(item) && RLParse.isInjectedFeedback(txt)) {
-        const m = txt.match(/Output of '([^']+)'/);
+        // Error feedback carries no "Output of 'x'" marker, so without the two
+        // extra shapes below every error chip was titled bare "result" (seen
+        // live next to the real tool chip - confusing duplication look).
+        const m = txt.match(/Output of '([^']+)'/)
+          || txt.match(/^\s*ERROR in ([A-Za-z_]+):/)
+          || txt.match(/^\s*ERROR calling '([^']+)'/);
         const isErr = /^\s*ERROR\b/.test(txt);
         // Reload-proof image detection: a feedback carrying an image ends with the
         // IMAGE_FEEDBACK_RE marker. Learn the tool (persisted) so its command turn
@@ -2443,7 +2585,7 @@
         const sig = (m ? m[1] : "note") + "|" + (isErr ? "err" : hasImg ? "img" : "result");
         if (item.dataset.zsig !== sig || !item.classList.contains("rl-hidden") || chipGone) {
           this.chip(item, {
-            label: m ? `${m[1]} · result` : "result",
+            label: m ? `${m[1]} · ${isErr ? "error" : "result"}` : "result",
             category: hasImg ? "screen" : m ? RL.toolCategory(m[1]) : "tool",
             body: txt, phase: isErr ? "err" : "result",
             cls: isErr ? "err" : "result", whole: true,
@@ -3211,6 +3353,19 @@
       if (!bar) return;
       // indicator = an optional leading dot/spinner; msg = the wrappable text.
       let toneClass = "standby", indicator = "", msg = "", label = "", kind = "", disabled = false, warn = false;
+      // Stuck-lock guard: the composer must never stay locked while no agent
+      // work is in flight (a wedged bootstrap used to leave readonly on with
+      // an idle bar, so typing did nothing - seen live on Dola). Throttled:
+      // renderBar runs on every sweep, but an attribute flip is cheap anyway.
+      // Never fires while starting/running/injecting (the loop owns the lock).
+      try {
+        const __now = Date.now();
+        if (!A.running && !A.starting && !A.injecting &&
+            (!renderBar.__unlockAt || __now - renderBar.__unlockAt > 2000)) {
+          renderBar.__unlockAt = __now;
+          if (P.setInputLock) P.setInputLock(false);
+        }
+      } catch {}
       // Orphaned page: check FIRST and return. Nothing below can be true any
       // more - the status poll is stopped, so every value it would render (the
       // green dot, "Agent active", the tool count) is a frozen snapshot of a
