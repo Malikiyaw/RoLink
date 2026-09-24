@@ -43,7 +43,16 @@
     "set_difficulty_profile", "generate_sound", "generate_sound_pack",
     "play_sound", "get_animation_info", "delete_animation",
     "create_cutscene", "create_dialogue", "create_motion_effect", "create_vfx",
-    "export_animation_clip", "publish_animation"
+    "export_animation_clip", "publish_animation",
+    "scan_errors", "inspect_ui",
+    "screenshot_studio", "playtest_scenario", "migrate_system",
+    "analyze_animatable_model", "create_model_animation",
+    "set_model_keyframe", "set_model_easing", "add_animation_marker",
+    "preview_model_animation", "validate_model_animation",
+    "retime_animation", "reverse_animation", "mirror_animation",
+    "blend_animation", "fix_animation", "create_attack_animation",
+    "create_idle_animation", "create_walk_cycle",
+    "set_track_lock"
   ];
 
   var CATEGORY_STYLE = {

@@ -10,7 +10,14 @@ sys.path.insert(0, ROOT)
 import bridge
 
 NEW_TOOLS = ["scan_errors", "inspect_ui", "screenshot_studio",
-             "playtest_scenario", "migrate_system"]
+             "playtest_scenario", "migrate_system",
+             "analyze_animatable_model", "create_model_animation",
+             "set_model_keyframe", "set_model_easing", "add_animation_marker",
+             "preview_model_animation", "validate_model_animation",
+             "retime_animation", "reverse_animation", "mirror_animation",
+             "blend_animation", "fix_animation", "create_attack_animation",
+             "create_idle_animation", "create_walk_cycle",
+             "set_track_lock"]
 
 
 def read(*parts):
@@ -34,7 +41,7 @@ class NewToolChainTest(unittest.TestCase):
         bridge.mgr = mgr  # no servers started: queue/Studio paths stay offline
 
     def test_registry_has_124_with_new_tools(self):
-        self.assertEqual(len(self.registry), 124)
+        self.assertEqual(len(self.registry), 140)
         for n in NEW_TOOLS:
             self.assertIn(n, self.registry)
 
@@ -53,7 +60,10 @@ class NewToolChainTest(unittest.TestCase):
         # StudioMCP "unknown tool", never a burnt queue wait).
         for n, args in (("scan_errors", {"limit": 5}),
                         ("inspect_ui", {"root": "StarterGui"}),
-                        ("screenshot_studio", {})):
+                        ("screenshot_studio", {}),
+                        ("analyze_animatable_model", {"target": "Workspace/Nope"}),
+                        ("blend_animation", {"base": "X", "overlay": "Y", "newName": "Z"}),
+                        ("set_track_lock", {"anim": "X", "track": "Y"})):
             bridge._queue_last_poll[0] = 0.0
             res = bridge.safe_call(n, args, 5)
             self.assertFalse(res["ok"], (n, res))
@@ -94,7 +104,7 @@ class NewToolChainTest(unittest.TestCase):
         for key in ("studio", "place", "playState", "selected", "plugin",
                     "bridge", "pendingTasks", "project"):
             self.assertIn(key, body, f"missing {key}")
-        self.assertEqual(body["bridge"], "2.4.0")
+        self.assertEqual(body["bridge"], "2.5.0")
         self.assertIsInstance(body["selected"], list)
         self.assertIsInstance(body["pendingTasks"], int)
 
@@ -166,7 +176,7 @@ class AuditScriptTest(unittest.TestCase):
         r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "audit_tools.py")],
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("124 registered", r.stdout)
+        self.assertIn("140 registered", r.stdout)
         qpath = os.path.join(ROOT, "generated", "tool-quarantine.json")
         self.assertTrue(os.path.exists(qpath))
         q = json.load(io.open(qpath, encoding="utf-8"))

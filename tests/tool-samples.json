@@ -618,5 +618,107 @@
     ],
     "plan_only": true,
     "projectId": "test"
+  },
+  "analyze_animatable_model": {
+    "target": "test",
+    "projectId": "test"
+  },
+  "create_model_animation": {
+    "target": "test",
+    "name": "test",
+    "duration": 1,
+    "fps": 30,
+    "projectId": "test"
+  },
+  "set_model_keyframe": {
+    "anim": "test",
+    "track": "test",
+    "t": 0.25,
+    "pose": {
+      "rotation": {
+        "x": 0,
+        "y": 30,
+        "z": 0
+      }
+    },
+    "ease": "test",
+    "projectId": "test"
+  },
+  "set_model_easing": {
+    "anim": "test",
+    "track": "test",
+    "keyIndex": 1,
+    "ease": "test",
+    "projectId": "test"
+  },
+  "add_animation_marker": {
+    "anim": "test",
+    "t": 0.28,
+    "name": "test",
+    "event": "test",
+    "projectId": "test"
+  },
+  "preview_model_animation": {
+    "anim": "test",
+    "step": 0.1,
+    "projectId": "test"
+  },
+  "validate_model_animation": {
+    "anim": "test",
+    "projectId": "test"
+  },
+  "retime_animation": {
+    "anim": "test",
+    "scale": 1,
+    "projectId": "test"
+  },
+  "reverse_animation": {
+    "anim": "test",
+    "projectId": "test"
+  },
+  "mirror_animation": {
+    "anim": "test",
+    "projectId": "test"
+  },
+  "blend_animation": {
+    "base": "test",
+    "overlay": "test",
+    "weight": 0.5,
+    "newName": "test",
+    "projectId": "test"
+  },
+  "fix_animation": {
+    "anim": "test",
+    "projectId": "test"
+  },
+  "create_attack_animation": {
+    "target": "test",
+    "name": "test",
+    "tracks": [
+      "test"
+    ],
+    "projectId": "test"
+  },
+  "create_idle_animation": {
+    "target": "test",
+    "name": "test",
+    "tracks": [
+      "test"
+    ],
+    "projectId": "test"
+  },
+  "create_walk_cycle": {
+    "target": "test",
+    "name": "test",
+    "tracks": [
+      "test"
+    ],
+    "projectId": "test"
+  },
+  "set_track_lock": {
+    "anim": "test",
+    "track": "test",
+    "locked": true,
+    "projectId": "test"
   }
 }

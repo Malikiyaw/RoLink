@@ -1,4 +1,4 @@
--- RoLink.lua — Studio Plugin (124 tools, production)
+-- RoLink.lua — Studio Plugin (140 tools, production)
 -- Place in Studio Plugins folder or Rojo. Polls MCP every 200ms, executes, snapshots, heals, reports.
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
@@ -7,10 +7,10 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.4.0"
+local PLUGIN_VERSION = "2.5.0"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
-local btn = toolbar:CreateButton("RoLink", "AI bridge (124 tools, poll 200ms)", "rbxassetid://0")
+local btn = toolbar:CreateButton("RoLink", "AI bridge (140 tools, poll 200ms)", "rbxassetid://0")
 btn.ClickableWhenViewportHidden = true
 local enabled = true
 
@@ -922,6 +922,1620 @@ local function registerAnimation(args:{ [string]: any }): { [string]: any }
 end
 
 
+-- ── Model animation store (tools 125-131) ─────────────────────────────
+-- AI-native animation for ANY rig: humanoids, cannons, doors, vehicles,
+-- machines. Definitions live in ReplicatedStorage/RoLinkModelAnims/<Name>
+-- (Folder + attributes + StringValue JSON) so chat turns and the future
+-- timeline widget read the same source. All motion math is numeric
+-- (degrees + studs); preview/validate return numbers, never pixels, because
+-- Studio exposes no pixel capture to plugins.
+local MAX_MODEL_KEYS = 1024
+local RL_ROT_WARN, RL_ROT_ERR = 2400, 7200
+local RL_POS_WARN, RL_POS_ERR = 15, 40
+local function rlAnimRoot(): Instance
+  local rs = game:GetService("ReplicatedStorage")
+  local f = rs:FindFirstChild("RoLinkModelAnims")
+  if not f then
+    f = Instance.new("Folder")
+    f.Name = "RoLinkModelAnims"
+    f.Parent = rs
+  end
+  return f
+end
+local function rlAnimFolder(name: string): Instance?
+  return rlAnimRoot():FindFirstChild(name)
+end
+local function rlAnimRead(name: string): (Instance, { [string]: any }, { [string]: any }, { [string]: any })
+  local folder = rlAnimFolder(name)
+  if not folder then
+    error("MODEL_ANIM_NOT_FOUND: no model animation named '" .. name:sub(1, 64) .. "' - create it with create_model_animation first")
+  end
+  local function get(child: string): any
+    local sv = folder:FindFirstChild(child)
+    if not sv or not sv:IsA("StringValue") then return nil end
+    local ok, v = pcall(function() return HttpService:JSONDecode((sv :: StringValue).Value) end)
+    if not ok then
+      error("MODEL_ANIM_CORRUPT: '" .. name:sub(1, 64) .. "/" .. child .. "' is not valid JSON - recreate the animation")
+    end
+    return v
+  end
+  local tracks = get("tracks")
+  if tracks == nil then tracks = {} end
+  local markers = get("markers")
+  if markers == nil then markers = {} end
+  local events = get("events")
+  if events == nil then events = {} end
+  if type(tracks) ~= "table" or type(markers) ~= "table" or type(events) ~= "table" then
+    error("MODEL_ANIM_CORRUPT: '" .. name:sub(1, 64) .. "' store has a bad shape - recreate the animation")
+  end
+  return folder, tracks, markers, events
+end
+local function rlAnimWrite(name: string, folder: Instance, tracks: any, markers: any, events: any)
+  local function put(child: string, v: any)
+    local sv = folder:FindFirstChild(child)
+    if not sv then
+      sv = Instance.new("StringValue")
+      sv.Name = child
+      sv.Parent = folder
+    end
+    (sv :: StringValue).Value = HttpService:JSONEncode(v)
+  end
+  put("tracks", tracks)
+  put("markers", markers)
+  put("events", events)
+  pcall(function() ChangeHistoryService:SetWaypoint("RoLink model-anim " .. name:sub(1, 48)) end)
+end
+local function rlJointKind(inst: Instance): string
+  if inst:IsA("Motor6D") or inst:IsA("Bone") then return "rotational" end
+  if inst:IsA("Weld") or inst:IsA("WeldConstraint") then return "follow" end
+  if inst:IsA("Attachment") then return "anchor" end
+  if inst:IsA("Model") then
+    local pp: Instance? = nil
+    pcall(function() pp = (inst :: Model).PrimaryPart end)
+    if pp then return "root" end
+    return "static"
+  end
+  if inst:IsA("BasePart") then return "rigid" end
+  return "static"
+end
+local function rlModelAnalyze(args: { [string]: any }): { [string]: any }
+  local path = tostring(args.target or "")
+  local target = findByPath(path)
+  if not target then error("Model not found: '" .. path:sub(1, 120) .. "'.") end
+  local nodes: { [string]: any } = {}
+  local warnings: { string } = {}
+  local rotational, hasRoot, hasRigid, hasFollow = 0, false, false, false
+  local hasHumanoid = false
+  pcall(function() hasHumanoid = target:FindFirstChildOfClass("Humanoid") ~= nil end)
+  local selfKind = rlJointKind(target)
+  if selfKind ~= "static" then
+    table.insert(nodes, { path = target:GetFullName(), name = target.Name, class = target.ClassName, kind = selfKind, depth = 0 })
+    if selfKind == "root" then hasRoot = true end
+    if selfKind == "rigid" then hasRigid = true end
+  end
+  local stopped = false
+  local function walk(inst: Instance, depth: number)
+    if stopped or depth > 6 then return end
+    for _, c in ipairs(inst:GetChildren()) do
+      if stopped then return end
+      if #nodes >= 200 then stopped = true return end
+      local k = rlJointKind(c)
+      if k ~= "static" then
+        table.insert(nodes, { path = c:GetFullName(), name = c.Name, class = c.ClassName, kind = k, depth = depth })
+        if k == "rotational" then rotational += 1 end
+        if k == "root" then hasRoot = true end
+        if k == "rigid" then hasRigid = true end
+        if k == "follow" then hasFollow = true end
+      end
+      if #c:GetChildren() > 0 then walk(c, depth + 1) end
+    end
+  end
+  walk(target, 1)
+  if #nodes == 0 then
+    table.insert(warnings, "nothing animatable under '" .. target.Name:sub(1, 48) .. "' (need Motor6D/Bone joints, a PrimaryPart, or BaseParts)")
+  end
+  if target:IsA("Model") then
+    local pp: Instance? = nil
+    pcall(function() pp = (target :: Model).PrimaryPart end)
+    if not pp then table.insert(warnings, "no PrimaryPart on '" .. target.Name:sub(1, 48) .. "': root motion unavailable until one is set") end
+  end
+  if hasHumanoid then table.insert(warnings, "humanoid rig: use create_animation_track for character clips; model tracks suit prop-style motion on this rig") end
+  if hasFollow and rotational == 0 and not hasRigid and not hasRoot then
+    table.insert(warnings, "only follow/anchor parts found: animate a parent, never these")
+  end
+  if stopped then table.insert(warnings, "node cap 200 hit: smallest parts omitted") end
+  local controller = "none"
+  if hasHumanoid then controller = "hybrid (character clips + model tracks)"
+  elseif rotational > 0 then controller = "hierarchical transforms"
+  elseif hasRoot then controller = "root motion"
+  elseif hasRigid then controller = "rigid assembly" end
+  return { model = target:GetFullName(), animatable = nodes, warnings = warnings, controller = controller }
+end
+local function rlModelCreate(args: { [string]: any }): { [string]: any }
+  local path = tostring(args.target or "")
+  local target = findByPath(path)
+  if not target then error("Model not found: '" .. path:sub(1, 120) .. "'.") end
+  local name = tostring(args.name or ""):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 64)
+  if name == "" then error("name is required (max 64 chars)") end
+  local duration = num(args.duration, 0)
+  if duration < 0.1 or duration > 60 then error("duration must be 0.1-60s (got " .. tostring(args.duration) .. ")") end
+  local fps = math.floor(num(args.fps, 30))
+  if fps < 1 or fps > 120 then error("fps must be 1-120 (got " .. tostring(args.fps) .. ")") end
+  local existing = rlAnimFolder(name)
+  if existing and args.confirm ~= true then
+    error("CONFIRM_REQUIRED: model animation '" .. name .. "' already exists - re-send with confirm:true to overwrite, or pick another name")
+  end
+  local folder = existing
+  if not folder then
+    folder = Instance.new("Folder")
+    folder.Name = name
+    folder.Parent = rlAnimRoot()
+  end
+  folder:SetAttribute("target", target:GetFullName())
+  folder:SetAttribute("duration", duration)
+  folder:SetAttribute("fps", fps)
+  folder:SetAttribute("loop", args.loop == true)
+  rlAnimWrite(name, folder, {}, {}, {})
+  return { animation = name, target = target:GetFullName(), duration = duration, fps = fps, loop = args.loop == true, tracks = 0 }
+end
+local function rlPoseNum(v: any): { [string]: any }
+  local p = { pos = { x = 0, y = 0, z = 0 }, rot = { x = 0, y = 0, z = 0 } }
+  if type(v) ~= "table" then return p end
+  local pp = (v :: any).position
+  if type(pp) == "table" then
+    p.pos = { x = num((pp :: any).x, 0), y = num((pp :: any).y, 0), z = num((pp :: any).z, 0) }
+  end
+  local rr = (v :: any).rotation
+  if type(rr) == "table" then
+    p.rot = { x = num((rr :: any).x, 0), y = num((rr :: any).y, 0), z = num((rr :: any).z, 0) }
+  end
+  return p
+end
+local function rlModelSetKey(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks, markers, events = rlAnimRead(anim)
+  local track = tostring(args.track or "")
+  if track == "" then error("track is required (joint/part name from analyze_animatable_model)") end
+  local duration = 60
+  pcall(function() duration = num(folder:GetAttribute("duration"), 60) end)
+  local t = math.max(0, num(args.t, 0))
+  if t > duration then error("key time " .. t .. "s is beyond duration " .. duration .. "s") end
+  local ease = resolveEasing(tostring(args.ease or "linear"))
+  if not ease then error("unknown easing '" .. tostring(args.ease):sub(1, 32) .. "' " .. easingHint(tostring(args.ease or "")) .. "(" .. EASE_LIST .. ")") end
+  local tr = tracks[track]
+  if tr == nil then tr = { kind = "custom", keys = {} } tracks[track] = tr end
+  if rlAnimGetLocked(folder)[track] then error("TRACK_LOCKED: track '" .. track:sub(1, 48) .. "' is locked - unlock it with set_track_lock first") end
+  if type((tr :: any).keys) ~= "table" then (tr :: any).keys = {} end
+  local keys = (tr :: any).keys
+  if #keys >= MAX_MODEL_KEYS then error("too many keys on track '" .. track:sub(1, 48) .. "' (max " .. MAX_MODEL_KEYS .. ")") end
+  local pose = rlPoseNum(args.pose)
+  local replaced = false
+  for i, k in ipairs(keys) do
+    if math.abs(num((k :: any).t, 0) - t) < 1e-6 then
+      keys[i] = { t = t, pos = pose.pos, rot = pose.rot, ease = ease }
+      replaced = true
+      break
+    end
+  end
+  if not replaced then
+    table.insert(keys, { t = t, pos = pose.pos, rot = pose.rot, ease = ease })
+    table.sort(keys, function(a, b) return num((a :: any).t, 0) < num((b :: any).t, 0) end)
+  end
+  rlAnimWrite(anim, folder, tracks, markers, events)
+  return { animation = anim, track = track, t = t, ease = ease, keys = #keys, replaced = replaced }
+end
+local function rlModelSetEase(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks, markers, events = rlAnimRead(anim)
+  local track = tostring(args.track or "")
+  local tr = tracks[track]
+  if tr == nil or type((tr :: any).keys) ~= "table" or #((tr :: any).keys) == 0 then
+    error("TRACK_NOT_FOUND: no keys on track '" .. track:sub(1, 48) .. "' in '" .. anim:sub(1, 48) .. "'")
+  end
+  local keys = (tr :: any).keys
+  if rlAnimGetLocked(folder)[track] then error("TRACK_LOCKED: track '" .. track:sub(1, 48) .. "' is locked - unlock it with set_track_lock first") end
+  local idx = math.floor(num(args.keyIndex, 0))
+  if idx < 1 or idx > #keys then error("keyIndex out of range (track has " .. #keys .. " keys, 1-based)") end
+  local ease = resolveEasing(tostring(args.ease or ""))
+  if not ease then error("unknown easing '" .. tostring(args.ease):sub(1, 32) .. "' " .. easingHint(tostring(args.ease or "")) .. "(" .. EASE_LIST .. ")") end
+  keys[idx].ease = ease
+  rlAnimWrite(anim, folder, tracks, markers, events)
+  return { animation = anim, track = track, keyIndex = idx, ease = ease }
+end
+local function rlModelAddMarker(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks, markers, events = rlAnimRead(anim)
+  local name = tostring(args.name or ""):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 64)
+  if name == "" then error("marker name is required (max 64 chars)") end
+  if args.remove == true then
+    local keptM: { [string]: any } = {}
+    local keptE: { [string]: any } = {}
+    local found = false
+    for _, m in ipairs(markers) do
+      if tostring((m :: any).name) ~= name then table.insert(keptM, m) else found = true end
+    end
+    for _, e in ipairs(events) do
+      if tostring((e :: any).marker) ~= name then table.insert(keptE, e) end
+    end
+    if not found then error("MARKER_NOT_FOUND: no marker '" .. name .. "' in '" .. anim:sub(1, 48) .. "'") end
+    rlAnimWrite(anim, folder, tracks, keptM, keptE)
+    return { animation = anim, removed = name, markers = keptM }
+  end
+  local duration = 60
+  pcall(function() duration = num(folder:GetAttribute("duration"), 60) end)
+  local t = math.max(0, num(args.t, 0))
+  if t > duration then error("marker time " .. t .. "s is beyond duration " .. duration .. "s") end
+  local ev = nil
+  if args.event ~= nil and tostring(args.event) ~= "" then ev = tostring(args.event):sub(1, 64) end
+  local replaced = false
+  for i, m in ipairs(markers) do
+    if tostring((m :: any).name) == name then
+      markers[i] = { t = t, name = name, event = ev }
+      replaced = true
+      break
+    end
+  end
+  if not replaced then
+    table.insert(markers, { t = t, name = name, event = ev })
+    table.sort(markers, function(a, b) return num((a :: any).t, 0) < num((b :: any).t, 0) end)
+  end
+  if ev then
+    local bound = false
+    for _, e in ipairs(events) do
+      if tostring((e :: any).marker) == name then (e :: any).action = ev bound = true break end
+    end
+    if not bound then table.insert(events, { marker = name, action = ev }) end
+  end
+  rlAnimWrite(anim, folder, tracks, markers, events)
+  return { animation = anim, markers = markers }
+end
+
+local function rlAnimGetLocked(folder: Instance): { [string]: boolean }
+  local set: { [string]: boolean } = {}
+  pcall(function()
+    local sv = folder:FindFirstChild("locked")
+    if sv and sv:IsA("StringValue") then
+      local v = HttpService:JSONDecode((sv :: StringValue).Value)
+      if type(v) == "table" then
+        for _, n in ipairs(v) do set[tostring(n)] = true end
+      end
+    end
+  end)
+  return set
+end
+local function rlAnimSetLocked(folder: Instance, set: { [string]: boolean })
+  local arr: { string } = {}
+  for n in pairs(set) do table.insert(arr, tostring(n)) end
+  table.sort(arr)
+  local sv = folder:FindFirstChild("locked")
+  if not sv then
+    sv = Instance.new("StringValue")
+    sv.Name = "locked"
+    sv.Parent = folder
+  end
+  (sv :: StringValue).Value = HttpService:JSONEncode(arr)
+  pcall(function() ChangeHistoryService:SetWaypoint("RoLink model-anim lock") end)
+end
+local function rlModelTrackLock(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder = rlAnimRead(anim)
+  local track = tostring(args.track or "")
+  if track == "" then error("track is required") end
+  local set = rlAnimGetLocked(folder)
+  local want = args.locked ~= false
+  if want then set[track] = true else set[track] = nil end
+  rlAnimSetLocked(folder, set)
+  return { animation = anim, track = track, locked = want }
+end
+local function rlLerp3(a: any, b: any, f: number): { [string]: number }
+  local function c(k: string): number
+    return num(a and (a :: any)[k], 0) + (num(b and (b :: any)[k], 0) - num(a and (a :: any)[k], 0)) * f
+  end
+  return { x = c("x"), y = c("y"), z = c("z") }
+end
+local function rlPoseAt(keys: any, t: number): ({ [string]: number }, { [string]: number })
+  local zero = { x = 0, y = 0, z = 0 }
+  if type(keys) ~= "table" or #keys == 0 then return zero, zero end
+  if t <= num(keys[1].t, 0) then return keys[1].pos or zero, keys[1].rot or zero end
+  for i = 2, #keys do
+    local bt = num(keys[i].t, 0)
+    if t <= bt then
+      local a, b = keys[i - 1], keys[i]
+      local span = bt - num(a.t, 0)
+      local f = 0
+      if span > 1e-9 then
+        local ef = EASE_FNS[b.ease] or EASE_FNS.linear
+        f = ef((t - num(a.t, 0)) / span)
+      end
+      return rlLerp3(a.pos, b.pos, f), rlLerp3(a.rot, b.rot, f)
+    end
+  end
+  local k = keys[#keys]
+  return k.pos or zero, k.rot or zero
+end
+local function rlMag3(a: any, b: any): number
+  local dx = num(b and (b :: any).x, 0) - num(a and (a :: any).x, 0)
+  local dy = num(b and (b :: any).y, 0) - num(a and (a :: any).y, 0)
+  local dz = num(b and (b :: any).z, 0) - num(a and (a :: any).z, 0)
+  return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+local function rlRound2(v: number): number
+  return math.floor(v * 100 + 0.5) / 100
+end
+local function rlTrackNames(tracks: any): { string }
+  local out: { string } = {}
+  for k in pairs(tracks) do table.insert(out, tostring(k)) end
+  table.sort(out)
+  return out
+end
+local function rlModelPreview(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks, markers = rlAnimRead(anim)
+  local duration = 1
+  local fps = 30
+  pcall(function()
+    duration = num(folder:GetAttribute("duration"), 1)
+    fps = math.floor(num(folder:GetAttribute("fps"), 30))
+  end)
+  if duration <= 0 then error("MODEL_ANIM_CORRUPT: '" .. anim:sub(1, 48) .. "' has no duration") end
+  local step = num(args.step, 0.1)
+  if step < 0.02 then step = 0.02 end
+  if step > 1 then step = 1 end
+  local names = rlTrackNames(tracks)
+  local truncated = false
+  if #names > 64 then
+    local cut: { string } = {}
+    for i = 1, 64 do table.insert(cut, names[i]) end
+    names = cut
+    truncated = true
+  end
+  if duration / step * math.max(1, #names) > 200000 then
+    error("preview too dense (duration " .. duration .. "s x " .. #names .. " tracks at step " .. step .. ") - raise step")
+  end
+  local summary: { [string]: any } = {}
+  local snaps: { [string]: any } = {}
+  local function snapAt(t: number): { [string]: any }
+    local s: { [string]: any } = {}
+    for _, tn in ipairs(names) do
+      local pos, rot = rlPoseAt(tracks[tn].keys, t)
+      s[tn] = { pos = { x = rlRound2(pos.x), y = rlRound2(pos.y), z = rlRound2(pos.z) },
+        rot = { x = rlRound2(rot.x), y = rlRound2(rot.y), z = rlRound2(rot.z) } }
+    end
+    return s
+  end
+  for _, tn in ipairs(names) do
+    local keys = tracks[tn].keys
+    local maxDeg, maxStud = 0, 0
+    local pt, pr = rlPoseAt(keys, 0)
+    local tt = step
+    while tt <= duration + 1e-9 do
+      local qpos, qrot = rlPoseAt(keys, tt)
+      local dt = step
+      if dt > 1e-9 then
+        maxDeg = math.max(maxDeg, rlMag3(pr, qrot) / dt)
+        maxStud = math.max(maxStud, rlMag3(pt, qpos) / dt)
+      end
+      pt, pr = qpos, qrot
+      tt += step
+    end
+    summary[tn] = { keys = #keys, maxDegPerSec = rlRound2(maxDeg), maxStudPerSec = rlRound2(maxStud),
+      spike = maxDeg > RL_ROT_WARN }
+  end
+  snaps.start = snapAt(0)
+  snaps.mid = snapAt(duration / 2)
+  snaps.finish = snapAt(duration)
+  local hits: { [string]: any } = {}
+  for _, m in ipairs(markers) do
+    table.insert(hits, { t = num((m :: any).t, 0), name = tostring((m :: any).name), event = (m :: any).event })
+  end
+  table.sort(hits, function(a, b) return num((a :: any).t, 0) < num((b :: any).t, 0) end)
+  return { animation = anim, duration = duration, fps = fps, step = step,
+    tracks = summary, snapshots = snaps, markersHit = hits, truncated = truncated }
+end
+local function rlModelValidate(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks, markers, events = rlAnimRead(anim)
+  local errors: { [string]: any } = {}
+  local warnings: { [string]: any } = {}
+  local function err(code: string, detail: string, fix: string)
+    table.insert(errors, { code = code, detail = detail, fix = fix })
+  end
+  local function warn(code: string, detail: string, fix: string)
+    table.insert(warnings, { code = code, detail = detail, fix = fix })
+  end
+  local targetPath = ""
+  pcall(function() targetPath = tostring(folder:GetAttribute("target") or "") end)
+  local target: Instance? = nil
+  if targetPath ~= "" then target = findByPath(targetPath) end
+  if not target then err("TARGET_GONE", "stored target '" .. targetPath:sub(1, 80) .. "' no longer resolves", "re-point the animation or restore the model") end
+  local duration = 0
+  pcall(function() duration = num(folder:GetAttribute("duration"), 0) end)
+  if duration < 0.1 or duration > 60 then err("BAD_DURATION", "duration " .. tostring(duration) .. " outside 0.1-60s", "recreate with a sane duration") end
+  local names = rlTrackNames(tracks)
+  if #names == 0 then err("EMPTY", "no tracks (write keys with set_model_keyframe first)", "add at least one key") end
+  local known: { [string]: boolean } = {}
+  if target then
+    pcall(function()
+      for _, d in ipairs(target:GetDescendants()) do
+        known[d.Name] = true
+        if #known > 2000 then break end
+      end
+    end)
+    known[target.Name] = true
+  end
+  local doLoop = false
+  pcall(function() doLoop = folder:GetAttribute("loop") == true end)
+  for _, tn in ipairs(names) do
+    local keys = tracks[tn].keys
+    if type(keys) ~= "table" or #keys == 0 then
+      err("TRACK_EMPTY", "track '" .. tn:sub(1, 48) .. "' has no keys", "write a key or drop the track")
+      continue
+    end
+    if target and not known[tn] then
+      warn("JOINT_UNMATCHED", "track '" .. tn:sub(1, 48) .. "' matches no part under the target", "re-run analyze_animatable_model and use an exact name")
+    end
+    for i, k in ipairs(keys) do
+      if EASE_FNS[(k :: any).ease] == nil then
+        err("BAD_EASING", "track '" .. tn:sub(1, 32) .. "' key " .. i .. " has easing '" .. tostring((k :: any).ease):sub(1, 24) .. "'", "set a suffixed easing (quadIn, not bare quad)")
+      end
+      if i > 1 and num((k :: any).t, 0) < num(keys[i - 1].t, 0) - 1e-9 then
+        err("TIME_ORDER", "track '" .. tn:sub(1, 32) .. "' key " .. i .. " goes backwards in time", "rewrite the keys in order")
+      end
+    end
+    for i = 2, #keys do
+      local dt = num(keys[i].t, 0) - num(keys[i - 1].t, 0)
+      if dt > 1e-9 then
+        local rv = rlMag3(keys[i - 1].rot, keys[i].rot) / dt
+        local pv = rlMag3(keys[i - 1].pos, keys[i].pos) / dt
+        if rv > RL_ROT_ERR then err("SPIKE", "track '" .. tn:sub(1, 32) .. "' rotates " .. math.floor(rv) .. " deg/s into key " .. i, "spread the motion over more time or ease it")
+        elseif rv > RL_ROT_WARN then warn("FAST", "track '" .. tn:sub(1, 32) .. "' rotates " .. math.floor(rv) .. " deg/s into key " .. i, "consider easing the arrival") end
+        if pv > RL_POS_ERR then err("JUMP", "track '" .. tn:sub(1, 32) .. "' jumps " .. rlRound2(pv * dt) .. " studs into key " .. i, "check the target path or split the move")
+        elseif pv > RL_POS_WARN then warn("LEAP", "track '" .. tn:sub(1, 32) .. "' moves " .. rlRound2(pv * dt) .. " studs into key " .. i, "verify the distance is intended") end
+      end
+    end
+    if doLoop and #keys >= 2 then
+      local a, b = keys[1], keys[#keys]
+      if rlMag3(a.rot, b.rot) > 1.0 or rlMag3(a.pos, b.pos) > 0.1 then
+        err("LOOP_MISMATCH", "track '" .. tn:sub(1, 32) .. "' loop ends do not match the start", "copy the first key pose onto the last key")
+      end
+    end
+  end
+  local markerNames: { [string]: boolean } = {}
+  for _, m in ipairs(markers) do
+    markerNames[tostring((m :: any).name)] = true
+    if num((m :: any).t, 0) > duration then
+      err("MARKER_OOB", "marker '" .. tostring((m :: any).name):sub(1, 40) .. "' sits past the duration", "move it inside 0-" .. tostring(duration) .. "s")
+    end
+    if (m :: any).event == nil then
+      warn("MARKER_NO_EVENT", "marker '" .. tostring((m :: any).name):sub(1, 40) .. "' binds no gameplay event", "add an event or leave it as a pure timing mark")
+    end
+  end
+  for _, e in ipairs(events) do
+    if not markerNames[tostring((e :: any).marker)] then
+      err("ORPHAN_EVENT", "event for missing marker '" .. tostring((e :: any).marker):sub(1, 40) .. "'", "add the marker first")
+    end
+  end
+  return { animation = anim, passed = #errors == 0, errors = errors, warnings = warnings }
+end
+
+
+-- ── Model animation dock widget (timeline editor, same store) ─────────
+-- Human timeline over ReplicatedStorage/RoLinkModelAnims/<Name>: rig tree,
+-- keyframe lane, inspector, transport. Every action calls the rl* engine
+-- above, so chat turns and UI edits can never diverge. Playback applies
+-- poses to resolved joints in Edit mode only and restores originals on
+-- stop; in Play it refuses with a status message instead of guessing.
+-- ── Model animation dock widget (Moon-style timeline, same store) ─────
+-- Dark panels, one orange accent, blue keyframe diamonds. Title strip,
+-- menu row (every button performs a real action), rig tree, track list
+-- with dots + locks, frame ruler, key/marker lanes with playhead,
+-- inspector, transport. All actions call the rl* engine above, so chat
+-- turns and UI edits can never diverge.
+local RL_ANIM_COLORS = {
+  panel = Color3.fromRGB(20, 20, 23),
+  lane = Color3.fromRGB(30, 30, 35),
+  rowAlt = Color3.fromRGB(25, 25, 29),
+  input = Color3.fromRGB(36, 36, 42),
+  text = Color3.fromRGB(232, 232, 236),
+  dim = Color3.fromRGB(150, 150, 162),
+  accent = Color3.fromRGB(255, 140, 26),
+  accentText = Color3.fromRGB(24, 14, 4),
+  diamond = Color3.fromRGB(76, 194, 255),
+  marker = Color3.fromRGB(120, 220, 255),
+  good = Color3.fromRGB(130, 220, 150),
+  bad = Color3.fromRGB(255, 110, 110),
+}
+local RL_ANIM_W = 640
+local rlAnimUI = { playing = false, stopNow = false, held = {}, selKey = 0 }
+local rlAnimStatusLbl: TextLabel? = nil
+local function rlAnimStatus(msg: string, isErr: boolean?)
+  print("[RoLinkAnim] " .. msg)
+  pcall(function()
+    if rlAnimStatusLbl then
+      rlAnimStatusLbl.Text = (isErr and "ERR " or "") .. msg:sub(1, 220)
+      rlAnimStatusLbl.TextColor3 = isErr and RL_ANIM_COLORS.bad or RL_ANIM_COLORS.dim
+    end
+  end)
+end
+local function rlAnimBox(parent: Instance, name: string, text: string, w: number): TextBox
+  local b = Instance.new("TextBox")
+  b.Name = name
+  b.Text = text
+  b.ClearTextOnFocus = false
+  b.Font = Enum.Font.Code
+  b.TextSize = 13
+  b.BackgroundColor3 = RL_ANIM_COLORS.input
+  b.TextColor3 = RL_ANIM_COLORS.text
+  b.BorderSizePixel = 0
+  b.Size = UDim2.new(0, w, 0, 24)
+  b.Parent = parent
+  return b
+end
+local function rlAnimBtn(parent: Instance, name: string, text: string, w: number, hot: boolean?): TextButton
+  local b = Instance.new("TextButton")
+  b.Name = name
+  b.Text = text
+  b.Font = Enum.Font.GothamBold
+  b.TextSize = 13
+  b.AutoButtonColor = true
+  b.BackgroundColor3 = hot and RL_ANIM_COLORS.accent or RL_ANIM_COLORS.lane
+  b.TextColor3 = hot and RL_ANIM_COLORS.accentText or RL_ANIM_COLORS.text
+  b.BorderSizePixel = 0
+  b.Size = UDim2.new(0, w, 0, 24)
+  b.Parent = parent
+  local c = Instance.new("UICorner")
+  c.CornerRadius = UDim.new(0, 4)
+  c.Parent = b
+  return b
+end
+local function rlAnimRow(parent: Instance, h: number): Frame
+  local f = Instance.new("Frame")
+  f.BackgroundTransparency = 1
+  f.Size = UDim2.new(1, 0, 0, h)
+  f.Parent = parent
+  local l = Instance.new("UIListLayout")
+  l.FillDirection = Enum.FillDirection.Horizontal
+  l.Padding = UDim.new(0, 4)
+  l.VerticalAlignment = Enum.VerticalAlignment.Center
+  l.Parent = f
+  return f
+end
+local function rlAnimField(row: Instance, label: string, def: string, w: number): TextBox
+  local t = Instance.new("TextLabel")
+  t.Text = label
+  t.Font = Enum.Font.Gotham
+  t.TextSize = 12
+  t.TextColor3 = RL_ANIM_COLORS.dim
+  t.BackgroundTransparency = 1
+  t.Size = UDim2.new(0, 28, 0, 24)
+  t.Parent = row
+  return rlAnimBox(row, "in_" .. label, def, w)
+end
+local function rlAnimHead(parent: Instance, txt: string)
+  local h = Instance.new("TextLabel")
+  h.Text = txt
+  h.Font = Enum.Font.GothamBold
+  h.TextSize = 11
+  h.TextColor3 = RL_ANIM_COLORS.dim
+  h.BackgroundTransparency = 1
+  h.TextXAlignment = Enum.TextXAlignment.Left
+  h.Size = UDim2.new(1, 0, 0, 18)
+  h.Parent = parent
+end
+local function rlAnimClearFrame(f: Instance?)
+  if not f then return end
+  for _, c in ipairs(f:GetChildren()) do
+    if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then
+      pcall(function() c:Destroy() end)
+    end
+  end
+end
+local function rlAnimCurrent(): (string, string)
+  local a = rlAnimUI.animBox and rlAnimUI.animBox.Text or ""
+  local t = rlAnimUI.trackBox and rlAnimUI.trackBox.Text or ""
+  return a:gsub("^%s+", ""):gsub("%s+$", ""), t:gsub("^%s+", ""):gsub("%s+$", "")
+end
+local function rlAnimStripe(parent: Instance, i: number): Frame
+  local f = Instance.new("Frame")
+  f.BackgroundColor3 = (i % 2 == 0) and RL_ANIM_COLORS.lane or RL_ANIM_COLORS.rowAlt
+  f.BorderSizePixel = 0
+  f.Size = UDim2.new(1, 0, 0, 20)
+  f.Parent = parent
+  local l = Instance.new("UIListLayout")
+  l.FillDirection = Enum.FillDirection.Horizontal
+  l.Padding = UDim.new(0, 4)
+  l.VerticalAlignment = Enum.VerticalAlignment.Center
+  l.Parent = f
+  return f
+end
+local function rlAnimRefreshTitle(anim: string, folder: Instance?, trackCount: number)
+  local t = rlAnimUI.titleLbl
+  if not t then return end
+  if anim == "" or not folder then
+    t.Text = "no animation loaded"
+    return
+  end
+  local dur, fps = 0, 30
+  pcall(function()
+    dur = num(folder:GetAttribute("duration"), 0)
+    fps = math.floor(num(folder:GetAttribute("fps"), 30))
+  end)
+  t.Text = string.format("%s  •  %.2fs  •  %dfps  •  %d tracks", anim:sub(1, 40), dur, fps, trackCount)
+end
+local function rlAnimRenderRig()
+  local list = rlAnimUI.rigList
+  if not list then return end
+  rlAnimClearFrame(list)
+  local ok, res = pcall(function()
+    local w = rlAnimUI.targetBox
+    return rlModelAnalyze({ target = (w and w.Text) or "Workspace" })
+  end)
+  if not ok then rlAnimStatus("analyze failed: " .. tostring(res):sub(1, 160), true) return end
+  local i = 0
+  for _, n in ipairs(res.animatable or {}) do
+    i += 1
+    local row = rlAnimStripe(list, i)
+    local b = Instance.new("TextButton")
+    b.Text = string.rep("  ", math.min(5, num((n :: any).depth, 0))) .. tostring((n :: any).name) .. " [" .. tostring((n :: any).kind) .. "]"
+    b.Font = Enum.Font.Code
+    b.TextSize = 12
+    b.TextXAlignment = Enum.TextXAlignment.Left
+    b.BackgroundTransparency = 1
+    b.TextColor3 = RL_ANIM_COLORS.text
+    b.Size = UDim2.new(1, -4, 1, 0)
+    b.Parent = row
+    local nm = tostring((n :: any).name)
+    local kd = tostring((n :: any).kind)
+    b.MouseButton1Click:Connect(function()
+      if rlAnimUI.trackBox and (kd == "rotational" or kd == "rigid" or kd == "root") then
+        rlAnimUI.trackBox.Text = nm
+        rlAnimStatus("track <- " .. nm)
+        rlAnimRenderTimeline()
+      else
+        rlAnimStatus(nm .. " is " .. kd .. " - animate its parent instead", true)
+      end
+    end)
+  end
+  rlAnimStatus("rig: " .. #res.animatable .. " nodes (" .. tostring(res.controller) .. ")")
+end
+local function rlAnimRenderTracks()
+  local list = rlAnimUI.trackList
+  if not list then return end
+  rlAnimClearFrame(list)
+  local anim, _ = rlAnimCurrent()
+  if anim == "" then return end
+  local ok, folder, tracks = pcall(function() return rlAnimRead(anim) end)
+  if not ok then return end
+  local locked = rlAnimGetLocked(folder)
+  local names = rlTrackNames(tracks)
+  local i = 0
+  for _, tn in ipairs(names) do
+    i += 1
+    local row = rlAnimStripe(list, i)
+    local dot = Instance.new("TextLabel")
+    dot.Text = "●"
+    dot.Font = Enum.Font.GothamBold
+    dot.TextSize = 12
+    dot.TextColor3 = RL_ANIM_COLORS.accent
+    dot.BackgroundTransparency = 1
+    dot.Size = UDim2.new(0, 18, 1, 0)
+    dot.Parent = row
+    local b = Instance.new("TextButton")
+    b.Text = tn
+    b.Font = Enum.Font.Code
+    b.TextSize = 12
+    b.TextXAlignment = Enum.TextXAlignment.Left
+    b.BackgroundTransparency = 1
+    b.TextColor3 = RL_ANIM_COLORS.text
+    b.Size = UDim2.new(1, -66, 1, 0)
+    b.Parent = row
+    local isLocked = locked[tn] == true
+    local lb = Instance.new("TextButton")
+    lb.Text = isLocked and "[L]" or "[ ]"
+    lb.Font = Enum.Font.GothamBold
+    lb.TextSize = 12
+    lb.BackgroundTransparency = 1
+    lb.TextColor3 = isLocked and RL_ANIM_COLORS.accent or RL_ANIM_COLORS.dim
+    lb.Size = UDim2.new(0, 36, 1, 0)
+    lb.Parent = row
+    b.MouseButton1Click:Connect(function()
+      if rlAnimUI.trackBox then rlAnimUI.trackBox.Text = tn end
+      rlAnimRenderTimeline()
+    end)
+    lb.MouseButton1Click:Connect(function()
+      local ok2, res = pcall(function()
+        return rlModelTrackLock({ anim = anim, track = tn, locked = not isLocked })
+      end)
+      if ok2 then
+        rlAnimStatus("track '" .. tn:sub(1, 40) .. "' " .. (res.locked and "locked" or "unlocked"))
+        pcall(rlAnimRenderTracks)
+      else
+        rlAnimStatus("lock failed: " .. tostring(res):sub(1, 160), true)
+      end
+    end)
+  end
+end
+local function rlAnimRenderTimeline()
+  local lane = rlAnimUI.keyLane
+  local mlane = rlAnimUI.markerLane
+  local ruler = rlAnimUI.ruler
+  if not lane then return end
+  rlAnimClearFrame(lane)
+  if mlane then rlAnimClearFrame(mlane) end
+  if ruler then rlAnimClearFrame(ruler) end
+  rlAnimUI.playhead = nil
+  local anim, track = rlAnimCurrent()
+  if anim == "" then
+    rlAnimRefreshTitle("", nil, 0)
+    rlAnimStatus("enter an animation name, then Load")
+    return
+  end
+  local ok, folder, tracks, markers = pcall(function() return rlAnimRead(anim) end)
+  if not ok then
+    rlAnimRefreshTitle("", nil, 0)
+    rlAnimStatus("load failed: " .. tostring(folder):sub(1, 160), true)
+    return
+  end
+  local duration, fps = 1, 30
+  pcall(function()
+    duration = num(folder:GetAttribute("duration"), 1)
+    fps = math.floor(num(folder:GetAttribute("fps"), 30))
+  end)
+  if duration <= 0 then duration = 1 end
+  if fps < 1 then fps = 30 end
+  rlAnimRefreshTitle(anim, folder, #rlTrackNames(tracks))
+  if ruler then
+    local f = 0
+    while f <= duration * fps + 1e-9 do
+      local t = f / fps
+      local x = math.clamp(t / duration, 0, 1) * (RL_ANIM_W - 24)
+      local lb = Instance.new("TextLabel")
+      lb.Text = tostring(f)
+      lb.Font = Enum.Font.Code
+      lb.TextSize = 10
+      lb.TextColor3 = (f == 0) and RL_ANIM_COLORS.accent or RL_ANIM_COLORS.dim
+      lb.BackgroundTransparency = 1
+      lb.Size = UDim2.new(0, 40, 0, 16)
+      lb.Position = UDim2.new(0, x, 0, 0)
+      lb.Parent = ruler
+      f += fps
+    end
+  end
+  lane.CanvasSize = UDim2.new(0, RL_ANIM_W, 0, 30)
+  local tr = tracks[track]
+  local keys = (tr ~= nil and (tr :: any).keys) or {}
+  rlAnimUI.selKeys = keys
+  for i, k in ipairs(keys) do
+    local x = math.clamp(num((k :: any).t, 0) / duration, 0, 1) * (RL_ANIM_W - 24)
+    local b = Instance.new("TextButton")
+    b.Text = "◆"
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 14
+    b.TextColor3 = RL_ANIM_COLORS.diamond
+    b.BackgroundTransparency = 1
+    b.Size = UDim2.new(0, 24, 0, 24)
+    b.Position = UDim2.new(0, x, 0, 2)
+    b.Parent = lane
+    local idx = i
+    b.MouseButton1Click:Connect(function()
+      b.TextColor3 = RL_ANIM_COLORS.accent
+      rlAnimUI.selKey = idx
+      local ins = rlAnimUI.ins
+      if ins and keys[idx] then
+        local kk = keys[idx]
+        ins.t.Text = tostring(num((kk :: any).t, 0))
+        ins.rx.Text = tostring(((kk :: any).rot or {}).x or 0)
+        ins.ry.Text = tostring(((kk :: any).rot or {}).y or 0)
+        ins.rz.Text = tostring(((kk :: any).rot or {}).z or 0)
+        ins.px.Text = tostring(((kk :: any).pos or {}).x or 0)
+        ins.py.Text = tostring(((kk :: any).pos or {}).y or 0)
+        ins.pz.Text = tostring(((kk :: any).pos or {}).z or 0)
+        ins.ease.Text = tostring((kk :: any).ease or "linear")
+        rlAnimStatus("key " .. idx .. " of " .. #keys .. " selected")
+      end
+    end)
+  end
+  if mlane then
+    mlane.CanvasSize = UDim2.new(0, RL_ANIM_W, 0, 22)
+    for _, m in ipairs(markers or {}) do
+      local x = math.clamp(num((m :: any).t, 0) / duration, 0, 1) * (RL_ANIM_W - 24)
+      local b = Instance.new("TextButton")
+      b.Text = "M " .. tostring((m :: any).name):sub(1, 12)
+      b.Font = Enum.Font.Code
+      b.TextSize = 11
+      b.TextColor3 = RL_ANIM_COLORS.marker
+      b.BackgroundTransparency = 1
+      b.Size = UDim2.new(0, 90, 0, 20)
+      b.Position = UDim2.new(0, x, 0, 1)
+      b.Parent = mlane
+    end
+  end
+  local ph = Instance.new("Frame")
+  ph.BackgroundColor3 = RL_ANIM_COLORS.accent
+  ph.BorderSizePixel = 0
+  ph.Size = UDim2.new(0, 2, 1, 0)
+  ph.Visible = false
+  ph.Parent = lane
+  rlAnimUI.playhead = ph
+  rlAnimUI.selKey = 0
+  rlAnimStatus("track '" .. track .. "': " .. #keys .. " keys")
+end
+local function rlAnimResolveJoint(target: Instance, track: string): Instance?
+  local best: Instance? = nil
+  pcall(function()
+    for _, d in ipairs(target:GetDescendants()) do
+      if d.Name == track and (d:IsA("Motor6D") or d:IsA("Bone") or d:IsA("BasePart")) then
+        best = d
+        break
+      end
+    end
+    if not best and target.Name == track then best = target end
+  end)
+  return best
+end
+local function rlAnimApplyPose(inst: Instance, pos: any, rot: any)
+  local cf = CFrame.new(num(pos and pos.x, 0), num(pos and pos.y, 0), num(pos and pos.z, 0))
+    * CFrame.Angles(math.rad(num(rot and rot.x, 0)), math.rad(num(rot and rot.y, 0)), math.rad(num(rot and rot.z, 0)))
+  if inst:IsA("Motor6D") then
+    (inst :: Motor6D).Transform = cf
+  elseif inst:IsA("BasePart") then
+    (inst :: BasePart).CFrame = cf
+  else
+    error("joint '" .. inst.Name:sub(1, 40) .. "' (" .. inst.ClassName .. ") is not directly posable")
+  end
+end
+local function rlAnimSnapshot(target: Instance, names: { string })
+  local held: { [string]: any } = {}
+  for _, tn in ipairs(names) do
+    local j = rlAnimResolveJoint(target, tn)
+    if j then
+      if j:IsA("Motor6D") then held[tn] = { inst = j, cf = (j :: Motor6D).Transform }
+      elseif j:IsA("BasePart") then held[tn] = { inst = j, cf = (j :: BasePart).CFrame } end
+    end
+  end
+  return held
+end
+local function rlAnimRestore()
+  for _, h in pairs(rlAnimUI.held or {}) do
+    pcall(function()
+      if (h :: any).inst and (h :: any).cf then
+        if ((h :: any).inst :: Instance):IsA("Motor6D") then
+          (((h :: any).inst) :: Motor6D).Transform = (h :: any).cf
+        elseif ((h :: any).inst :: Instance):IsA("BasePart") then
+          (((h :: any).inst) :: BasePart).CFrame = (h :: any).cf
+        end
+      end
+    end)
+  end
+  rlAnimUI.held = {}
+end
+local function rlAnimPlay()
+  if rlAnimUI.playing then rlAnimStatus("already playing") return end
+  local okRun, why = pcall(function() return RunService:IsRunning() end)
+  if okRun and why then rlAnimStatus("stop Play first - preview runs in Edit only", true) return end
+  local anim, _ = rlAnimCurrent()
+  if anim == "" then rlAnimStatus("enter an animation name first", true) return end
+  local ok, folder, tracks = pcall(function() return rlAnimRead(anim) end)
+  if not ok then rlAnimStatus("load failed: " .. tostring(folder):sub(1, 160), true) return end
+  local targetPath = ""
+  pcall(function() targetPath = tostring(folder:GetAttribute("target") or "") end)
+  local target = nil
+  if targetPath ~= "" then target = findByPath(targetPath) end
+  if not target then rlAnimStatus("target gone: '" .. targetPath:sub(1, 60) .. "'", true) return end
+  local names = rlTrackNames(tracks)
+  if #names == 0 then rlAnimStatus("no tracks to play", true) return end
+  local duration = 1
+  local doLoop = false
+  pcall(function()
+    duration = num(folder:GetAttribute("duration"), 1)
+    doLoop = folder:GetAttribute("loop") == true
+  end)
+  rlAnimUI.held = rlAnimSnapshot(target, names)
+  rlAnimUI.playing = true
+  rlAnimUI.stopNow = false
+  pcall(function() ChangeHistoryService:SetWaypoint("RoLink model-anim preview " .. anim:sub(1, 40)) end)
+  local wasLoopBtn = rlAnimUI.loopBtn
+  task.spawn(function()
+    local fps = 30
+    repeat
+      local t = 0
+      while t <= duration + 1e-9 do
+        if rlAnimUI.stopNow then break end
+        for _, tn in ipairs(names) do
+          local pos, rot = rlPoseAt(tracks[tn].keys, t)
+          local j = rlAnimResolveJoint(target, tn)
+          if j then pcall(function() rlAnimApplyPose(j, pos, rot) end) end
+        end
+        local x = math.clamp(t / duration, 0, 1) * (RL_ANIM_W - 24)
+        if rlAnimUI.playhead then
+          rlAnimUI.playhead.Visible = true
+          rlAnimUI.playhead.Position = UDim2.new(0, x, 0, 0)
+        end
+        if rlAnimUI.timeLbl then rlAnimUI.timeLbl.Text = string.format("%.2fs / %.2fs", t, duration) end
+        task.wait(1 / fps)
+        t += 1 / fps
+      end
+      if doLoop and not rlAnimUI.stopNow and wasLoopBtn and wasLoopBtn.Text == "Loop: on" then
+        continue
+      end
+      break
+    until false
+    rlAnimRestore()
+    if rlAnimUI.playhead then rlAnimUI.playhead.Visible = false end
+    rlAnimUI.playing = false
+    rlAnimUI.stopNow = false
+    if rlAnimUI.timeLbl then rlAnimUI.timeLbl.Text = "stopped" end
+    rlAnimStatus("preview finished - originals restored")
+  end)
+  rlAnimStatus("playing '" .. anim .. "' (" .. #names .. " tracks)")
+end
+local function rlAnimStop()
+  rlAnimUI.stopNow = true
+  rlAnimStatus("stopping - restoring originals")
+end
+local function rlAnimLoadAll()
+  pcall(rlAnimRenderRig)
+  pcall(rlAnimRenderTracks)
+  pcall(rlAnimRenderTimeline)
+end
+local function rlBuildAnimWidget()
+  local info = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, false, 380, 600, 300, 440)
+  local w = plugin:CreateDockWidgetPluginGui("RoLinkModelAnim", info)
+  w.Title = "RoLink Animation (Beta)"
+  w.Name = "RoLinkModelAnim"
+  local root = Instance.new("Frame")
+  root.BackgroundColor3 = RL_ANIM_COLORS.panel
+  root.BorderSizePixel = 0
+  root.Size = UDim2.new(1, 0, 1, 0)
+  root.Parent = w
+  local pad = Instance.new("UIPadding")
+  pad.PaddingLeft = UDim.new(0, 8)
+  pad.PaddingRight = UDim.new(0, 8)
+  pad.PaddingTop = UDim.new(0, 8)
+  pad.PaddingBottom = UDim.new(0, 8)
+  pad.Parent = root
+  local stack = Instance.new("UIListLayout")
+  stack.FillDirection = Enum.FillDirection.Vertical
+  stack.Padding = UDim.new(0, 6)
+  stack.Parent = root
+  local titleBar = Instance.new("Frame")
+  titleBar.BackgroundColor3 = RL_ANIM_COLORS.lane
+  titleBar.BorderSizePixel = 0
+  titleBar.Size = UDim2.new(1, 0, 0, 26)
+  titleBar.Parent = root
+  local edge = Instance.new("Frame")
+  edge.BackgroundColor3 = RL_ANIM_COLORS.accent
+  edge.BorderSizePixel = 0
+  edge.Size = UDim2.new(0, 3, 1, 0)
+  edge.Parent = titleBar
+  local titleLbl = Instance.new("TextLabel")
+  titleLbl.Text = "no animation loaded"
+  titleLbl.Font = Enum.Font.GothamBold
+  titleLbl.TextSize = 13
+  titleLbl.TextColor3 = RL_ANIM_COLORS.accent
+  titleLbl.BackgroundTransparency = 1
+  titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+  titleLbl.Size = UDim2.new(1, -12, 1, 0)
+  titleLbl.Position = UDim2.new(0, 10, 0, 0)
+  titleLbl.Parent = titleBar
+  rlAnimUI.titleLbl = titleLbl
+  local menu = rlAnimRow(root, 24)
+  local menuLoad = rlAnimBtn(menu, "menuLoad", "Load", 64)
+  local menuAnalyze = rlAnimBtn(menu, "menuAnalyze", "Analyze", 76)
+  local menuValidate = rlAnimBtn(menu, "menuValidate", "Validate", 76)
+  local menuPlay = rlAnimBtn(menu, "menuPlay", "Play", 64, true)
+  rlAnimHead(root, "TARGET + STORE")
+  local r1 = rlAnimRow(root, 24)
+  rlAnimUI.targetBox = rlAnimBox(r1, "target", "Workspace", 150)
+  rlAnimUI.animBox = rlAnimBox(r1, "anim", "", 120)
+  rlAnimHead(root, "NEW STORE")
+  local r2 = rlAnimRow(root, 24)
+  local durBox = rlAnimBox(r2, "dur", "1.0", 50)
+  local fpsBox = rlAnimBox(r2, "fps", "30", 44)
+  local loopBtn = rlAnimBtn(r2, "newloop", "Loop: off", 76)
+  loopBtn.MouseButton1Click:Connect(function()
+    loopBtn.Text = if loopBtn.Text == "Loop: on" then "Loop: off" else "Loop: on"
+  end)
+  local newBtn = rlAnimBtn(r2, "new", "Create", 70)
+  rlAnimHead(root, "RIG  +  TRACK")
+  local r3 = rlAnimRow(root, 24)
+  rlAnimUI.trackBox = rlAnimBox(r3, "track", "", 220)
+  local rigScroll = Instance.new("ScrollingFrame")
+  rigScroll.BackgroundColor3 = RL_ANIM_COLORS.lane
+  rigScroll.BorderSizePixel = 0
+  rigScroll.Size = UDim2.new(1, 0, 0, 96)
+  rigScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+  rigScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+  rigScroll.Parent = root
+  local rigPad = Instance.new("UIListLayout")
+  rigPad.FillDirection = Enum.FillDirection.Vertical
+  rigPad.Parent = rigScroll
+  rlAnimUI.rigList = rigScroll
+  rlAnimHead(root, "TRACKS")
+  local trackScroll = Instance.new("ScrollingFrame")
+  trackScroll.BackgroundColor3 = RL_ANIM_COLORS.lane
+  trackScroll.BorderSizePixel = 0
+  trackScroll.Size = UDim2.new(1, 0, 0, 76)
+  trackScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+  trackScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+  trackScroll.Parent = root
+  local trackPad = Instance.new("UIListLayout")
+  trackPad.FillDirection = Enum.FillDirection.Vertical
+  trackPad.Parent = trackScroll
+  rlAnimUI.trackList = trackScroll
+  rlAnimHead(root, "TIMELINE")
+  local ruler = Instance.new("Frame")
+  ruler.BackgroundTransparency = 1
+  ruler.Size = UDim2.new(1, 0, 0, 16)
+  ruler.Parent = root
+  rlAnimUI.ruler = ruler
+  local keyScroll = Instance.new("ScrollingFrame")
+  keyScroll.BackgroundColor3 = RL_ANIM_COLORS.lane
+  keyScroll.BorderSizePixel = 0
+  keyScroll.Size = UDim2.new(1, 0, 0, 34)
+  keyScroll.CanvasSize = UDim2.new(0, RL_ANIM_W, 0, 30)
+  keyScroll.Parent = root
+  rlAnimUI.keyLane = keyScroll
+  local markScroll = Instance.new("ScrollingFrame")
+  markScroll.BackgroundColor3 = RL_ANIM_COLORS.lane
+  markScroll.BorderSizePixel = 0
+  markScroll.Size = UDim2.new(1, 0, 0, 24)
+  markScroll.CanvasSize = UDim2.new(0, RL_ANIM_W, 0, 22)
+  markScroll.Parent = root
+  rlAnimUI.markerLane = markScroll
+  rlAnimHead(root, "INSPECTOR")
+  local r4 = rlAnimRow(root, 24)
+  local ins: { [string]: any } = {}
+  ins.t = rlAnimField(r4, "T", "0", 46)
+  ins.rx = rlAnimField(r4, "RX", "0", 44)
+  ins.ry = rlAnimField(r4, "RY", "0", 44)
+  ins.rz = rlAnimField(r4, "RZ", "0", 44)
+  local r5 = rlAnimRow(root, 24)
+  ins.px = rlAnimField(r5, "PX", "0", 44)
+  ins.py = rlAnimField(r5, "PY", "0", 44)
+  ins.pz = rlAnimField(r5, "PZ", "0", 44)
+  ins.ease = rlAnimField(r5, "E", "linear", 66)
+  rlAnimUI.ins = ins
+  local r6 = rlAnimRow(root, 24)
+  local setBtn = rlAnimBtn(r6, "set", "Set key", 80)
+  local delBtn = rlAnimBtn(r6, "del", "Del key", 80)
+  local valBtn = rlAnimBtn(r6, "val", "Validate", 80)
+  rlAnimHead(root, "TRANSPORT")
+  local r7 = rlAnimRow(root, 24)
+  local playBtn = rlAnimBtn(r7, "play", "Play", 64, true)
+  local stopBtn = rlAnimBtn(r7, "stop", "Stop", 64)
+  rlAnimUI.loopBtn = rlAnimBtn(r7, "loop", "Loop: off", 76)
+  rlAnimUI.loopBtn.MouseButton1Click:Connect(function()
+    local b = rlAnimUI.loopBtn
+    b.Text = if b.Text == "Loop: on" then "Loop: off" else "Loop: on"
+  end)
+  local timeLbl = Instance.new("TextLabel")
+  timeLbl.Text = "idle"
+  timeLbl.Font = Enum.Font.Code
+  timeLbl.TextSize = 12
+  timeLbl.TextColor3 = RL_ANIM_COLORS.good
+  timeLbl.BackgroundTransparency = 1
+  timeLbl.Size = UDim2.new(0, 130, 0, 24)
+  timeLbl.Parent = r7
+  rlAnimUI.timeLbl = timeLbl
+  local st = Instance.new("TextLabel")
+  st.Text = "ready"
+  st.Font = Enum.Font.Gotham
+  st.TextSize = 12
+  st.TextColor3 = RL_ANIM_COLORS.dim
+  st.BackgroundTransparency = 1
+  st.TextXAlignment = Enum.TextXAlignment.Left
+  st.TextTruncate = Enum.TextTruncate.AtEnd
+  st.Size = UDim2.new(1, 0, 0, 22)
+  st.Parent = root
+  rlAnimStatusLbl = st
+  menuLoad.MouseButton1Click:Connect(function() pcall(rlAnimLoadAll) end)
+  menuAnalyze.MouseButton1Click:Connect(function() pcall(rlAnimRenderRig) end)
+  menuValidate.MouseButton1Click:Connect(function()
+    local anim, _ = rlAnimCurrent()
+    local ok, res = pcall(function() return rlModelValidate({ anim = anim }) end)
+    if ok then
+      rlAnimStatus(if res.passed then "validate: PASS (" .. #res.warnings .. " warnings)" else "validate: " .. #res.errors .. " errors - see chat validate_model_animation", not res.passed)
+    else rlAnimStatus("validate failed: " .. tostring(res):sub(1, 160), true) end
+  end)
+  menuPlay.MouseButton1Click:Connect(function() pcall(rlAnimPlay) end)
+  newBtn.MouseButton1Click:Connect(function()
+    local ok, res = pcall(function()
+      local tw = rlAnimUI.targetBox
+      local aw = rlAnimUI.animBox
+      return rlModelCreate({ target = (tw and tw.Text) or "Workspace",
+        name = (aw and aw.Text) or "", duration = tonumber(durBox.Text) or 0,
+        fps = tonumber(fpsBox.Text) or 30, loop = loopBtn.Text == "Loop: on", confirm = true })
+    end)
+    if ok then
+      rlAnimStatus("store '" .. tostring(res.animation) .. "' ready (" .. tostring(res.duration) .. "s)")
+      pcall(rlAnimLoadAll)
+    else
+      rlAnimStatus("create failed: " .. tostring(res):sub(1, 160), true)
+    end
+  end)
+  setBtn.MouseButton1Click:Connect(function()
+    local anim, track = rlAnimCurrent()
+    local ok, res = pcall(function()
+      return rlModelSetKey({ anim = anim, track = track, t = tonumber(ins.t.Text) or 0,
+        pose = { position = { x = tonumber(ins.px.Text) or 0, y = tonumber(ins.py.Text) or 0, z = tonumber(ins.pz.Text) or 0 },
+          rotation = { x = tonumber(ins.rx.Text) or 0, y = tonumber(ins.ry.Text) or 0, z = tonumber(ins.rz.Text) or 0 } },
+        ease = ins.ease.Text })
+    end)
+    if ok then rlAnimStatus("key @" .. tostring(res.t) .. "s (" .. tostring(res.keys) .. " total)") pcall(rlAnimLoadAll)
+    else rlAnimStatus("set key failed: " .. tostring(res):sub(1, 160), true) end
+  end)
+  delBtn.MouseButton1Click:Connect(function()
+    local anim, track = rlAnimCurrent()
+    local idx = rlAnimUI.selKey
+    if idx < 1 then rlAnimStatus("click a key first", true) return end
+    local ok, res = pcall(function()
+      local folder, tracks, markers, events = rlAnimRead(anim)
+      local keys = tracks[track].keys
+      table.remove(keys, idx)
+      rlAnimWrite(anim, folder, tracks, markers, events)
+      return #keys
+    end)
+    if ok then
+      rlAnimUI.selKey = 0
+      rlAnimStatus("key deleted (" .. tostring(res) .. " left)")
+      pcall(rlAnimLoadAll)
+    else rlAnimStatus("delete failed: " .. tostring(res):sub(1, 160), true) end
+  end)
+  valBtn.MouseButton1Click:Connect(function()
+    local anim, _ = rlAnimCurrent()
+    local ok, res = pcall(function() return rlModelValidate({ anim = anim }) end)
+    if ok then
+      rlAnimStatus(if res.passed then "validate: PASS (" .. #res.warnings .. " warnings)" else "validate: " .. #res.errors .. " errors - see chat validate_model_animation", not res.passed)
+    else rlAnimStatus("validate failed: " .. tostring(res):sub(1, 160), true) end
+  end)
+  playBtn.MouseButton1Click:Connect(function() pcall(rlAnimPlay) end)
+  stopBtn.MouseButton1Click:Connect(function() pcall(rlAnimStop) end)
+  rlAnimUI.widget = w
+  rlAnimStatus("editor ready - enter target + animation, Load")
+end
+
+local rlAnimBtn: TextButton? = nil
+pcall(function()
+  -- widget is built once below (needs the engine above); the button only toggles.
+  rlAnimBtn = toolbar:CreateButton("Anim", "RoLink model animation editor (140 tools)", "rbxassetid://0")
+  local abtn = rlAnimBtn :: TextButton
+  abtn.ClickableWhenViewportHidden = true
+  abtn.Click:Connect(function()
+    local wg = rlAnimUI.widget
+    if wg then
+      wg.Enabled = not wg.Enabled
+      abtn:SetActive(wg.Enabled)
+      log("animation editor " .. (wg.Enabled and "opened" or "closed") .. " (polling " .. (enabled and "on" or "off") .. ")")
+    else
+      warn("[RoLink] animation editor did not build - see Output for 'editor build failed'")
+    end
+  end)
+end)
+-- Build identity + type probe: if Studio runs a stale/different copy, the
+-- Output below names exactly what is missing instead of a bare nil-call.
+log("anim build 6 - builder=" .. type(rlBuildAnimWidget) .. " engine=" .. type(rlModelAnalyze) .. " ui=" .. type(rlAnimUI))
+local okBuild, buildErr = false, nil
+if type(rlBuildAnimWidget) == "function" then
+  okBuild, buildErr = pcall(rlBuildAnimWidget)
+else
+  buildErr = "rlBuildAnimWidget is " .. type(rlBuildAnimWidget) .. " - reinstall studio-plugin/RoLink.lua from the RoLink-main folder (not the release zip), then fully restart Studio"
+end
+if not okBuild then
+  warn("[RoLink] animation editor build failed: " .. tostring(buildErr):sub(1, 300))
+else
+  log("animation editor built - click Anim to open")
+end
+
+
+-- ── Model animation composites + generators (tools 132-139) ───────────
+-- Time edits (retime/reverse), spatial mirror, weighted blend, safe fixes,
+-- and scaffold generators (attack/idle/walk). Copies are non-destructive;
+-- in-place edits overwrite only the named store. Mirror semantics are
+-- documented approximations - validate after every mirror.
+local EASE_FLIP: { [string]: string } = {
+  quadIn = "quadOut", quadOut = "quadIn",
+  cubicIn = "cubicOut", cubicOut = "cubicIn",
+  sineIn = "sineOut", sineOut = "sineIn",
+}
+local function rlAnimDuplicate(name: string, newName: string, confirm: any): (Instance, { [string]: any }, { [string]: any }, { [string]: any })
+  local folder, tracks, markers, events = rlAnimRead(name)
+  local nn = tostring(newName or ""):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 64)
+  if nn == "" then error("newName is required (max 64 chars)") end
+  if rlAnimFolder(nn) and confirm ~= true then
+    error("CONFIRM_REQUIRED: model animation '" .. nn .. "' already exists - re-send with confirm:true to overwrite, or pick another name")
+  end
+  local nf = rlAnimFolder(nn)
+  if not nf then
+    nf = Instance.new("Folder")
+    nf.Name = nn
+    nf.Parent = rlAnimRoot()
+  end
+  pcall(function()
+    for _, a in ipairs({ "target", "duration", "fps", "loop" }) do
+      local v = folder:GetAttribute(a)
+      if v ~= nil then nf:SetAttribute(a, v) end
+    end
+  end)
+  local function clone(v: any): any
+    return HttpService:JSONDecode(HttpService:JSONEncode(v))
+  end
+  local t2, m2, e2 = clone(tracks), clone(markers), clone(events)
+  rlAnimWrite(nn, nf, t2, m2, e2)
+  return nf, t2, m2, e2
+end
+local function rlModelRetime(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local scale = num(args.scale, 0)
+  if scale < 0.1 or scale > 10 then error("scale must be 0.1-10 (got " .. tostring(args.scale) .. ")") end
+  local folder, tracks, markers, events = rlAnimRead(anim)
+  if args.newName ~= nil and tostring(args.newName) ~= "" then
+    folder, tracks, markers, events = rlAnimDuplicate(anim, args.newName, args.confirm)
+    anim = tostring(args.newName):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 64)
+  end
+  local duration = num(folder:GetAttribute("duration"), 0) * scale
+  if duration > 60 then error("retimed duration " .. duration .. "s exceeds 60s - use a smaller scale") end
+  if duration < 0.1 then error("retimed duration " .. duration .. "s is below 0.1s - use a larger scale") end
+  for _, tr in pairs(tracks) do
+    for _, k in ipairs((tr :: any).keys or {}) do
+      (k :: any).t = num((k :: any).t, 0) * scale
+    end
+  end
+  for _, m in ipairs(markers) do
+    (m :: any).t = num((m :: any).t, 0) * scale
+  end
+  folder:SetAttribute("duration", duration)
+  rlAnimWrite(anim, folder, tracks, markers, events)
+  return { animation = anim, scale = scale, duration = duration }
+end
+local function rlModelReverse(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks, markers, events = rlAnimRead(anim)
+  if args.newName ~= nil and tostring(args.newName) ~= "" then
+    folder, tracks, markers, events = rlAnimDuplicate(anim, args.newName, args.confirm)
+    anim = tostring(args.newName):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 64)
+  end
+  local duration = num(folder:GetAttribute("duration"), 0)
+  for _, tr in pairs(tracks) do
+    local keys = (tr :: any).keys or {}
+    for _, k in ipairs(keys) do
+      (k :: any).t = duration - num((k :: any).t, 0)
+      local e = tostring((k :: any).ease or "linear")
+      k.ease = EASE_FLIP[e] or e
+    end
+    table.sort(keys, function(a, b) return num((a :: any).t, 0) < num((b :: any).t, 0) end)
+  end
+  for _, m in ipairs(markers) do
+    (m :: any).t = duration - num((m :: any).t, 0)
+  end
+  table.sort(markers, function(a, b) return num((a :: any).t, 0) < num((b :: any).t, 0) end)
+  rlAnimWrite(anim, folder, tracks, markers, events)
+  return { animation = anim, duration = duration }
+end
+local function rlMirrorTrackName(nm: string): string
+  if nm:find("Left", 1, true) then return (nm:gsub("Left", "Right", 1)) end
+  if nm:find("Right", 1, true) then return (nm:gsub("Right", "Left", 1)) end
+  if nm:find("_L", 1, true) then return (nm:gsub("_L", "_R", 1)) end
+  if nm:find("_R", 1, true) then return (nm:gsub("_R", "_L", 1)) end
+  if nm:find("-L", 1, true) then return (nm:gsub("-L", "-R", 1)) end
+  if nm:find("-R", 1, true) then return (nm:gsub("-R", "-L", 1)) end
+  return nm
+end
+local function rlModelMirror(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks = rlAnimRead(anim)
+  local doSwap = args.swapPairs ~= false
+  local nn = anim
+  if args.newName ~= nil and tostring(args.newName) ~= "" then
+    nn = tostring(args.newName):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 64)
+    if rlAnimFolder(nn) and args.confirm ~= true then
+      error("CONFIRM_REQUIRED: model animation '" .. nn .. "' already exists - re-send with confirm:true to overwrite, or pick another name")
+    end
+  end
+  local out: { [string]: any } = {}
+  local swapped = 0
+  for tn, tr in pairs(tracks) do
+    local name = tostring(tn)
+    if doSwap then
+      local sw = rlMirrorTrackName(name)
+      if sw ~= name then swapped += 1 end
+      name = sw
+    end
+    local keys: { [string]: any } = {}
+    for _, k in ipairs((tr :: any).keys or {}) do
+      local p, r = (k :: any).pos, (k :: any).rot
+      table.insert(keys, { t = num((k :: any).t, 0),
+        pos = { x = -num(p and (p :: any).x, 0), y = num(p and (p :: any).y, 0), z = num(p and (p :: any).z, 0) },
+        rot = { x = num(r and (r :: any).x, 0), y = -num(r and (r :: any).y, 0), z = -num(r and (r :: any).z, 0) },
+        ease = tostring((k :: any).ease or "linear") })
+    end
+    if out[name] then
+      for _, k in ipairs(keys) do table.insert(out[name].keys, k) end
+      table.sort(out[name].keys, function(a, b) return num((a :: any).t, 0) < num((b :: any).t, 0) end)
+    else
+      out[name] = { kind = tostring((tr :: any).kind or "custom"), keys = keys }
+    end
+  end
+  local nf = rlAnimFolder(nn)
+  if not nf then
+    nf = Instance.new("Folder")
+    nf.Name = nn
+    nf.Parent = rlAnimRoot()
+  end
+  pcall(function()
+    for _, a in ipairs({ "target", "duration", "fps", "loop" }) do
+      local v = folder:GetAttribute(a)
+      if v ~= nil then nf:SetAttribute(a, v) end
+    end
+  end)
+  local _, markers, events = rlAnimRead(anim)
+  local function clone(v: any): any
+    return HttpService:JSONDecode(HttpService:JSONEncode(v))
+  end
+  rlAnimWrite(nn, nf, out, clone(markers), clone(events))
+  return { animation = nn, swapped = swapped }
+end
+local function rlModelBlend(args: { [string]: any }): { [string]: any }
+  local base = tostring(args.base or "")
+  local over = tostring(args.overlay or "")
+  local nn = tostring(args.newName or ""):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 64)
+  if nn == "" then error("newName is required (max 64 chars)") end
+  if rlAnimFolder(nn) and args.confirm ~= true then
+    error("CONFIRM_REQUIRED: model animation '" .. nn .. "' already exists - re-send with confirm:true to overwrite, or pick another name")
+  end
+  local w = num(args.weight, 0.5)
+  if w < 0 or w > 1 then error("weight must be 0-1 (got " .. tostring(args.weight) .. ")") end
+  local bf, bt = rlAnimRead(base)
+  local _, ot = rlAnimRead(over)
+  local fps = 30
+  local bdur, odur = 0, 0
+  pcall(function()
+    fps = math.floor(num(bf:GetAttribute("fps"), 30))
+    bdur = num(bf:GetAttribute("duration"), 0)
+    odur = num(bf:GetAttribute("duration"), 0)
+  end)
+  local of = rlAnimFolder(over)
+  pcall(function() odur = num(of:GetAttribute("duration"), odur) end)
+  if fps < 1 then fps = 30 end
+  local duration = math.max(bdur, odur)
+  if duration <= 0 then error("blend needs a positive duration on both inputs") end
+  local step = 1 / fps
+  if (math.floor(duration / step) + 1) > MAX_MODEL_KEYS then
+    error("blend grid too dense (" .. (math.floor(duration / step) + 1) .. " samples) - shorten the inputs first")
+  end
+  local names: { [string]: boolean } = {}
+  for k in pairs(bt) do names[tostring(k)] = true end
+  for k in pairs(ot) do names[tostring(k)] = true end
+  local out: { [string]: any } = {}
+  local total = 0
+  for tn in pairs(names) do
+    local bk = bt[tn] and (bt[tn] :: any).keys
+    local ok2 = ot[tn] and (ot[tn] :: any).keys
+    if bk and ok2 then
+      local keys: { [string]: any } = {}
+      local t = 0
+      while t <= duration + 1e-9 do
+        local bp, br = rlPoseAt(bk, t)
+        local op, orr = rlPoseAt(ok2, t)
+        table.insert(keys, { t = t,
+          pos = rlLerp3(bp, op, w), rot = rlLerp3(br, orr, w), ease = "linear" })
+        t += step
+      end
+      out[tn] = { kind = "blend", keys = keys }
+      total += #keys
+    elseif bk then
+      out[tn] = bt[tn]
+      total += #bk
+    else
+      out[tn] = ot[tn]
+      total += #ok2
+    end
+  end
+  local _, bmarkers, bevents = rlAnimRead(base)
+  local _, omarkers, oevents = rlAnimRead(over)
+  local markers: { [string]: any } = {}
+  local seen: { [string]: boolean } = {}
+  for _, m in ipairs(omarkers) do
+    table.insert(markers, m)
+    seen[tostring((m :: any).name)] = true
+  end
+  for _, m in ipairs(bmarkers) do
+    if not seen[tostring((m :: any).name)] then table.insert(markers, m) end
+  end
+  table.sort(markers, function(a, b) return num((a :: any).t, 0) < num((b :: any).t, 0) end)
+  local events: { [string]: any } = {}
+  local eseen: { [string]: boolean } = {}
+  for _, e in ipairs(oevents) do
+    table.insert(events, e)
+    eseen[tostring((e :: any).marker)] = true
+  end
+  for _, e in ipairs(bevents) do
+    if not eseen[tostring((e :: any).marker)] then table.insert(events, e) end
+  end
+  local nf = rlAnimFolder(nn)
+  if not nf then
+    nf = Instance.new("Folder")
+    nf.Name = nn
+    nf.Parent = rlAnimRoot()
+  end
+  local tgt = ""
+  pcall(function() tgt = tostring(bf:GetAttribute("target") or "") end)
+  nf:SetAttribute("target", tgt)
+  nf:SetAttribute("duration", duration)
+  nf:SetAttribute("fps", fps)
+  nf:SetAttribute("loop", false)
+  rlAnimWrite(nn, nf, out, markers, events)
+  return { animation = nn, tracks = total > 0 and (function()
+    local c = 0
+    for _ in pairs(out) do c += 1 end
+    return c
+  end)() or 0, keysTotal = total, duration = duration }
+end
+local function rlModelFix(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks, markers, events = rlAnimRead(anim)
+  local fixed: { string } = {}
+  for tn, tr in pairs(tracks) do
+    local keys = (tr :: any).keys
+    if type(keys) ~= "table" or #keys == 0 then
+      tracks[tn] = nil
+      table.insert(fixed, "dropped empty track " .. tostring(tn):sub(1, 40))
+    else
+      for _, k in ipairs(keys) do
+        if EASE_FNS[(k :: any).ease] == nil then
+          k.ease = "linear"
+          table.insert(fixed, "reset bad easing on " .. tostring(tn):sub(1, 32))
+          break
+        end
+      end
+    end
+  end
+  local doLoop = false
+  pcall(function() doLoop = folder:GetAttribute("loop") == true end)
+  if doLoop then
+    for tn, tr in pairs(tracks) do
+      local keys = (tr :: any).keys
+      if type(keys) == "table" and #keys >= 2 then
+        local a, b = keys[1], keys[#keys]
+        if rlMag3(a.rot, b.rot) > 1.0 or rlMag3(a.pos, b.pos) > 0.1 then
+          local function clone(v: any): any
+            return HttpService:JSONDecode(HttpService:JSONEncode(v))
+          end
+          b.pos = clone(a.pos)
+          b.rot = clone(a.rot)
+          table.insert(fixed, "closed loop on " .. tostring(tn):sub(1, 32))
+        end
+      end
+    end
+  end
+  local duration = 60
+  pcall(function() duration = num(folder:GetAttribute("duration"), 60) end)
+  for _, m in ipairs(markers) do
+    local t = num((m :: any).t, 0)
+    if t > duration then
+      m.t = duration
+      table.insert(fixed, "clamped marker " .. tostring((m :: any).name):sub(1, 32))
+    end
+  end
+  local have: { [string]: boolean } = {}
+  for _, m in ipairs(markers) do have[tostring((m :: any).name)] = true end
+  local kept: { [string]: any } = {}
+  for _, e in ipairs(events) do
+    if have[tostring((e :: any).marker)] then
+      table.insert(kept, e)
+    else
+      table.insert(fixed, "dropped orphan event for " .. tostring((e :: any).marker):sub(1, 32))
+    end
+  end
+  rlAnimWrite(anim, folder, tracks, markers, kept)
+  local rep = rlModelValidate({ anim = anim })
+  return { animation = anim, fixed = fixed, remaining = { errors = rep.errors, warnings = rep.warnings }, passed = rep.passed }
+end
+local function rlModelWriteFresh(args: { [string]: any }, tracks: { [string]: any }, markers: { [string]: any }): { [string]: any }
+  local path = tostring(args.target or "")
+  local target = findByPath(path)
+  if not target then error("Model not found: '" .. path:sub(1, 120) .. "'.") end
+  local name = tostring(args.name or ""):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 64)
+  if name == "" then error("name is required (max 64 chars)") end
+  local duration = num(args.duration, 0)
+  if duration < 0.1 or duration > 60 then error("duration must be 0.1-60s (got " .. tostring(args.duration) .. ")") end
+  local fps = math.floor(num(args.fps, 30))
+  if fps < 1 or fps > 120 then error("fps must be 1-120 (got " .. tostring(args.fps) .. ")") end
+  local existing = rlAnimFolder(name)
+  if existing and args.confirm ~= true then
+    error("CONFIRM_REQUIRED: model animation '" .. name .. "' already exists - re-send with confirm:true to overwrite, or pick another name")
+  end
+  local folder = existing
+  if not folder then
+    folder = Instance.new("Folder")
+    folder.Name = name
+    folder.Parent = rlAnimRoot()
+  end
+  folder:SetAttribute("target", target:GetFullName())
+  folder:SetAttribute("duration", duration)
+  folder:SetAttribute("fps", fps)
+  folder:SetAttribute("loop", args.loop == true)
+  local total = 0
+  for _, tr in pairs(tracks) do total += #((tr :: any).keys or {}) end
+  if total > 4096 then error("scaffold too dense (" .. total .. " keys) - list fewer tracks") end
+  rlAnimWrite(name, folder, tracks, markers, {})
+  return { animation = name, target = target:GetFullName(), duration = duration, fps = fps, loop = args.loop == true }
+end
+local function rlNeutralKeys(tracks: { [string]: any }, names: { [string]: any })
+  for _, tn in ipairs(names) do
+    tracks[tn] = { kind = "custom", keys = {} }
+  end
+end
+local function rlKeyAt(tracks: { [string]: any }, tn: string, t: number, rx: number, ry: number, rz: number, ease: string)
+  local keys = tracks[tn].keys
+  table.insert(keys, { t = t, pos = { x = 0, y = 0, z = 0 }, rot = { x = rx, y = ry, z = rz }, ease = ease })
+end
+local function rlModelAttack(args: { [string]: any }): { [string]: any }
+  local names = args.tracks
+  if type(names) ~= "table" or #names == 0 then error("tracks[] must list at least one joint name from analyze_animatable_model") end
+  if #names > 32 then error("too many tracks (max 32)") end
+  local duration = num(args.duration, 1.05)
+  local ant = num(args.anticipation, 0.2)
+  local impact = num(args.impactT, 0.46)
+  if impact < 0 or impact > duration then error("impactT must sit inside 0-" .. duration .. "s") end
+  if ant < 0 or ant > duration then error("anticipation must sit inside 0-" .. duration .. "s") end
+  local st = args.strike
+  local srx = num(st and (st :: any).rx, 0)
+  local sry = num(st and (st :: any).ry, 45)
+  local srz = num(st and (st :: any).rz, 0)
+  local tracks: { [string]: any } = {}
+  rlNeutralKeys(tracks, names)
+  for _, tn in ipairs(names) do
+    local s = tostring(tn)
+    rlKeyAt(tracks, s, 0, 0, 0, 0, "linear")
+    rlKeyAt(tracks, s, ant, -srx * 0.5, -sry * 0.5, -srz * 0.5, "quadInOut")
+    rlKeyAt(tracks, s, impact, srx, sry, srz, "quadOut")
+    rlKeyAt(tracks, s, duration, 0, 0, 0, "quadInOut")
+  end
+  local res = rlModelWriteFresh(args, tracks, { { t = impact, name = "IMPACT" } })
+  res.impactT = impact
+  return res
+end
+local function rlModelIdle(args: { [string]: any }): { [string]: any }
+  local names = args.tracks
+  if type(names) ~= "table" or #names == 0 then error("tracks[] must list at least one joint name from analyze_animatable_model") end
+  if #names > 32 then error("too many tracks (max 32)") end
+  local duration = num(args.duration, 2)
+  local sway = num(args.sway, 5)
+  if sway < 0 or sway > 45 then error("sway must be 0-45 degrees (got " .. tostring(args.sway) .. ")") end
+  local tracks: { [string]: any } = {}
+  rlNeutralKeys(tracks, names)
+  for _, tn in ipairs(names) do
+    local s = tostring(tn)
+    rlKeyAt(tracks, s, 0, 0, 0, 0, "linear")
+    rlKeyAt(tracks, s, duration / 2, 0, sway, 0, "quadInOut")
+    rlKeyAt(tracks, s, duration, 0, 0, 0, "quadInOut")
+  end
+  return rlModelWriteFresh(args, tracks, {})
+end
+local function rlModelWalk(args: { [string]: any }): { [string]: any }
+  local names = args.tracks
+  if type(names) ~= "table" or #names == 0 then error("tracks[] must list at least one joint name from analyze_animatable_model (order drives alternation)") end
+  if #names > 32 then error("too many tracks (max 32)") end
+  local duration = num(args.duration, 0.8)
+  local stride = num(args.stride, 20)
+  if stride < 0 or stride > 90 then error("stride must be 0-90 degrees (got " .. tostring(args.stride) .. ")") end
+  local tracks: { [string]: any } = {}
+  rlNeutralKeys(tracks, names)
+  for i, tn in ipairs(names) do
+    local s = tostring(tn)
+    local sign = 1
+    if i % 2 == 0 then sign = -1 end
+    rlKeyAt(tracks, s, 0, 0, 0, 0, "linear")
+    rlKeyAt(tracks, s, duration * 0.25, sign * stride, 0, 0, "quadInOut")
+    rlKeyAt(tracks, s, duration * 0.5, 0, 0, 0, "quadInOut")
+    rlKeyAt(tracks, s, duration * 0.75, -sign * stride, 0, 0, "quadInOut")
+    rlKeyAt(tracks, s, duration, 0, 0, 0, "quadInOut")
+  end
+  return rlModelWriteFresh(args, tracks, {})
+end
+
+
 -- ── Diagnostics + inspection probes (tools 120-124) ──────────────────────
 -- Small, read-only, heavily pcapped: a probe must never fail the session.
 
@@ -1274,6 +2888,22 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="screenshot_studio" then result=studioSceneMap(args)
     elseif tool=="playtest_scenario" then result=playtestObserve(args)
     elseif tool=="migrate_system" then result={composed=true, note="migration plans apply bridge-side via atomic batch_queue - this stub only satisfies the dispatcher"}
+    elseif tool=="analyze_animatable_model" then result=rlModelAnalyze(args)
+    elseif tool=="create_model_animation" then result=rlModelCreate(args)
+    elseif tool=="set_model_keyframe" then result=rlModelSetKey(args)
+    elseif tool=="set_model_easing" then result=rlModelSetEase(args)
+    elseif tool=="add_animation_marker" then result=rlModelAddMarker(args)
+    elseif tool=="set_track_lock" then result=rlModelTrackLock(args)
+    elseif tool=="preview_model_animation" then result=rlModelPreview(args)
+    elseif tool=="validate_model_animation" then result=rlModelValidate(args)
+    elseif tool=="retime_animation" then result=rlModelRetime(args)
+    elseif tool=="reverse_animation" then result=rlModelReverse(args)
+    elseif tool=="mirror_animation" then result=rlModelMirror(args)
+    elseif tool=="blend_animation" then result=rlModelBlend(args)
+    elseif tool=="fix_animation" then result=rlModelFix(args)
+    elseif tool=="create_attack_animation" then result=rlModelAttack(args)
+    elseif tool=="create_idle_animation" then result=rlModelIdle(args)
+    elseif tool=="create_walk_cycle" then result=rlModelWalk(args)
     else
       -- generic fallback: try run_code
       local ok2, ret2=sandboxRun(cmd.command or ""); if not ok2 then error(ret2) end; result={tool=tool, returned=ret2}
@@ -1457,4 +3087,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.4.0 loaded - 124 tools ready, polling "..MCP_URL)
+log("RoLink 2.5.0 loaded - 140 tools ready, polling "..MCP_URL)

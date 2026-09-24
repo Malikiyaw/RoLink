@@ -1,4 +1,4 @@
-# tests/test_tool_completeness.py - all 124 tools exist in every layer.
+# tests/test_tool_completeness.py - all 140 tools exist in every layer.
 #   python3 tests/test_tool_completeness.py
 # For each registry name: (a) zod schema in mcp-server registry.ts,
 # (b) dispatcher branch in studio-plugin/RoLink.lua, (c) prompt entry in
@@ -36,8 +36,8 @@ class CompletenessTest(unittest.TestCase):
                             "tool-calls", "*.txt"))}
 
     def test_registry_is_124_unique(self):
-        self.assertEqual(len(self.registry), 124)
-        self.assertEqual(len(set(self.registry)), 124)
+        self.assertEqual(len(self.registry), 140)
+        self.assertEqual(len(set(self.registry)), 140)
 
     def test_every_tool_in_registry_ts(self):
         missing = [n for n in self.registry if f'name: "{n}"' not in self.registry_ts]

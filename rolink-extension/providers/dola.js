@@ -166,7 +166,7 @@ const RLProvider = (() => {
       return false;
     },
     augment(P) {
-      P.unstableWarning = "New provider: Dola support is fresh and unvalidated - please report issues on Discord.";
+      P.unstableWarning = "Work in progress: Dola is not usable yet - use DeepSeek, ChatGPT, or another supported chat for now.";
       // Anchored bar (HF precedent): never in-flow into the composer card,
       // hug it from above via the core's anchored mode.
       P.barMount = () => null;

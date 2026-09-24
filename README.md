@@ -1,10 +1,14 @@
-# RoLink 2.4.0 — AI → Roblox Studio
+# RoLink 2.5.0 — AI → Roblox Studio
 
 **Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena, Arena Agent, Meta AI, Claude, HF Chat, or Dola into a Roblox Studio agent.** Browser extension + local bridge + MCP. Download through GitHub, no build needed.
 
 > 🌐 Free alternative for building Roblox games with AI.
 
-Twelve providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** (`kimi.ai`), **GLM** (`chat.z.ai`), **Qwen** (`chat.qwen.ai`), **Arena** (`arena.ai`, Direct mode), **Arena Agent** (`arena.ai/agent`, supervised), **Meta AI**, **Claude** (`claude.ai`), **HF Chat** (`huggingface.co/chat`, fresh support, login required), **Dola** (`dola.com`, fresh support, text-only). Pi (`pi.ai`) is unsupported — its abuse filters escalate to account bans; do not use RoLink there. Images off on ChatGPT free tier (separate quota); Gemini/Kimi may drop tools in long sessions; Arena chat keep **Direct** mode (Battle / Side-by-Side unsupported); Agent Mode runs supervised — it reads settled output, pauses at human prompts, and never votes for you.
+Twelve providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** (`kimi.ai`), **GLM** (`chat.z.ai`), **Qwen** (`chat.qwen.ai`), **Arena** (`arena.ai`, Direct mode), **Arena Agent** (`arena.ai/agent`, supervised, work in progress — not fully working yet), **Meta AI**, **Claude** (`claude.ai`, work in progress — not usable yet), **HF Chat** (`huggingface.co/chat`, fresh support, login required), **Dola** (`dola.com`, work in progress — not usable yet, text-only). Pi (`pi.ai`) is unsupported — its abuse filters escalate to account bans; do not use RoLink there. Images off on ChatGPT free tier (separate quota); Gemini/Kimi may drop tools in long sessions; Arena chat keep **Direct** mode (Battle / Side-by-Side unsupported); Agent Mode runs supervised — it reads settled output, pauses at human prompts, and never votes for you.
+
+## New in 2.5.0
+
+See [CHANGELOG.md](CHANGELOG.md): model-animation tools 125–140 (analyze, keyframes, markers, preview, validate, composites, generators) plus the in-Studio timeline editor (beta), 140-tool catalog, and hardened provider startup.
 
 ## New in 2.4.0
 
@@ -42,7 +46,7 @@ Open Studio and load a Place, then enable MCP (first time only):
 - Click **Manage MCP Servers**
 - Click **Enable Studio as MCP Server**
 
-### 2b. Install the RoLink Studio plugin (unlocks all 124 tools)
+### 2b. Install the RoLink Studio plugin (unlocks all 140 tools)
 
 Roblox's built-in MCP only speaks ~27 commands. The rest of the catalog runs
 through our own plugin:
@@ -69,10 +73,10 @@ Open a new chat on https://chat.deepseek.com (recommended), https://chatgpt.com,
 
 | Where | What to look for |
 | --- | --- |
-| Bridge terminal banner | `BRIDGE START v2.4.0` (proves which folder you launched) |
+| Bridge terminal banner | `BRIDGE START v2.5.0` (proves which folder you launched) |
 | Bridge `plugin vX` line | Must equal the bridge version — a mismatch means Studio loaded a stale plugin; redo step 2b with Studio fully quit |
-| Extension bar/popup | `v2.4.0` next to the RoLink name |
-| Studio Output on launch | `RoLink 2.4.0 loaded` |
+| Extension bar/popup | `v2.5.0` next to the RoLink name |
+| Studio Output on launch | `RoLink 2.5.0 loaded` |
 
 If any one differs, that component came from a different install — reinstall it from this release.
 
@@ -86,6 +90,7 @@ If any one differs, that component came from a different install — reinstall i
 - Scan Output errors, inspect UI rects, map the viewport schematically
 - Verify gameplay with scenario playtests, migrate systems atomically
 - **Remember your project across sessions** (structured project memory: architecture, services, bugs, decisions)
+- **Animate any model (beta)**: model-animation tools (analyze, keyframes, markers, preview, validate, retime/blend/fix, attack/idle/walk scaffolds) plus the in-Studio timeline editor (RoLink toolbar → Anim, beta)
 
 ## Panel status
 

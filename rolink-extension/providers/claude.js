@@ -18,28 +18,57 @@ const RLProvider = (() => {
 
   const isShown = (e) => { try { return e.getClientRects().length > 0; } catch { return false; } };
   const inOwnUi = (e) => { try { return !!(e.closest && e.closest("#rl-root")); } catch { return false; } };
+  // Why the last lookup missed (surfaced in the thrown error so a miss reads
+  // as "seen: 2 hidden" instead of a bare "not found"). Same contract as agent.js.
+  let lastMiss = "";
   function getEditor() {
     try {
-      // Layered: legacy textarea, then any visible textarea, then
-      // contenteditable (any value except "false"), then textbox roles.
-      let list = [...document.querySelectorAll("textarea")].filter((e) => !inOwnUi(e));
-      let hit = list.find((e) => e.isConnected && isShown(e));
-      if (hit) return hit;
-      const ce = [...document.querySelectorAll("[contenteditable]")].filter((e) => {
+      const counts = { hidden: 0, ownUi: 0, detached: 0, lockedOff: 0, total: 0 };
+      const cands = [];
+      const push = (list) => { try { for (const e of list) { counts.total++; cands.push(e); } } catch {} };
+      // Strict shapes first (zero regression risk for anything already found).
+      push([...document.querySelectorAll("textarea")].filter((e) => !inOwnUi(e)));
+      // Wider net: any contenteditable value (covers plaintext-only), explicit
+      // textbox roles, and editor classes (ProseMirror/Tiptap/Lexical reskins).
+      push([...document.querySelectorAll('[contenteditable], [role="textbox"], .ProseMirror, .tiptap, [data-lexical-editor]')].filter((e) => {
         try {
           if (inOwnUi(e)) return false;
           const v = e.getAttribute && e.getAttribute("contenteditable");
+          // Plain divs match the class selectors without a contenteditable attr;
+          // only gate when the attr is explicitly "false".
           if (v === "false" && !(e.hasAttribute && e.hasAttribute("data-rl-locked"))) return false;
           return true;
         } catch { return false; }
-      });
-      hit = ce.find((e) => e.isConnected && isShown(e));
-      if (hit) return hit;
-      hit = [...document.querySelectorAll('[role="textbox"]')]
-        .find((e) => !inOwnUi(e) && e.isConnected && isShown(e));
-      if (hit) return hit;
-    } catch {}
-    return null;
+      }));
+      const seen = new Set();
+      const vis = [];
+      for (const e of cands) {
+        if (!e || seen.has(e)) continue;
+        seen.add(e);
+        if (inOwnUi(e)) { counts.ownUi++; continue; }
+        if (!e.isConnected) { counts.detached++; continue; }
+        try {
+          const v = e.getAttribute && e.getAttribute("contenteditable");
+          if (v === "false" && !(e.hasAttribute && e.hasAttribute("data-rl-locked"))) { counts.lockedOff++; continue; }
+        } catch {}
+        if (!isShown(e)) { counts.hidden++; continue; }
+        vis.push(e);
+      }
+      // Prefer the real rich-text composer over a hidden/plain textarea.
+      const pick = vis.find((e) => e.isContentEditable) || vis[0] || null;
+      if (!pick) {
+        const parts = [];
+        if (!counts.total) parts.push("no editable candidates");
+        else {
+          if (counts.hidden) parts.push(counts.hidden + " hidden");
+          if (counts.lockedOff) parts.push(counts.lockedOff + " locked off");
+          if (counts.ownUi) parts.push(counts.ownUi + " own UI");
+          if (counts.detached) parts.push(counts.detached + " detached");
+        }
+        lastMiss = parts.length ? "seen: " + parts.join(", ") : "no editable candidates";
+      } else lastMiss = "";
+      return pick;
+    } catch { return null; }
   }
 
   // LIVE-DOM NOTE: verify the send control shape (aria-label? data-testid?
@@ -53,7 +82,10 @@ const RLProvider = (() => {
       for (const s of sels) {
         for (const b of document.querySelectorAll(s)) {
           if (inOwnUi(b)) continue;
-          if (!isShown(b) || b.getAttribute("aria-disabled") === "true") continue;
+          if (!isShown(b)) continue;
+          if (b.disabled) continue;
+          if (b.getAttribute("aria-disabled") === "true") continue;
+          if (/stop|halt|cancel/i.test(b.getAttribute("aria-label") || "")) continue;
           return b;
         }
       }
@@ -61,8 +93,9 @@ const RLProvider = (() => {
       const scope = (ed && ed.parentElement && ed.parentElement.parentElement) || document;
       for (const b of scope.querySelectorAll("button")) {
         if (inOwnUi(b) || !isShown(b)) continue;
+        if (b.disabled || b.getAttribute("aria-disabled") === "true") continue;
         const t = (b.getAttribute("aria-label") || "") + " " + (b.innerText || "");
-        if (/send|submit|↑|→/i.test(t) && !/stop|halt/i.test(t)) return b;
+        if (/send|submit|↑|→/i.test(t) && !/stop|halt|cancel/i.test(t)) return b;
       }
     } catch {}
     return null;
@@ -85,9 +118,9 @@ const RLProvider = (() => {
       REASON_NOREPLY_MS: 90000, STABLE_MS: 9000, RESPONSE_TIMEOUT_MS: 300000,
     },
     // Extended-thinking + streaming chrome excluded from reads (same mechanism
-    // as thought blocks elsewhere). LIVE-DOM: confirm the thinking container
-    // classes on a real thinking turn.
-    volatileSel: '[aria-busy="true"], [role="progressbar"], [role="status"], [data-testid*="thinking" i], [class*="thinking" i], [class*="reasoning" i]',
+    // as thought blocks elsewhere). Code-viewer chrome (line numbers, gutters,
+    // copy buttons) is stripped too so gutter digits can't corrupt JSON reads.
+    volatileSel: '[aria-busy="true"], [role="progressbar"], [role="status"], [data-testid*="thinking" i], [class*="thinking" i], [class*="reasoning" i], [class*="line-number" i], [class*="line-numbers" i], [class*="gutter" i], [class*="copy-code" i], [class*="copy-button" i]',
     getEditor,
     // Thinking-phase liveness the stop-btn/stream sampling may miss.
     isGeneratingExtra: () => {
@@ -95,10 +128,17 @@ const RLProvider = (() => {
         const b = document.querySelector('[aria-busy="true"]');
         if (b && b.getClientRects().length) return true;
       } catch {}
+      try {
+        // Claude's stop control may not match the generic sendBtn selector, so
+        // check the Stop affordance directly (same fail-open contract).
+        const s = [...document.querySelectorAll('button[aria-label*="Stop" i], button[data-testid*="stop" i]')]
+          .find((x) => { try { return !x.closest("#rl-root") && x.getClientRects().length > 0; } catch { return false; } });
+        if (s) return true;
+      } catch {}
       return false;
     },
     augment(P) {
-      P.unstableWarning = "New provider: Claude support is fresh and unvalidated - please report issues on Discord.";
+      P.unstableWarning = "Work in progress: Claude is not usable yet - use DeepSeek, ChatGPT, or another supported chat for now.";
       // Small user-voiced opener for the two-step bootstrap (core startSession
       // sends this first; the full prompt follows only if this isn't refused).
       P.bootOpener = () =>
@@ -115,10 +155,22 @@ const RLProvider = (() => {
       // container if this over- or under-matches.
       P.thinkingSel = '[data-testid*="thinking" i], [class*="thinking" i], [class*="reasoning" i]';
       // Composer send: prefer the real button, ProseMirror-style typing first.
+      // Chunked inserts with readback: a giant system prompt can land
+      // partially, and the composer may remount mid-inject.
+      const SEND_CHUNK = 8000;
+      async function waitEditor(ms) {
+        const t0 = Date.now();
+        while (Date.now() - t0 < ms) {
+          try { const e = getEditor(); if (e) return e; } catch {}
+          try { await new Promise((r) => setTimeout(r, 150)); } catch {}
+        }
+        try { return getEditor(); } catch { return null; }
+      }
       P.typeAndSend = async (text, images) => {
         let ed = getEditor();
-        if (!ed) throw new Error("Claude input box not found");
-        const isTa = ed.tagName === "TEXTAREA";
+        if (!ed) ed = await waitEditor(3000);
+        if (!ed) throw new Error("Claude input box not found" + (lastMiss ? " (" + lastMiss + ")" : ""));
+        const isTa = ed.tagName === "TEXTAREA" || ed.tagName === "INPUT";
         const wasLocked = !isTa && ed.getAttribute("contenteditable") !== "true";
         try {
           ed.focus();
@@ -132,18 +184,31 @@ const RLProvider = (() => {
           } else {
             // Chunked insertText with readback (giant prompts can land partially).
             const want = String(text);
-            for (let at = 0; at < want.length; at += 8000) {
-              try { document.execCommand("insertText", false, want.slice(at, at + 8000)); } catch {}
+            for (let at = 0; at < want.length; at += SEND_CHUNK) {
+              try { document.execCommand("insertText", false, want.slice(at, at + SEND_CHUNK)); } catch {}
               try {
                 const cur = getEditor();
                 if (cur && cur !== ed) ed = cur;
                 ed.focus();
               } catch {}
             }
-            try { ed.dispatchEvent(new Event("input", { bubbles: true })); } catch {}
+            try { ed.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: want.slice(-32) })); } catch {
+              try { ed.dispatchEvent(new Event("input", { bubbles: true })); } catch {}
+            }
             const probe = ((ed.innerText || ed.textContent) || "");
             if (probe.length < want.length * 0.9) {
-              throw new Error(`Claude accepted only ${probe.length} of ${want.length} chars`);
+              // Second attempt: select-all + single insert (clears placeholder state).
+              try {
+                ed = getEditor() || ed;
+                const sel = window.getSelection();
+                sel.selectAllChildren(ed);
+                document.execCommand("insertText", false, want);
+                ed.dispatchEvent(new Event("input", { bubbles: true }));
+              } catch {}
+              const probe2 = ((ed.innerText || ed.textContent) || "");
+              if (probe2.length < want.length * 0.9) {
+                throw new Error(`Claude accepted only ${probe2.length} of ${want.length} chars`);
+              }
             }
           }
           if (images && images.length && P.attachImages) {
@@ -187,7 +252,7 @@ const RLProvider = (() => {
         "CLAUDE USAGE CAPS: this site meters usage - keep prose short, never re-read what you already have, and batch independent reads with batch_queue (max 10).",
       ].join("\n");
       // Diagnostic: why the last getEditor() missed.
-      P.describeMiss = () => "";
+      P.describeMiss = () => lastMiss;
     },
   });
 

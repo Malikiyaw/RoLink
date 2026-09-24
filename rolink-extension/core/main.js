@@ -2111,6 +2111,19 @@
     ui.updateStartGate(); // refresh the bar into its "starting" state
     P.setInputLock(true); // block user input during bootstrap
     ui.inputCover(true);  // cover the composer ("Working…") for the WHOLE Starting Up
+    // Long-start honesty (Arena Agent orchestration can run minutes before the
+    // first token): one non-fatal nudge so a 5-minute Starting bar never reads
+    // as frozen. Never aborts — the bootstrap keeps waiting its normal budget.
+    try {
+      setTimeout(() => {
+        try {
+          if (alive() && A.starting && !A.started && !A.stop) {
+            diag("start.slow", { provider: (P && P.id) || "?" });
+            ui.toast("Still starting — first reply can take minutes on agent pages. Console [rl-diag] shows send/response progress.");
+          }
+        } catch {}
+      }, 150000);
+    } catch {}
     try {
       await ensureTools(true); // boot: always take a fresh catalogue (the TTL then
                                // covers the list_commands / list_mcp_servers calls

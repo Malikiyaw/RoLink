@@ -224,7 +224,7 @@ ${BT}json
 }
 ${BT}
 For example, to list every available command you would write ${BT}{"command": "list_commands"}${BT}.
-EXTENDED TOOL CATALOG (124 tools beyond the Studio-native set).
+EXTENDED TOOL CATALOG (140 tools beyond the Studio-native set).
 list_commands returns the live list with full parameter details - always check it before guessing params.
 One command block per reply still applies.
 - instances: get_instances, create_instance, set_properties, delete_instance, clone_instance, move_instance, find_instance, get_property_value, get_all_properties, search_by_attribute, get_referenced_instances, resolve_path, ensure_path, get_dependency_graph

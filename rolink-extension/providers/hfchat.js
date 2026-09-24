@@ -21,24 +21,54 @@ const RLProvider = (() => {
   const isShown = (e) => { try { return e.getClientRects().length > 0; } catch { return false; } };
   const inOwnUi = (e) => { try { return !!(e.closest && e.closest("#rl-root")); } catch { return false; } };
 
+  // Why the last lookup missed (same contract as agent.js / claude.js).
+  let lastMiss = "";
   // Layered: visible textarea first (chat-ui has exactly one), then any
-  // connected textarea, then contenteditable/textbox fallbacks.
+  // connected textarea, then rich-text / textbox fallbacks (plaintext-only,
+  // ProseMirror/Tiptap/Lexical reskins).
   function getEditor() {
     try {
-      let list = [...document.querySelectorAll("textarea")].filter((e) => !inOwnUi(e));
-      let hit = list.find((e) => e.isConnected && isShown(e));
-      if (hit) return hit;
-      hit = list.find((e) => e.isConnected);
-      if (hit) return hit;
-      hit = [...document.querySelectorAll("[contenteditable='true'], [role='textbox']")]
-        .find((e) => !inOwnUi(e) && e.isConnected && isShown(e));
-      if (hit) return hit;
-    } catch {}
-    return null;
+      const counts = { hidden: 0, ownUi: 0, detached: 0, total: 0 };
+      const cands = [];
+      const push = (list) => { try { for (const e of list) { counts.total++; cands.push(e); } } catch {} };
+      push([...document.querySelectorAll("textarea")].filter((e) => !inOwnUi(e)));
+      push([...document.querySelectorAll('[contenteditable], [role="textbox"], .ProseMirror, .tiptap, [data-lexical-editor]')].filter((e) => {
+        try {
+          if (inOwnUi(e)) return false;
+          const v = e.getAttribute && e.getAttribute("contenteditable");
+          if (v === "false" && !(e.hasAttribute && e.hasAttribute("data-rl-locked"))) return false;
+          return true;
+        } catch { return false; }
+      }));
+      const seen = new Set();
+      const vis = [];
+      for (const e of cands) {
+        if (!e || seen.has(e)) continue;
+        seen.add(e);
+        if (inOwnUi(e)) { counts.ownUi++; continue; }
+        if (!e.isConnected) { counts.detached++; continue; }
+        if (!isShown(e)) { counts.hidden++; continue; }
+        vis.push(e);
+      }
+      // Prefer a real textarea composer, then any rich-text composer.
+      const pick = vis.find((e) => e.tagName === "TEXTAREA") || vis.find((e) => e.isContentEditable) || vis[0] || null;
+      if (!pick) {
+        const parts = [];
+        if (!counts.total) parts.push("no editable candidates");
+        else {
+          if (counts.hidden) parts.push(counts.hidden + " hidden");
+          if (counts.ownUi) parts.push(counts.ownUi + " own UI");
+          if (counts.detached) parts.push(counts.detached + " detached");
+        }
+        lastMiss = parts.length ? "seen: " + parts.join(", ") : "no editable candidates";
+      } else lastMiss = "";
+      return pick;
+    } catch { return null; }
   }
 
   // LIVE-DOM NOTE: confirm the submit control shape (arrow icon button?
   // data-testid? plain submit?) and extend the layers if this misses.
+  // Never matches stop/cancel controls, never matches disabled sends.
   function findSend() {
     try {
       const sels = [
@@ -49,6 +79,7 @@ const RLProvider = (() => {
         for (const b of document.querySelectorAll(s)) {
           if (inOwnUi(b)) continue;
           if (!isShown(b) || b.disabled || b.getAttribute("aria-disabled") === "true") continue;
+          if (/stop|halt|cancel/i.test(b.getAttribute("aria-label") || "")) continue;
           return b;
         }
       }
@@ -56,8 +87,9 @@ const RLProvider = (() => {
       const scope = (ed && ed.closest && ed.closest("form")) || document;
       for (const b of scope.querySelectorAll("button")) {
         if (inOwnUi(b) || !isShown(b) || b.disabled) continue;
+        if (b.getAttribute("aria-disabled") === "true") continue;
         const t = (b.getAttribute("aria-label") || "") + " " + (b.innerText || "");
-        if (/send|submit|↑|→/i.test(t) && !/stop|halt/i.test(t)) return b;
+        if (/send|submit|↑|→/i.test(t) && !/stop|halt|cancel/i.test(t)) return b;
       }
     } catch {}
     return null;
@@ -166,18 +198,54 @@ const RLProvider = (() => {
         if (images && images.length) {
           throw new Error("HF Chat image input is off until validated - describe with text instead.");
         }
-        const ed = getEditor();
-        if (!ed) throw new Error("HF Chat input box not found (are you logged in?)");
+        const SEND_CHUNK = 8000;
+        const want = String(text);
+        async function waitEditor(ms) {
+          const t0 = Date.now();
+          while (Date.now() - t0 < ms) {
+            try { const e = getEditor(); if (e) return e; } catch {}
+            try { await new Promise((r) => setTimeout(r, 150)); } catch {}
+          }
+          try { return getEditor(); } catch { return null; }
+        }
+        let ed = getEditor();
+        if (!ed) ed = await waitEditor(3000);
+        if (!ed) throw new Error("HF Chat input box not found (are you logged in?)" + (lastMiss ? " (" + lastMiss + ")" : ""));
         ed.focus();
         if (ed.tagName === "TEXTAREA") {
           const proto = window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype;
           const setter = proto && Object.getOwnPropertyDescriptor(proto, "value");
-          if (setter && setter.set) setter.set.call(ed, text);
-          else ed.value = text;
-          ed.dispatchEvent(new Event("input", { bubbles: true }));
+          if (setter && setter.set) setter.set.call(ed, want);
+          else ed.value = want;
+          try { ed.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: want.slice(-32) })); } catch {
+            ed.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          const probe = ed.value != null ? ed.value : (ed.innerText || ed.textContent || "");
+          if ((probe || "").length < want.length * 0.9) {
+            throw new Error(`HF Chat accepted only ${(probe || "").length} of ${want.length} chars`);
+          }
         } else {
-          document.execCommand("insertText", false, String(text));
-          try { ed.dispatchEvent(new Event("input", { bubbles: true })); } catch {}
+          for (let at = 0; at < want.length; at += SEND_CHUNK) {
+            try { document.execCommand("insertText", false, want.slice(at, at + SEND_CHUNK)); } catch {}
+            try { const cur = getEditor(); if (cur && cur !== ed) ed = cur; ed.focus(); } catch {}
+          }
+          try { ed.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: want.slice(-32) })); } catch {
+            try { ed.dispatchEvent(new Event("input", { bubbles: true })); } catch {}
+          }
+          const probe = ((ed.innerText || ed.textContent) || "");
+          if (probe.length < want.length * 0.9) {
+            try {
+              ed = getEditor() || ed;
+              const sel = window.getSelection();
+              sel.selectAllChildren(ed);
+              document.execCommand("insertText", false, want);
+              ed.dispatchEvent(new Event("input", { bubbles: true }));
+            } catch {}
+            const probe2 = ((ed.innerText || ed.textContent) || "");
+            if (probe2.length < want.length * 0.9) {
+              throw new Error(`HF Chat accepted only ${probe2.length} of ${want.length} chars`);
+            }
+          }
         }
         const btn = findSend();
         if (btn) { try { btn.click(); } catch {} return; }
@@ -200,7 +268,7 @@ const RLProvider = (() => {
         "HF CHAT: you need a Hugging Face login for this page - if there is no input box, tell the user to log in instead of emitting commands. Write RoLink commands as plain-text JSON in the chat. Model choice is the user's: if replies mangle the JSON format, ask them to switch to a capable model rather than shrinking the commands.",
         "HF CHAT ETIQUETTE: keep prose short and never re-read what a previous tool result already gave you; batch independent reads with batch_queue (max 10). Never type the instruction example as a command - command_name is a placeholder, not a tool; always use a REAL name from list_commands.",
       ].join("\n");
-      P.describeMiss = () => "";
+      P.describeMiss = () => lastMiss;
     },
   });
 

@@ -74,7 +74,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.4.0"
+BRIDGE_VERSION = "2.5.0"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", "17613")))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -85,7 +85,7 @@ PRIMARY_SERVER_ID = "roblox"
 
 # ── RoLink unified catalog (Option A: single WS, bridge answers local tools) ──
 # Workflow stays RoLink-identical: extension -> bridge :17613 -> StudioMCP.
-# StudioMCP only knows Roblox-native tools. RoLink's 124-catalog adds pure-local
+# StudioMCP only knows Roblox-native tools. RoLink's 140-catalog adds pure-local
 # tools (time, validation, ordering, analytics stubs, planning helpers). Those
 # are answered HERE with deterministic handlers so they work even when Studio
 # is offline. Studio-mutating tools always go via mgr.call (StudioMCP/addons).
@@ -123,6 +123,13 @@ STUDIO_ROUTED_TOOLS = frozenset([
     "set_breakpoint", "remove_breakpoint", "watch_variable", "step_through",
     "continue_execution", "run_playtest", "adjust_difficulty",
     "set_difficulty_profile", "play_sound",
+    "analyze_animatable_model", "create_model_animation", "set_model_keyframe",
+    "set_model_easing", "add_animation_marker", "preview_model_animation",
+    "validate_model_animation",
+    "retime_animation", "reverse_animation", "mirror_animation",
+    "blend_animation", "fix_animation", "create_attack_animation",
+    "create_idle_animation", "create_walk_cycle",
+    "set_track_lock",
 ])
 
 def _local_get_time(args):
@@ -1986,7 +1993,7 @@ class MCPManager:
                 tt["name"] = advertised
                 tt["server"] = sid
                 out.append(tt)
-        # Extended 124-tool catalog: advertise local/studio tools even when
+        # Extended 140-tool catalog: advertise local/studio tools even when
         # Studio is offline, with param guidance so list_commands stays useful.
         # Never collides: names already advertised by a live server are skipped
         # here (collisions are resolved by the ownership step below instead).
@@ -2238,6 +2245,15 @@ def safe_call(name, arguments, timeout):
             if name not in _known and canonical not in _known:
                 import difflib as _dl
                 _sug = _dl.get_close_matches(name, sorted(_known), n=3, cutoff=0.6)
+                # Prefix boost: a truncated name ("create_animation") should
+                # complete to its tool even when fuzzy scoring prefers the
+                # now-larger sibling set. Exact-prefix hits lead, fuzzy fills.
+                try:
+                    _pref = sorted(n for n in _known
+                                   if n.startswith(name) or (len(name) > 3 and name.startswith(n)))
+                    _sug = (_pref + [s for s in _sug if s not in _pref])[:3]
+                except Exception:
+                    pass
                 _hint = (" Did you mean: " + ", ".join(_sug) + "?") if _sug else ""
                 return {"ok": False, "kind": "validation_error",
                         "error": f'ERROR: unknown tool "{name}".{_hint} Use an exact name from list_commands.'}
@@ -3231,9 +3247,9 @@ STUDIO_QUEUE_TOOLS = frozenset(
     [t for t in ROLINK_TOOL_NAMES if t and t not in LOCAL_HANDLERS and t != "batch_queue"]
 )
 
-# Native plugin tools that live OUTSIDE the 124 registry (real search
+# Native plugin tools that live OUTSIDE the 140 registry (real search
 # implementations, not aliases): routed + advertised exactly like registry
-# tools, so the registry file and all 124-counts stay untouched.
+# tools, so the registry file and all 140-counts stay untouched.
 _QUEUE_EXTRA_TOOLS = frozenset(("script_search", "script_grep", "search_game_tree"))
 _QUEUE_EXTRA_DESC = {
     "script_search": ("Tool. Full-text search across Script/ModuleScript/LocalScript "
@@ -3366,7 +3382,7 @@ async def main():
         log(f"tool catalog: {len(ROLINK_TOOL_NAMES)} extended tools loaded", "gr")
     else:
         action_banner([
-            "The 124-tool catalog did NOT load - only live Studio tools",
+            "The 140-tool catalog did NOT load - only live Studio tools",
             "will be listed. Re-extract the release zip into a CLEAN",
             f"folder (this run: {_CATALOG_ERROR or 'empty catalog'}).",
         ])

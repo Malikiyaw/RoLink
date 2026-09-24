@@ -766,6 +766,14 @@ const RLProvider = (() => {
     if (isSupportedMode()) return "";
     const m = currentMode();
     const name = m ? m.charAt(0).toUpperCase() + m.slice(1) : "another mode";
+    // Agent pill on the plain-chat route: the supervised Agent provider lives
+    // on the /agent route (separate app/DOM), so offer the one-click handoff
+    // instead of a dead block.
+    if (m === "agent") {
+      return `Switch the mode dropdown to <b>Direct</b> - RoLink only works in ` +
+        `Direct mode here (current: <b>Agent</b>). ` +
+        `For supervised Agent Mode, open <a href="https://arena.ai/agent" target="_blank" rel="noopener">arena.ai/agent</a> instead.`;
+    }
     return `Switch the mode dropdown to <b>Direct</b> - RoLink only works in ` +
       `Direct mode (current: <b>${name}</b>).`;
   }

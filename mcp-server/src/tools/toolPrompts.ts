@@ -1155,6 +1155,166 @@ export const toolPrompts: Record<string, ToolPrompt> = {
     output: "Plan → {plan{steps, requiresFound, readback}, toApply}. Apply → atomic batch result (rolled back whole on failure).",
     pitfalls: "1) Never apply without sources[] readback — blind moves break requires. 2) Only create_module/set_script_content steps are accepted.",
   },
+  analyze_animatable_model: {
+    persona:
+      "You are a rig analyst who reads any Roblox model as a hierarchy of movable parts. You distinguish what rotates, what follows, what anchors, and what cannot move. You never invent joints or animate static geometry.",
+    when_to_use: "First step before animating any model (cannon, door, vehicle, creature, NPC). Studio equivalent: expanding the Explorer tree by hand.",
+    args_guide: "target* (path e.g. Workspace/Cannon). Returns nodes[{path, name, class, kind, depth}] kinds: rotational|root|rigid|follow|anchor, plus warnings[] and recommended controller.",
+    example_call: '###MCP_TOOL###
+{"tool":"analyze_animatable_model","args":{"target":"Workspace/Cannon"}}',
+    output: "{model, animatable[], warnings[], controller}. Cap: 200 nodes, depth 6.",
+    pitfalls: "1) Weld/follow parts must never get their own track - animate their parent. 2) A Model without PrimaryPart has no root motion until you set one.",
+  },
+  create_model_animation: {
+    persona:
+      "You are an animation producer who opens one clean animation store per performance. You scope duration and frame rate up front and never clobber an existing store without explicit confirmation.",
+    when_to_use: "Open a model-animation store before writing keys (any rig). Studio equivalent: new Animation Editor track.",
+    args_guide: "target* + name* (max 64). duration* 0.1-60s. fps? 1-120 (default 30). loop? (default false). Overwriting an existing name needs confirm:true.",
+    example_call: '###MCP_TOOL###
+{"tool":"create_model_animation","args":{"target":"Workspace/Cannon","name":"Fire","duration":0.75,"fps":30}}',
+    output: "{animation, target, duration, fps, tracks}. Definitions live in ReplicatedStorage/RoLinkModelAnims/<name>.",
+    pitfalls: "1) Name collisions need confirm:true - pick a fresh name or confirm. 2) Keep duration tight; preview samples every step across it.",
+  },
+  set_model_keyframe: {
+    persona:
+      "You are a keyframe animator who blocks poses sparsely and lets easing do the in-between work. You write degrees for rotation and studs for position, and you never stack duplicate keys at one instant.",
+    when_to_use: "Write motion into a model-animation track, one pose at a time. Studio equivalent: setting a timeline keyframe.",
+    args_guide: "anim* + track* (joint/part name from analyze). t* seconds (>=0, within duration). pose* {position?{x,y,z} studs, rotation?{x,y,z} degrees}. ease? suffixed (default linear). Same-t writes replace; others insert sorted. Max 1024 keys/track.",
+    example_call: '###MCP_TOOL###
+{"tool":"set_model_keyframe","args":{"anim":"Fire","track":"Turret","t":0.25,"pose":{"rotation":{"x":0,"y":30,"z":0}},"ease":"quadOut"}}',
+    output: "{animation, track, t, ease, keys, replaced}.",
+    pitfalls: "1) Track names must match analyze output or validate will flag them. 2) Easing needs its suffix (quadIn, not bare quad). 3) Rotation is degrees, not radians.",
+  },
+  set_model_easing: {
+    persona:
+      "You are a motion polisher who fixes feel by retiming curves, not by rewriting poses. You change one key's easing at a time and re-preview.",
+    when_to_use: "Change how a key arrives (snap vs glide) without touching its pose. Studio equivalent: easing dropdown on a key.",
+    args_guide: "anim* + track*. keyIndex* 1-based position in the track's time-sorted keys. ease* suffixed name.",
+    example_call: '###MCP_TOOL###
+{"tool":"set_model_easing","args":{"anim":"Fire","track":"Barrel","keyIndex":2,"ease":"quadInOut"}}',
+    output: "{animation, track, keyIndex, ease}.",
+    pitfalls: "1) keyIndex is 1-based and counts the sorted keys. 2) Preview after every easing pass - feel changes are audible only in numbers.",
+  },
+  add_animation_marker: {
+    persona:
+      "You are a show caller who marks the exact instants that matter: impacts, fires, beats. You bind each marker to at most one gameplay event and never leave markers floating.",
+    when_to_use: "Flag hit frames and bind gameplay events (FIRE -> spawn projectile). Studio equivalent: Animation Editor event markers.",
+    args_guide: "anim* + t* + name* (max 64). event? gameplay action id. remove? true deletes the marker (and its bindings) by name.",
+    example_call: '###MCP_TOOL###
+{"tool":"add_animation_marker","args":{"anim":"Fire","t":0.28,"name":"FIRE","event":"spawn_projectile"}}',
+    output: "{animation, markers:[{t,name,event?}]} sorted by time.",
+    pitfalls: "1) Events without a matching marker fail validate - add the marker first. 2) Marker times must sit inside the duration.",
+  },
+  preview_model_animation: {
+    persona:
+      "You are a dailies reviewer who judges motion from numbers: peaks, spikes, hit frames. You never call motion done from a still frame or from gut feel.",
+    when_to_use: "Review a model animation before shipping it (or after every fix). Studio equivalent: scrubbing the timeline and watching the graph.",
+    args_guide: "anim*. step? sample interval 0.02-1s (default 0.1). Returns per-track peaks, snapshots at start/mid/end, markers hit. Numbers only - Studio exposes no pixel capture to plugins.",
+    example_call: '###MCP_TOOL###
+{"tool":"preview_model_animation","args":{"anim":"Fire","step":0.1}}',
+    output: "{animation, tracks{name,keys,maxDegPerSec,maxStudPerSec,spike}, snapshots, markersHit}.",
+    pitfalls: "1) A spike flag means retime or re-ease - never ship past it. 2) Small steps on long durations bloat the reply; 0.1 is the sweet spot.",
+  },
+  validate_model_animation: {
+    persona:
+      "You are a technical animation auditor who fails loudly on broken motion: spikes, jumps, dead joints, orphan events, loop pops. You return fixes the animator can apply key by key.",
+    when_to_use: "Gate every model animation before gameplay wiring or shipping. Studio equivalent: a senior review pass.",
+    args_guide: "anim*. Returns passed + errors[] (ship-blockers) + warnings[] (fix soon), each with a suggested fix.",
+    example_call: '###MCP_TOOL###
+{"tool":"validate_model_animation","args":{"anim":"Fire"}}',
+    output: "{animation, passed, errors[{code,detail,fix}], warnings[{code,detail,fix}]}. Thresholds: rotation warn >2400 deg/s, error >7200; position jump warn >15 studs, error >40; loop epsilon 1deg/0.1 stud.",
+    pitfalls: "1) passed:false means fix and re-preview - never wire events onto a failing animation. 2) Unmatched track names are the most common failure; re-run analyze first.",
+  },
+  retime_animation: {
+    persona:
+      "You are a timing editor who stretches and squeezes performances without touching a single pose. You check the result still fits the duration budget before calling it done.",
+    when_to_use: "Change an animation's speed after it feels right but runs long or short. Studio equivalent: scaling all keys in the editor.",
+    args_guide: "anim* + scale* 0.1-10. newName? copies instead of editing in place. Result duration must stay within 60s.",
+    example_call: '###MCP_TOOL###
+{"tool":"retime_animation","args":{"anim":"Fire","scale":0.8,"newName":"FireFast"}}',
+    output: "{animation, scale, duration}. Keys, easings and markers all scaled.",
+    pitfalls: "1) Speeding up multiplies velocities - re-validate after. 2) Without newName the edit is in place; copy first if the original matters.",
+  },
+  reverse_animation: {
+    persona:
+      "You are a time-bender who plays performances backwards: doors close, cannons un-fire. You swap easing direction so arrivals still feel like arrivals.",
+    when_to_use: "Mirror an animation in time (reload from fire, close from open). Studio equivalent: reversing key order.",
+    args_guide: "anim*. newName? copies instead of editing in place. Times become duration-t; quadIn becomes quadOut (and cubic/sine pairs); linear and InOut stay.",
+    example_call: '###MCP_TOOL###
+{"tool":"reverse_animation","args":{"anim":"DoorOpen","newName":"DoorClose"}}',
+    output: "{animation, duration}. Markers mirrored too.",
+    pitfalls: "1) Impact markers mirror with the motion - rebind gameplay events if the meaning flipped. 2) Re-validate: reversed spikes are still spikes.",
+  },
+  mirror_animation: {
+    persona:
+      "You are a symmetry surgeon who flips performances across the sagittal plane. You swap left and right, negate the cross-plane components, and then insist on validation because mirrors lie.",
+    when_to_use: "Reuse a one-sided animation on the other side (right slash -> left slash). Studio equivalent: mirroring keys + swapping limb tracks.",
+    args_guide: "anim*. newName? copies instead of editing in place. swapPairs? (default true) swaps Left/Right, _L/_R track names. Negates pos.x, rot.y, rot.z. Approximate - always validate_model_animation after.",
+    example_call: '###MCP_TOOL###
+{"tool":"mirror_animation","args":{"anim":"SlashR","newName":"SlashL"}}',
+    output: "{animation, swapped}.",
+    pitfalls: "1) This is a starting point, not a finished mirror - validate and fix asymmetry by hand. 2) Non-paired tracks (Torso) only get negated components.",
+  },
+  blend_animation: {
+    persona:
+      "You are a layer mixer who weaves two performances into one: walk legs under an attacking torso. You resample both onto one grid at the requested weight and keep what is unique.",
+    when_to_use: "Compose layers (locomotion base + upper-body action) or transition between clips. Studio equivalent: additive track blending.",
+    args_guide: "base* + overlay* + newName*. weight? 0-1 (default 0.5, fraction of overlay). Tracks in both are interpolated; tracks in one are copied. Grid is 1/fps over the longer duration (max 1024 keys/track).",
+    example_call: '###MCP_TOOL###
+{"tool":"blend_animation","args":{"base":"Walk","overlay":"Slash","weight":0.7,"newName":"WalkSlash"}}',
+    output: "{animation, tracks, keysTotal, duration}.",
+    pitfalls: "1) Long clips at high fps blow the key budget - shorten first. 2) Blend, then validate, then fix - in that order.",
+  },
+  fix_animation: {
+    persona:
+      "You are a meticulous repair tech who applies only the fixes that are provably safe: closing loops, clamping strays, dropping orphans, resetting bad easings. Everything else you report, never improvise.",
+    when_to_use: "Right after validate_model_animation reports errors. Studio equivalent: accepting the auditor's safe fixes.",
+    args_guide: "anim*. Applies: LOOP_MISMATCH (copy first pose to last), MARKER_OOB (clamp), ORPHAN_EVENT (drop), BAD_EASING (linear), empty tracks (drop). Spikes, jumps and unmatched joints are reported, not rewritten.",
+    example_call: '###MCP_TOOL###
+{"tool":"fix_animation","args":{"anim":"Fire"}}',
+    output: "{animation, fixed[], remaining{errors,warnings}, passed}. Re-run preview after.",
+    pitfalls: "1) passed:false means hand-fix the remainder - do not loop fix blindly. 2) Fixing never changes timing; retime separately if spikes persist.",
+  },
+  create_attack_animation: {
+    persona:
+      "You are a combat choreographer who scaffolds readable attacks: windup, strike, impact mark, recovery. You write the skeleton fast and leave the anatomy to the animator's next pass.",
+    when_to_use: "Start any melee/fire attack on an analyzed rig. Studio equivalent: blocking an attack in the editor.",
+    args_guide: "target* + name* + tracks[]* (joint names from analyze, max 32). duration? (default 1.05). anticipation? (default 0.2). impactT? (default 0.46, gets the IMPACT marker). strike? {rx,ry,rz} degrees at impact (default ry 45). Windup is the mirrored half-strike; recovery returns to neutral. Overwrite needs confirm:true.",
+    example_call: '###MCP_TOOL###
+{"tool":"create_attack_animation","args":{"target":"Workspace/NPC","name":"Slash","tracks":["RightArm","Torso"]}}',
+    output: "{animation, tracks, keys, impactT}. Scaffolding - refine poses, then preview + validate.",
+    pitfalls: "1) Track names must come from analyze_animatable_model. 2) impactT must sit inside duration. 3) This is a scaffold: zero artistry claimed - refine it.",
+  },
+  create_idle_animation: {
+    persona:
+      "You are a life-giver who keeps characters breathing: tiny loops, seamless ends, nothing that pops. You scaffold the sway and let the animator add character.",
+    when_to_use: "Start any idle/ambient loop. Studio equivalent: a 2-key breathing loop.",
+    args_guide: "target* + name* + tracks[]* (max 32). duration? (default 2). sway? degrees applied to ry mid-loop (default 5). loop defaults true. Overwrite needs confirm:true.",
+    example_call: '###MCP_TOOL###
+{"tool":"create_idle_animation","args":{"target":"Workspace/NPC","name":"Breathe","tracks":["Torso","Head"]}}',
+    output: "{animation, tracks, keys}. Neutral-sway-neutral, loop-closed by construction.",
+    pitfalls: "1) sway over 15 degrees stops reading as idle. 2) Validate anyway - loops must match to 1deg/0.1 stud.",
+  },
+  create_walk_cycle: {
+    persona:
+      "You are a locomotion rigger who builds honest 4-beat cycles: contact, pass, contact, pass, ends matching the start. You alternate limbs by track order and keep strides sane.",
+    when_to_use: "Start any walk/march cycle. Studio equivalent: a 4-key loop.",
+    args_guide: "target* + name* + tracks[]* (limb order matters - alternating signs down the list, max 32). duration? (default 0.8). stride? rx degrees (default 20). loop defaults true. Overwrite needs confirm:true.",
+    example_call: '###MCP_TOOL###
+{"tool":"create_walk_cycle","args":{"target":"Workspace/NPC","name":"Walk","tracks":["LeftLeg","RightLeg","LeftArm","RightArm"]}}',
+    output: "{animation, tracks, keys}. 4-beat loop scaffold - refine contacts, then validate.",
+    pitfalls: "1) Track ORDER drives the alternation - list limbs deliberately. 2) stride over 45 degrees reads as a march. 3) Always validate the loop boundary.",
+  },
+  set_track_lock: {
+    persona:
+      "You are a vault keeper for animation tracks: you freeze finished work so no stray keystroke can touch it, and you unfreeze on explicit request. You never lock the track someone is actively editing without saying so.",
+    when_to_use: "Protect finished tracks while iterating on others (or reopen one for fixes). Studio equivalent: the timeline track lock.",
+    args_guide: "anim* + track*. locked? default true (false unlocks). Locked tracks refuse set_model_keyframe/set_model_easing with TRACK_LOCKED until unlocked.",
+    example_call: '###MCP_TOOL###
+{"tool":"set_track_lock","args":{"anim":"Fire","track":"Turret","locked":true}}',
+    output: "{animation, track, locked}.",
+    pitfalls: "1) A locked track fails loudly - unlock, don't work around it. 2) Locks live in the store, so chat and the timeline widget agree.",
+  },
 };
 
 // Full set shipped to the extension bundle (lazy lookup; ~60KB one-time parse).

@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.5.0] - 2026-09-24
+
+Model animation + provider honesty. 140 tools.
+
+- **Model animation (beta)**: tools 125–140 — `analyze_animatable_model` (any-rig hierarchy graph: humanoids, cannons, doors, vehicles), `create_model_animation` (ReplicatedStorage store, confirm-gated overwrite), `set_model_keyframe` / `set_model_easing`, `add_animation_marker` (gameplay event bindings), `preview_model_animation` (numeric samples, never pixels — Studio exposes no pixel capture to plugins), `validate_model_animation` (spikes, jumps, loop mismatch, orphan events with fixes), composites `retime` / `reverse` / `mirror` / `blend` / `fix`, generators `create_attack_animation` / `create_idle_animation` / `create_walk_cycle`, `set_track_lock`. In-Studio timeline editor (beta): RoLink toolbar button `Anim` opens a Moon-style dock widget (title strip, menu row, rig tree, track dots + locks, frame ruler, keyframe + marker lanes, playhead, inspector, transport with Edit-only playback that restores originals) reading the same store as the chat tools.
+- **Provider statuses**: Claude and Dola are marked work-in-progress (not usable yet — use DeepSeek, ChatGPT, or another supported chat); Arena Agent Mode is marked work-in-progress (use Direct mode for now, supervised, never votes).
+- **Bridge**: prefix-boosted unknown-tool suggestions, honest long-start feedback on agent pages, send-stage diagnostics on Arena Agent.
+- Audit/completeness suites pin 140 tools, 0 failing.
+
 ## [2.4.0] - 2026-09-23
 
 Execution truth, two new providers (10 → 12), Dola/HF hardening.

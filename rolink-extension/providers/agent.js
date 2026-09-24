@@ -209,6 +209,9 @@ const RLProvider = (() => {
   // Why the last lookup missed (surfaced in the thrown error so a miss reads
   // as "seen: 2 hidden, 1 in vote dialog" instead of a bare "not found").
   let lastMiss = "";
+  // Why the last SEND lookup missed (button absent vs disabled vs hidden).
+  // Reported alongside lastMiss so a stuck Start names the real gate.
+  let lastSendMiss = "";
   function getEditor() {
     try {
       const counts = { hidden: 0, voteDialog: 0, ownUi: 0, detached: 0, lockedOff: 0, total: 0 };
@@ -544,10 +547,15 @@ const RLProvider = (() => {
         'button[aria-label*="Send" i]', 'button[aria-label*="Submit" i]',
         'button[data-testid*="send" i]', 'button[type="submit"]',
       ];
+      let seenTotal = 0, seenHidden = 0, seenDisabled = 0, seenVote = 0;
       for (const s of sels) {
         for (const b of document.querySelectorAll(s)) {
-          if (inOwnUi(b) || inVoteDialog(b)) continue;
-          if (!isShown(b) || b.getAttribute("aria-disabled") === "true") continue;
+          seenTotal++;
+          if (inOwnUi(b) || inVoteDialog(b)) { seenVote++; continue; }
+          if (!isShown(b)) { seenHidden++; continue; }
+          if (b.disabled) { seenDisabled++; continue; }
+          if (b.getAttribute("aria-disabled") === "true") { seenDisabled++; continue; }
+          lastSendMiss = "";
           return b;
         }
       }
@@ -557,9 +565,19 @@ const RLProvider = (() => {
       const scope = (ed && ed.parentElement && ed.parentElement.parentElement) || document;
       for (const b of scope.querySelectorAll("button")) {
         if (inOwnUi(b) || inVoteDialog(b) || !isShown(b)) continue;
+        if (b.disabled || b.getAttribute("aria-disabled") === "true") { seenDisabled++; continue; }
         const t = (b.getAttribute("aria-label") || "") + " " + (b.innerText || "");
-        if (/send|submit|↑|→/i.test(t) && !/stop|halt/i.test(t)) return b;
+        if (/send|submit|↑|→/i.test(t) && !/stop|halt/i.test(t)) { lastSendMiss = ""; return b; }
       }
+      // Nothing usable: name the gate so a stuck Start reads honestly.
+      const parts = [];
+      if (!seenTotal) parts.push("no send candidates");
+      else {
+        if (seenDisabled) parts.push(seenDisabled + " disabled");
+        if (seenHidden) parts.push(seenHidden + " hidden");
+        if (seenVote) parts.push(seenVote + " own/vote UI");
+      }
+      lastSendMiss = parts.length ? "send: " + parts.join(", ") : "no send control";
     } catch {}
     return null;
   }
@@ -731,7 +749,7 @@ const RLProvider = (() => {
       return false;
     },
     augment(P) {
-      P.unstableWarning = "Supervised mode: RoLink reads settled output and pauses at human prompts - it never votes for you.";
+      P.unstableWarning = "Work in progress (supervised): Agent Mode is not fully working yet - use Direct mode for now. RoLink reads settled output and pauses at human prompts - it never votes for you.";
       // Reasoning-area hook for the core's raw-command probes (DeepSeek
       // precedent): a command quoted inside thinking must not read as a still-
       // visible raw block (chip rebuild spam + done/run flapping).
@@ -762,7 +780,7 @@ const RLProvider = (() => {
       P.barAnchor = () => (lastCard && lastCard.isConnected ? lastCard : null);
       // Diagnostic: why the last getEditor() missed ("seen: 2 hidden, ...").
       // Surfaced in the thrown send error; pinned by test-agent.js.
-      P.describeMiss = () => lastMiss;
+      P.describeMiss = () => [lastMiss, lastSendMiss].filter(Boolean).join(" | ");
       // Test seam: Monaco-style line joining (pinned by test-agent.js).
       P.viewLinesText = (item) => viewLinesText(item);
       // Vote gate: the site waits on the HUMAN, not the model. The core parks
@@ -805,9 +823,13 @@ const RLProvider = (() => {
         if (!ed) {
           // Composer may be mid-remount (task-start transition): wait for it
           // to come back before failing the whole bootstrap on a transient.
+          try { diag("agent.send.waitEditor", {}); } catch {}
           ed = await waitEditor(3000);
         }
-        if (!ed) throw new Error("Arena Agent input box not found" + (lastMiss ? " (" + lastMiss + ")" : ""));
+        if (!ed) {
+          try { diag("agent.send.noEditor", { miss: (lastMiss || "").slice(0, 120) }); } catch {}
+          throw new Error("Arena Agent input box not found" + (lastMiss ? " (" + lastMiss + ")" : ""));
+        }
         const isTa = ed.tagName === "TEXTAREA";
         const wasLocked = !isTa && ed.getAttribute("contenteditable") !== "true";
         try {
@@ -827,6 +849,7 @@ const RLProvider = (() => {
             try { ed.dispatchEvent(new Event("input", { bubbles: true })); } catch {}
           }
           const probe = (editorText() || "");
+          try { diag("agent.send.probe", { got: probe.length, want: want.length }); } catch {}
           if (probe.length < want.length * 0.9) {
             // Second attempt: select-all + single insert (clears placeholder state).
             try {
@@ -845,15 +868,16 @@ const RLProvider = (() => {
             try { await P.attachImages(images); } catch {}
           }
           const btn = findSend();
-          if (btn) { try { btn.click(); } catch {} return; }
+          if (btn) { try { diag("agent.send.click", {}); } catch {} try { btn.click(); } catch {} return; }
           // Last resort: many agent composers submit on Cmd/Ctrl+Enter.
+          try { diag("agent.send.keyFallback", { miss: (lastSendMiss || "").slice(0, 120) }); } catch {}
           try {
             const o = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true, ctrlKey: true, metaKey: true };
             ed.dispatchEvent(new KeyboardEvent("keydown", o));
             ed.dispatchEvent(new KeyboardEvent("keyup", o));
             return;
           } catch {}
-          throw new Error("Arena Agent send control not found");
+          throw new Error("Arena Agent send control not found" + (lastSendMiss ? " (" + lastSendMiss + ")" : ""));
         } finally {
           if (wasLocked) {
             try { ed.setAttribute("contenteditable", "false"); } catch {}
