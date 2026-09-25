@@ -22,6 +22,8 @@ import asyncio
 import json
 import os
 import queue
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -78,6 +80,10 @@ BRIDGE_VERSION = "2.5.0"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", "17613")))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
+# Serialise extension-driven config mutations. The websocket and the options
+# page can both add/remove servers; without this lock two quick writes could
+# read the same old file and silently drop one of the changes.
+CONFIG_LOCK = threading.RLock()
 
 # The primary server. It is always present, added by the installer, and can
 # never be edited/removed through the extension (it is what RoLink is FOR).
@@ -117,7 +123,9 @@ STUDIO_ROUTED_TOOLS = frozenset([
     "set_ui_property", "get_ui_tree", "bind_ui_click", "create_animation_track",
     "play_animation", "get_animation_info", "delete_animation",
     "create_cutscene", "create_dialogue", "create_motion_effect", "create_vfx",
-    "export_animation_clip", "publish_animation",
+    "create_motion_animation", "inspect_motion_effect", "remove_motion_effect",
+    "inspect_motion_animation", "validate_motion_animation", "preview_motion_animation",
+    "remove_motion_animation", "export_animation_clip", "publish_animation",
     "set_lighting", "add_particle_emitter",
     "get_datastore_value", "set_datastore_value", "send_notification",
     "set_breakpoint", "remove_breakpoint", "watch_variable", "step_through",
@@ -193,6 +201,368 @@ def _local_switch_project(args):
 # In-memory active project for the offline project handlers above.
 _active_project = {"name": "default"}
 
+# ── search_asset: live Roblox Creator Store / Library search ─────────────
+# The Studio plugin cannot make outbound web calls, so the local search runs
+# HERE (pure stdlib urllib - no Node server, no MCP, no Studio needed). The
+# same AssetInfo shape is produced by mcp-server/src/assetStore.ts so both
+# paths look identical to the model. NEVER invent results: an upstream
+# failure returns asset_search_unavailable, and a transient failure falls
+# back to Studio's NATIVE search_asset tool when one is connected.
+# Roblox retired the legacy catalog endpoint. The current public Creator Store
+# search endpoint is the v2 Toolbox Service API.
+_ASSET_SEARCH_URL = "https://apis.roblox.com/toolbox-service/v2/assets:search"
+_ASSET_CATEGORIES = {
+    "model": "Model", "models": "Model",
+    "mesh": "MeshPart", "meshes": "MeshPart", "meshpart": "MeshPart",
+    "decal": "Decal", "decals": "Decal", "image": "Decal", "images": "Decal",
+    "texture": "Decal", "textures": "Decal",
+    "audio": "Audio", "sound": "Audio", "sounds": "Audio",
+    "plugin": "Plugin", "plugins": "Plugin",
+    "video": "Video", "videos": "Video",
+    "font": "FontFamily", "fontfamily": "FontFamily", "fonts": "FontFamily",
+    # These are model/toolbox concepts rather than separate v2 search types.
+    "tool": "Model", "tools": "Model", "gear": "Model",
+    "decoration": "Model", "decorations": "Model",
+}
+_ASSET_CATEGORY_NAMES = frozenset((
+    "Model", "MeshPart", "Decal", "Audio", "Plugin", "Video", "FontFamily",
+))
+_ASSET_TYPE_NAMES = {
+    3: "Audio", 10: "Model", 13: "Decal", 38: "Plugin", 40: "MeshPart",
+}
+
+
+def _asset_category(raw) -> str:
+    """Map a user/model-supplied category to a current v2 search type."""
+    if raw is None or str(raw).strip() == "":
+        return "Model"
+    text = str(raw).strip()
+    mapped = _ASSET_CATEGORIES.get(text.lower())
+    if mapped:
+        return mapped
+    if text in _ASSET_CATEGORY_NAMES:
+        return text
+    # Do not send arbitrary text to the API: the service would answer 400 and
+    # turn a typo into an opaque network error. Treat it as a model search.
+    return "Model"
+
+
+def _asset_rows(data):
+    """Return rows from current v2 and legacy-compatible response shapes."""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in ("creatorStoreAssets", "data", "catalogSearchResults", "results", "items"):
+        if isinstance(data.get(key), list):
+            return data[key]
+    return []
+
+
+def _normalize_asset_rows(data, limit, category=None) -> list:
+    """Creator Store JSON -> [{id,name,description,creator,assetType,url}].
+
+    The current API returns ``creatorStoreAssets: [{asset, creator}, ...]``.
+    The small legacy shapes remain readable so fixtures and older Node data
+    cannot turn a valid response into a misleading empty list. Rows without a
+    positive numeric id are dropped: an importable asset id is the only thing
+    the model may forward to import_asset.
+    """
+    out = []
+    for row in _asset_rows(data):
+        if not isinstance(row, dict):
+            continue
+        asset = row.get("asset") if isinstance(row.get("asset"), dict) else row
+        rid = (asset.get("id") or asset.get("ItemId") or asset.get("AssetId")
+               or asset.get("assetId"))
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            continue
+        if rid <= 0:
+            continue
+        creator = row.get("creator") if isinstance(row.get("creator"), dict) else {}
+        creator_name = (creator.get("name") or row.get("CreatorName")
+                        or row.get("creatorName") or (row.get("creator")
+                                                       if isinstance(row.get("creator"), str) else ""))
+        raw_type = asset.get("assetType") or asset.get("AssetType") or asset.get("itemType")
+        if not raw_type and asset.get("assetTypeId") in _ASSET_TYPE_NAMES:
+            raw_type = _ASSET_TYPE_NAMES[asset.get("assetTypeId")]
+        try:
+            script_count = int(asset.get("scriptCount"))
+        except (TypeError, ValueError):
+            script_count = None
+        has_scripts = asset.get("hasScripts")
+        if not isinstance(has_scripts, bool) and script_count is not None:
+            has_scripts = script_count > 0
+        price_cents = None
+        try:
+            product = row.get("creatorStoreProduct") if isinstance(row, dict) else None
+            quantity = ((product or {}).get("purchasePrice") or {}).get("quantity") or {}
+            sig = float(quantity["significand"])
+            exp = int(quantity["exponent"])
+            price_cents = int(round(sig * (10 ** (exp + 2))))
+        except (TypeError, ValueError, KeyError, OverflowError):
+            pass
+        item = {
+            "id": rid,
+            "name": str(asset.get("name") or asset.get("Name") or "Asset")[:120],
+            "description": str(asset.get("description") or asset.get("Description") or "")[:400],
+            "creator": str(creator_name or "")[:80],
+            "assetType": str(raw_type or category or "Model")[:40],
+            "url": "https://www.roblox.com/library/%d/redirect" % rid,
+        }
+        if isinstance(has_scripts, bool):
+            item["hasScripts"] = has_scripts
+        if script_count is not None:
+            item["scriptCount"] = script_count
+        if price_cents is not None:
+            item["priceCents"] = price_cents
+            item["isFree"] = price_cents == 0
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _local_search_asset(args):
+    """Live Creator Store search from the bridge process."""
+    a = args or {}
+    raw_kw = a.get("keyword", a.get("query", a.get("q", "")))
+    if raw_kw is None or not isinstance(raw_kw, str):
+        return {"ok": False, "kind": "validation_error",
+                "error": "search_asset: 'keyword' must be a string (1-64 characters)"}
+    keyword = raw_kw.strip()
+    if not keyword:
+        return {"ok": False, "kind": "validation_error",
+                "error": "search_asset: 'keyword' is required (e.g. keyword='medieval sword')"}
+    if len(keyword) > 64:
+        return {"ok": False, "kind": "validation_error",
+                "error": "search_asset: 'keyword' must be 64 characters or fewer"}
+    try:
+        limit = int(a.get("limit", 8))
+    except (TypeError, ValueError):
+        limit = 8
+    limit = max(1, min(limit, 20))
+    category = _asset_category(a.get("category"))
+    try:
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+        qs = urlencode({"searchCategoryType": category, "query": keyword,
+                        "maxPageSize": str(limit),
+                        "includeOnlyVerifiedCreators": "false"})
+        req = Request("%s?%s" % (_ASSET_SEARCH_URL, qs),
+                      headers={"Accept": "application/json",
+                               "User-Agent": "RoLink/2.5 (local bridge; asset search)"})
+        with urlopen(req, timeout=6) as resp:
+            raw = resp.read(2 * 1024 * 1024)
+        data = json.loads(raw.decode("utf-8", "replace"))
+        if isinstance(data, dict) and (data.get("error") or data.get("errors")):
+            raise RuntimeError(str(data.get("error") or data.get("errors"))[:160])
+        if not isinstance(data, (dict, list)):
+            raise RuntimeError("Roblox catalog returned a non-object JSON response")
+    except Exception as e:
+        # Transient upstream/network failure: no mock results, ever. If Studio
+        # advertises its own search_asset, let the caller fall back to it.
+        return {"ok": False, "kind": "execution_error", "transient": True,
+                "error_code": "ASSET_SEARCH_UNAVAILABLE",
+                "error": ("asset_search_unavailable: Roblox Creator Store search failed "
+                          "(%s: %s). Check this PC's network/firewall; never invent asset IDs - "
+                          "retry later or search the Creator Store by hand and use import_asset "
+                          "with the real id."
+                          % (type(e).__name__, str(e)[:160]))}
+    assets = _normalize_asset_rows(data, limit, category)
+    body = {"keyword": keyword, "category": category, "count": len(assets),
+            "assets": assets, "source": "roblox-catalog",
+            "note": "Import with import_asset{assetId} - ids here are real; never invent one."}
+    if not assets:
+        body["note"] = ("no matches - try a shorter keyword or another category "
+                        "(Model/MeshPart/Decal/Audio). Never invent an asset id.")
+    return {"ok": True, "text": json.dumps(body)}
+
+
+def _native_asset_body(text, keyword, category, limit):
+    """Normalize StudioMCP's native search_asset response, if it succeeded.
+
+    The native Roblox MCP tool has a different schema (`results`, `assetId`,
+    `creatorStoreUrl`) and requires a Studio UUID.  Do not pass its text through
+    as if it were the bridge contract: an error-shaped native response must
+    remain an error, never become a successful empty result.
+    """
+    try:
+        data = json.loads(text or "{}")
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get("error") or data.get("ok") is False:
+        return None
+    if str(data.get("status", "success")).lower() not in ("success", "ok"):
+        return None
+    rows = data.get("results")
+    if not isinstance(rows, list):
+        rows = data.get("assets") if isinstance(data.get("assets"), list) else []
+    assets = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            rid = int(row.get("assetId") or row.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if rid <= 0:
+            continue
+        creator = row.get("creatorName") or row.get("creator") or ""
+        if isinstance(creator, dict):
+            creator = creator.get("name", "")
+        item = {
+            "id": rid,
+            "name": str(row.get("name") or "Asset")[:120],
+            "description": str(row.get("description") or "")[:400],
+            "creator": str(creator)[:80],
+            "assetType": str(row.get("assetType") or category or "Model")[:40],
+            "url": str(row.get("creatorStoreUrl") or
+                       row.get("url") or
+                       ("https://www.roblox.com/library/%d/redirect" % rid))[:300],
+        }
+        if isinstance(row.get("hasScripts"), bool):
+            item["hasScripts"] = row["hasScripts"]
+        if row.get("scriptCount") is not None:
+            try:
+                item["scriptCount"] = int(row["scriptCount"])
+            except (TypeError, ValueError):
+                pass
+        if isinstance(row.get("isFree"), bool):
+            item["isFree"] = row["isFree"]
+        if row.get("priceCents") is not None:
+            try:
+                item["priceCents"] = int(row["priceCents"])
+            except (TypeError, ValueError):
+                pass
+        assets.append(item)
+        if len(assets) >= limit:
+            break
+    body = {"keyword": keyword, "category": category, "count": len(assets),
+            "assets": assets, "source": "studio-mcp",
+            "note": "Import with import_asset{assetId} - ids here are real; never invent one."}
+    if not assets:
+        body["note"] = "no matches - never invent an asset id."
+    return body
+
+
+def _native_asset_call_args(arguments, studio_id):
+    """Build the native StudioMCP search_asset arguments from our contract."""
+    a = arguments or {}
+    raw_kw = a.get("keyword", a.get("query", a.get("q", "")))
+    keyword = str(raw_kw or "").strip()
+    try:
+        limit = max(1, min(int(a.get("limit", 8)), 20))
+    except (TypeError, ValueError):
+        limit = 8
+    category = _asset_category(a.get("category"))
+    native_category = {"Model": "Model", "MeshPart": "MeshPart", "Decal": "Decal",
+                       "Audio": "Audio", "Video": "Video"}.get(category)
+    out = {"studio_id": str(studio_id), "query": keyword, "maxResults": limit,
+           "scope": "creator_store", "verifiedCreatorsOnly": False}
+    if native_category:
+        out["assetType"] = native_category
+    return out, keyword, category, limit
+
+
+def _native_studio_id(explicit=None):
+    """Get the UUID required by StudioMCP's native search_asset, if available."""
+    if explicit:
+        return str(explicit)
+    try:
+        text = _probe_tool_text("list_roblox_studios")
+        data = json.loads(text or "{}")
+        studios = data.get("studios") if isinstance(data, dict) else None
+        if isinstance(studios, list) and studios and isinstance(studios[0], dict):
+            sid = studios[0].get("id") or studios[0].get("studio_id")
+            return str(sid) if sid else None
+    except Exception:
+        pass
+    return None
+
+
+def _native_import_asset(arguments, timeout):
+    """Use StudioMCP's native insert_asset only when our queue is unavailable.
+
+    The native tool already knows Roblox's type-specific insertion rules and
+    strips executable sources. Normalize only a response that proves an
+    inserted path; otherwise let the normal queue/plugin-offline path report
+    the failure instead of claiming success.
+    """
+    a = arguments or {}
+    raw_id = a.get("assetId")
+    if isinstance(raw_id, float) and raw_id.is_integer():
+        digits = str(int(raw_id))
+    else:
+        digits = str(raw_id or "")
+    if digits.startswith("rbxassetid://"):
+        digits = digits[len("rbxassetid://"):]
+    if not digits.isdigit() or int(digits) <= 0:
+        return None
+    parent = str(a.get("parent") or "workspace")
+    native_parent = parent.replace("/", ".")
+    if native_parent.lower() in ("workspace", "game.workspace"):
+        native_parent = "game.Workspace"
+    elif not native_parent.startswith("game."):
+        native_parent = "game." + native_parent
+    try:
+        index = getattr(mgr, "index", {}) or {}
+        native_key = None
+        for key, entry in index.items():
+            holder, real = entry
+            if real == "insert_asset" and getattr(holder, "id", PRIMARY_SERVER_ID) == PRIMARY_SERVER_ID:
+                native_key = key
+                break
+        if not native_key:
+            return None
+        studio_id = _native_studio_id(a.get("studio_id"))
+        if not studio_id:
+            return None
+        native_args = {"studio_id": studio_id, "assetId": digits, "parentPath": native_parent}
+        if a.get("assetName"):
+            native_args["assetName"] = str(a["assetName"])[:120]
+        if a.get("assetType"):
+            native_args["assetType"] = str(a["assetType"])[:40]
+        raw = mgr.call(native_key, native_args, timeout)
+        data = json.loads(raw.get("text") or "{}")
+    except Exception:
+        return None
+    if not isinstance(data, dict) or data.get("error") or data.get("ok") is False:
+        return None
+    if str(data.get("status", "success")).lower() not in ("success", "ok"):
+        return None
+    payload = data.get("result") if isinstance(data.get("result"), dict) else data
+
+    def find_path(value):
+        if isinstance(value, dict):
+            for key in ("path", "instancePath", "fullName", "insertedPath"):
+                if isinstance(value.get(key), str) and value.get(key):
+                    return value[key]
+            for child in value.values():
+                found = find_path(child)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = find_path(child)
+                if found:
+                    return found
+        return None
+
+    path = find_path(payload)
+    if not path:
+        return None
+    return {"ok": True, "text": json.dumps({
+        "tool": "import_asset", "status": "success", "ok": True,
+        "imported": True, "assetId": int(digits), "id": int(digits),
+        "path": path, "parent": parent, "source": "studio-mcp",
+        "verification": {"checked": True},
+        "note": "Inserted by StudioMCP native insert_asset; verify with get_instances.",
+    })}
+
+
 def _local_get_memory_usage(args):
     try:
         depth = sum(len(c.tools_cache or []) for c in mgr.clients.values())
@@ -209,6 +579,50 @@ def _local_list_sessions(args):
 
 def _local_session_users(args):
     return {"ok": True, "text": json.dumps([])}
+
+
+def _installed_plugin_state(plugdir=None, repo_file=None):
+    """Read-only compare of the Studio-installed plugin vs this folder's copy.
+
+    Never writes or deletes: purely diagnostic, so `plugin_status` can name
+    a stale install (wrong bytes, duplicate copies, missing file) instead of
+    the generic 'waiting for poll'. Pass explicit paths in tests; defaults
+    resolve the real Studio locations (Windows vs macOS/Linux)."""
+    import hashlib as _hl
+    import glob as _glob
+    try:
+        if repo_file is None:
+            repo_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "studio-plugin", "RoLink.lua")
+        repo_size = os.path.getsize(repo_file)
+        with open(repo_file, "rb") as _f:
+            repo_sha = _hl.sha256(_f.read()).hexdigest()[:16]
+    except Exception:
+        repo_file, repo_size, repo_sha = None, None, None
+    try:
+        if plugdir is None:
+            if os.name == "nt":
+                plugdir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Roblox", "Plugins")
+            else:
+                plugdir = os.path.join(os.path.expanduser("~"), "Documents", "Roblox", "Plugins")
+        copies = []
+        for _p in sorted(_glob.glob(os.path.join(plugdir, "*RoLink*.lua"))):
+            try:
+                _size = os.path.getsize(_p)
+                with open(_p, "rb") as _f:
+                    _sha = _hl.sha256(_f.read()).hexdigest()[:16]
+                copies.append({"name": os.path.basename(_p), "size": _size,
+                               "matches_repo": bool(repo_sha) and _sha == repo_sha})
+            except Exception:
+                copies.append({"name": os.path.basename(_p), "size": None, "matches_repo": False})
+    except Exception:
+        plugdir, copies = None, []
+    exact = [c for c in copies if c.get("name") == "RoLink.lua"]
+    return {"dir": plugdir, "repo_size": repo_size,
+            "copies": copies, "copy_count": len(copies),
+            "exact_present": bool(exact),
+            "exact_matches_repo": bool(exact and exact[0].get("matches_repo")),
+            "stale_or_missing": not bool(exact and exact[0].get("matches_repo"))}
 
 
 def _local_plugin_status(args):
@@ -246,6 +660,27 @@ def _local_plugin_status(args):
         _verdict = "plugin-stale"
     else:
         _verdict = "healthy"
+    try:
+        _installed = _installed_plugin_state()
+    except Exception:
+        _installed = {"dir": None, "copies": [], "copy_count": 0,
+                      "exact_present": False, "exact_matches_repo": False,
+                      "stale_or_missing": None}
+    _install_note = None
+    if _installed.get("stale_or_missing"):
+        _names = [_c.get("name") for _c in _installed.get("copies", [])]
+        if not _installed.get("exact_present"):
+            _install_note = ("no RoLink.lua in %s (saw: %s) - quit Studio fully, run install-plugin.bat "
+                             "from THIS release folder, reopen; expect RoLink 2.5.0 loaded [repo copy]"
+                             % (_installed.get("dir") or "?", _names or "nothing"))
+        elif _installed.get("copy_count", 1) != 1:
+            _install_note = ("duplicate plugin copies %s in %s - Studio loads ALL of them and they fight; "
+                             "keep only RoLink.lua, delete the rest, restart Studio fully"
+                             % (_names, _installed.get("dir") or "?"))
+        else:
+            _install_note = ("installed RoLink.lua differs from this folder (repo %s bytes) - reinstall from "
+                             "THIS folder with Studio fully closed; expect RoLink 2.5.0 loaded [repo copy]"
+                             % (_installed.get("repo_size") or "?"))
     return {"ok": True, "text": json.dumps({
         "queue_up": bool(_queue_server_on[0]),
         "plugin_alive": _plugin_alive(),
@@ -258,6 +693,8 @@ def _local_plugin_status(args):
         "in_flight": len(_flight),
         "oldest_claim_age_s": _oldest,
         "verdict": _verdict,
+        "installed_plugin": _installed,
+        "install_note": _install_note,
         "consecutive_timeouts": _queue_consec_timeouts[0],
     })}
 
@@ -511,6 +948,7 @@ def _local_migrate_system(args):
 LOCAL_HANDLERS = {
     "get_time": _local_get_time,
     "validate_command": _local_validate_command,
+    "search_asset": _local_search_asset,
     "suggest_ordering": _local_suggest_ordering,
     "get_suggestions": _local_get_suggestions,
     "list_plugins": _local_list_plugins,
@@ -541,6 +979,11 @@ def _local_batch_queue(args, timeout):
     a take_snapshot first and, on the first failure, issues rollback for every
     succeeded Studio step and verifies the tree hash matches. Atomic requires
     a live plugin — snapshot/rollback/DataStore effects cannot be restored.
+
+    Bounded by a batch deadline (<=115s): the extension stops listening well
+    before its hard cap, so the batch must settle first — otherwise Studio
+    keeps running steps the model already recorded as failed (ghost writes).
+    Each sub-call gets what remains of the budget, never the full timeout.
     """
     import hashlib as _hl
     cmds = (args or {}).get("commands", [])
@@ -595,6 +1038,7 @@ def _local_batch_queue(args, timeout):
 
     results = []
     failed = None
+    _deadline = time.time() + max(10.0, min(float(timeout or 30), 115.0))
     for i, c in enumerate(cmds):
         if not isinstance(c, dict):
             results.append({"index": i, "ok": False, "error": "command must be an object"})
@@ -611,8 +1055,17 @@ def _local_batch_queue(args, timeout):
             failed = results[-1]
             break
         # Recurse via safe_call (defined later) — resolved at call time.
+        # Deadline share: the batch must settle before the extension stops
+        # listening, so each step gets the remainder of a bounded budget.
+        # Under ~8s remaining, stop honestly instead of orphaning work.
+        _remaining = _deadline - time.time()
+        if _remaining < 8:
+            results.append({"index": i, "tool": sub_name or "batch_queue", "ok": False, "kind": "timeout",
+                            "error": "batch_queue: batch time budget exhausted with %d of %d commands unrun - completed steps stand (best_effort) or were rolled back (atomic); retry the remainder singly" % (len(cmds) - i, len(cmds))})
+            failed = results[-1]
+            break
         try:
-            r = safe_call(sub_name, sub_args, timeout)
+            r = safe_call(sub_name, sub_args, min(_remaining, 60.0))
         except Exception as e:
             r = {"ok": False, "kind": "execution_error", "error": str(e)}
         results.append({"index": i, "tool": sub_name, **r})
@@ -1531,15 +1984,16 @@ def config_add_server(server_id, command, args=None, env=None):
         return False, f"'{PRIMARY_SERVER_ID}' is the primary server and cannot be edited"
     if not (command or "").strip():
         return False, "a command is required"
-    cfg = _read_config()
-    spec = {"command": command.strip(), "args": list(args or [])}
-    if env:
-        spec["env"] = dict(env)
-    cfg["mcpServers"][sid] = spec
-    try:
-        _write_config(cfg)
-    except Exception as e:
-        return False, f"could not write config.json: {e}"
+    with CONFIG_LOCK:
+        cfg = _read_config()
+        spec = {"command": command.strip(), "args": list(args or [])}
+        if env:
+            spec["env"] = dict(env)
+        cfg["mcpServers"][sid] = spec
+        try:
+            _write_config(cfg)
+        except Exception as e:
+            return False, f"could not write config.json: {e}"
     return True, None
 
 
@@ -1548,15 +2002,262 @@ def config_remove_server(server_id):
     sid = (server_id or "").strip()
     if sid == PRIMARY_SERVER_ID:
         return False, f"'{PRIMARY_SERVER_ID}' is the primary server and cannot be removed"
-    cfg = _read_config()
-    if sid not in cfg.get("mcpServers", {}):
-        return False, f"server '{sid}' is not in the config"
-    del cfg["mcpServers"][sid]
-    try:
-        _write_config(cfg)
-    except Exception as e:
-        return False, f"could not write config.json: {e}"
+    with CONFIG_LOCK:
+        cfg = _read_config()
+        if sid not in cfg.get("mcpServers", {}):
+            return False, f"server '{sid}' is not in the config"
+        del cfg["mcpServers"][sid]
+        try:
+            _write_config(cfg)
+        except Exception as e:
+            return False, f"could not write config.json: {e}"
     return True, None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MCP SERVER PRESETS  (strictly opt-in - config.json is never touched here
+#  at import time, at boot, or by any code path a user did not explicitly
+#  trigger from the extension)
+# ══════════════════════════════════════════════════════════════════════════
+# A preset is a reviewed, pinned spawn spec for a well-known third-party MCP
+# server. Its whole point is that the command/env must match upstream's
+# documented setup character for character: a hand-typed typo fails as
+# "Blender is broken" minutes later, and the user has no way to tell a typo
+# from "the addon is not running".
+#
+# SAFETY RULES (all enforced by config_add_preset below):
+#  * MCPManager.load_config reads config.json and NOTHING else, so a default
+#    install still spawns exactly one child (roblox) and its config.json stays
+#    byte-identical to the shipped file. A preset is applied only when the user
+#    asks for it from the options page (add_preset message).
+#  * Re-adding a preset is idempotent; a preset can never take over the
+#    primary (roblox) server, and a server id already owned by a DIFFERENT
+#    preset is refused instead of silently rewritten.
+#  * Nothing is downloaded or launched by the bridge itself: the spec is just
+#    written to config.json, and the existing child-process launcher does the
+#    rest exactly as it does for a hand-added server.
+#
+# `namespace` is the advertised tool prefix. Blender ships generically named
+# tools (get_scene_info, execute_blender_code, ...) that WILL collide with
+# RoLink/Studio names, and a collision is resolved in rebuild_index by
+# renaming whichever server is seen SECOND - so an addon could silently take
+# over a Roblox command depending on config order. A namespaced server is
+# therefore ALWAYS advertised as "<namespace>/<upstream name>" (no ordering
+# dependence), while the index keeps the EXACT upstream name for the actual
+# tools/call, because upstream only accepts its own spelling.
+MCP_SERVER_PRESETS = {
+    "mcp-for-blender": {
+        "server_id": "blender",
+        "label": "Blender (MCP for Blender)",
+        "namespace": "blender",
+        "command": "uvx",
+        "args": ["--python", "3.11", "mcp-for-blender"],
+        # Upstream's own defaults are localhost:9876. The IPv4 literal is
+        # spelled out on purpose: the Blender addon binds IPv4 only, and on
+        # Windows "localhost" can resolve to ::1 first, which is a silent
+        # connect failure that looks exactly like "Blender is not responding".
+        "env": {
+            "BLENDER_HOST": "127.0.0.1",
+            "BLENDER_PORT": "9876",
+            # Safe mode is deliberately opt-in and local-only. The addon socket
+            # has no authentication; safe mode is an upstream guard, not a
+            # sandbox, so users should still save their .blend before executing
+            # arbitrary Blender code.
+            "BLENDER_MCP_SAFE_MODE": "1",
+            "DISABLE_TELEMETRY": "true",
+        },
+        "safeMode": True,
+        "startupTimeoutMs": 90000,
+        # Commands that must exist on PATH before the server can ever work.
+        "requires": ["uvx"],
+        "homepage": "https://github.com/ahujasid/mcp-for-blender",
+        "summary": "Drive Blender: scene/object inspection, materials, Python code, viewport screenshots.",
+        "notes": ("Needs uv (astral.sh/uv). In Blender: N -> MCP for Blender -> "
+                  "Start MCP Server, otherwise every call fails to connect."),
+    },
+}
+
+
+def _preset_namespaces():
+    out = {}
+    for p in MCP_SERVER_PRESETS.values():
+        sid, ns = p.get("server_id"), p.get("namespace")
+        if sid and ns:
+            out[sid] = ns
+    return out
+
+
+# server_id -> advertised tool prefix. A server can also force its own prefix
+# with a "namespace" key in config.json (which wins over this).
+SERVER_NAMESPACES = _preset_namespaces()
+
+
+def preset_availability(preset_id):
+    """Is a preset actually runnable on THIS machine? Checked, never assumed -
+    the bridge starts every configured server, so a missing `uvx` would
+    otherwise show up as a silent crash-loop in the terminal."""
+    p = MCP_SERVER_PRESETS.get(preset_id)
+    if not p:
+        return {"available": False, "missing": [], "hint": f"unknown preset '{preset_id}'"}
+    missing = [c for c in (p.get("requires") or []) if not shutil.which(c)]
+    return {
+        "available": not missing,
+        "missing": missing,
+        "hint": ("" if not missing else
+                 "install uv (https://docs.astral.sh/uv/getting-started/installation/), "
+                 "restart RoLink, then add the server again"),
+    }
+
+
+def public_preset(preset_id, preset=None):
+    """The extension-facing form of a preset. Only ever built from OUR reviewed
+    constants - a user's env values are never echoed back through this path."""
+    p = preset if preset is not None else MCP_SERVER_PRESETS.get(preset_id) or {}
+    return {
+        "id": preset_id,
+        "label": p.get("label") or preset_id,
+        "summary": p.get("summary") or "",
+        "notes": p.get("notes") or "",
+        "server_id": p.get("server_id") or "",
+        "namespace": p.get("namespace") or "",
+        "command": p.get("command") or "",
+        "args": list(p.get("args") or []),
+        "env": dict(p.get("env") or {}),
+        "requires": list(p.get("requires") or []),
+        "homepage": p.get("homepage") or "",
+    }
+
+
+def list_presets(installed=None):
+    """Every known preset, with availability and whether it is installed."""
+    if installed is None:
+        installed = set()
+        for spec in (_read_config().get("mcpServers", {}) or {}).values():
+            if isinstance(spec, dict) and spec.get("preset"):
+                installed.add(spec["preset"])
+    out = []
+    for pid, p in MCP_SERVER_PRESETS.items():
+        entry = public_preset(pid, p)
+        entry.update(preset_availability(pid))
+        entry["installed"] = pid in installed
+        out.append(entry)
+    return out
+
+
+def effective_namespace(sid, spec=None):
+    """The prefix a server's tools are advertised under ('' = bare names).
+    config.json may pin one explicitly; otherwise it comes from the preset
+    registry (matched on server id, so a hand-written `uvx mcp-for-blender`
+    entry named "blender" is namespaced too)."""
+    spec = spec or (_read_config().get("mcpServers", {}) or {}).get(sid) or {}
+    if spec.get("namespace"):
+        return str(spec["namespace"])
+    return SERVER_NAMESPACES.get(sid) or ""
+
+
+def server_meta(sid, spec=None):
+    """Safe-to-broadcast description of a configured server: exact command,
+    env NAMES, namespace, preset provenance.
+
+    NEVER env VALUES. A configured MCP server routinely carries API
+    credentials (Sketchfab / Poly Pizza / Hunyuan3D keys all read from env),
+    and this payload goes to every open extension tab and into the model-facing
+    status output - a value must not leave the bridge process. Key names are
+    kept because "BLENDER_PORT is not set" is exactly the diagnostic a user
+    needs and reveals nothing.
+
+    `spec` may be passed by a caller that already read config.json, so a
+    health() over N servers costs one file read, not N."""
+    if spec is None:
+        spec = (_read_config().get("mcpServers", {}) or {}).get(sid) or {}
+    meta = {
+        "command": spec.get("command") or "",
+        "args": list(spec.get("args") or []),
+        "env_keys": sorted(spec.get("env") or {}),
+        "namespace": effective_namespace(sid, spec),
+        "safeMode": bool((MCP_SERVER_PRESETS.get(spec.get("preset"), {}) or {}).get("safeMode", False)),
+        "status": "configured",
+    }
+    pid = spec.get("preset")
+    if pid and pid in MCP_SERVER_PRESETS:
+        meta["preset"] = pid
+        meta["label"] = MCP_SERVER_PRESETS[pid].get("label") or pid
+        meta["homepage"] = MCP_SERVER_PRESETS[pid].get("homepage") or ""
+    return meta
+
+
+def list_mcp_servers():
+    """The extension's settings view: every configured server (primary first)
+    with its exact spawn spec and live health, plus the presets that are not
+    installed yet. Env values are omitted (see server_meta)."""
+    cfg = _read_config()
+    servers = cfg.get("mcpServers", {}) or {}
+    rows = []
+    for sid, spec in servers.items():
+        spec = spec or {}
+        client = mgr.clients.get(sid)
+        row = {
+            "id": sid,
+            "primary": sid == PRIMARY_SERVER_ID,
+            "command": spec.get("command") or "",
+            "args": list(spec.get("args") or []),
+            "env_keys": sorted(spec.get("env") or {}),
+            "namespace": effective_namespace(sid, spec),
+            "safeMode": bool((MCP_SERVER_PRESETS.get(spec.get("preset"), {}) or {}).get("safeMode", False)),
+            "alive": bool(client.is_alive()) if client is not None else False,
+            "initialized": bool(getattr(client, "initialized", False)) if client is not None else False,
+            "tools": len(client.tools_cache or []) if client is not None else 0,
+        }
+        if spec.get("preset"):
+            row["preset"] = spec["preset"]
+        err = getattr(client, "start_error", None)
+        if err:
+            row["error"] = err
+        rows.append(row)
+    return {"ok": True, "servers": rows,
+            "presets": list_presets({r["preset"] for r in rows if r.get("preset")})}
+
+
+def config_add_preset(preset_id, server_id=None, env=None):
+    """Write a reviewed preset into config.json. Explicit opt-in only.
+
+    Returns (ok, error, info). Refuses the primary server, an unknown preset,
+    an id that would make an unusable namespace, and a server id that already
+    belongs to a different preset. `env` only ADDS to the preset's own env and
+    is never echoed back in `info` (it may hold a user secret)."""
+    pid = (preset_id or "").strip()
+    p = MCP_SERVER_PRESETS.get(pid)
+    if not p:
+        return False, (f"unknown MCP preset '{pid}'" if pid else "preset id is required"), None
+    sid = (server_id or p.get("server_id") or "").strip()
+    if not sid:
+        return False, "server id is required", None
+    if sid == PRIMARY_SERVER_ID:
+        return False, f"'{PRIMARY_SERVER_ID}' is the primary server and cannot be replaced by a preset", None
+    if "/" in sid or any(c.isspace() for c in sid):
+        return False, "server id must not contain '/' or spaces (it names a tool namespace)", None
+    spec = {"command": p.get("command"), "args": list(p.get("args") or []),
+            "preset": pid, "namespace": p.get("namespace"),
+            "safeMode": bool(p.get("safeMode", False)),
+            "startupTimeoutMs": int(p.get("startupTimeoutMs") or 90000)}
+    merged_env = {str(k): str(v) for k, v in (p.get("env") or {}).items()}
+    merged_env.update({str(k): str(v) for k, v in (env or {}).items() if str(k).strip()})
+    if merged_env:
+        spec["env"] = merged_env
+    with CONFIG_LOCK:
+        cfg = _read_config()
+        existing = cfg.get("mcpServers", {}).get(sid) or {}
+        if existing.get("preset") not in (None, "", pid):
+            return False, (f"server '{sid}' already uses the '{existing['preset']}' preset - "
+                           "remove it first to switch presets"), None
+        cfg["mcpServers"][sid] = spec
+        try:
+            _write_config(cfg)
+        except Exception as e:
+            return False, f"could not write config.json: {e}", None
+    info = {"server_id": sid, "preset": pid, "env_keys": sorted(merged_env)}
+    info.update(preset_availability(pid))
+    return True, None, info
 
 
 def restart_self():
@@ -1596,11 +2297,19 @@ def restart_self():
 #  HARDENED MCP CLIENT  (one per server in config.json)
 # ══════════════════════════════════════════════════════════════════════════
 class MCPClient:
-    def __init__(self, server_id, command, args, env=None):
+    def __init__(self, server_id, command, args, env=None, meta=None):
         self.id = server_id
         self.command = command
         self.args = list(args or [])
         self.env = env or {}
+        meta = meta or {}
+        self.namespace = str(meta.get("namespace") or "")
+        self.label = str(meta.get("label") or server_id)
+        self.preset = str(meta.get("preset") or "")
+        self.safe_mode = bool(meta.get("safeMode") or (self.preset == "mcp-for-blender"))
+        self.startup_timeout_ms = int(meta.get("startupTimeoutMs") or 30000)
+        self.initialized = False
+        self.server_info = {}
         self.proc = None
         self.req_id = 1
         self.write_lock = threading.Lock()
@@ -1715,7 +2424,8 @@ class MCPClient:
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
                     "clientInfo": {"name": "rolink-bridge", "version": "1.0"},
-                }, timeout=30)
+                }, timeout=max(30, self.startup_timeout_ms / 1000))
+                self.initialized = True
                 self._notify("notifications/initialized")
                 # Some MCP servers (notably Roblox's StudioMCP) advertise 0 tools at
                 # the instant initialize returns, because they connect to their
@@ -1923,13 +2633,71 @@ class MCPManager:
         self.clients = {}          # server_id -> MCPClient
         self.index = {}            # advertised_name -> (holder, real_name)
         self.index_lock = threading.Lock()
+        # server_id -> forced advertised prefix. Seeded from the preset registry
+        # (see SERVER_NAMESPACES) and overridable per server in config.json.
+        self.namespaces = dict(SERVER_NAMESPACES)
+        # (server_id, upstream_name) -> advertised_name. The reverse of index:
+        # rebuild_index used to recover this by scanning the whole index for
+        # every tool of every server on every list_tools call (O(n^2) on a
+        # ~50-tool catalogue, and a namespaced catalogue makes "which key is
+        # this?" a real question rather than "the bare name").
+        self.advertised = {}
+
+    def _make_client(self, sid, spec):
+        spec = spec or {}
+        ns = spec.get("namespace") or effective_namespace(sid, spec)
+        if ns:
+            self.namespaces[str(sid)] = str(ns)
+        preset_id = spec.get("preset")
+        preset = MCP_SERVER_PRESETS.get(preset_id, {}) if preset_id else {}
+        meta = {
+            "namespace": ns or "",
+            "label": spec.get("label") or preset.get("label") or sid,
+            "preset": preset_id or "",
+            "safeMode": bool(preset.get("safeMode", preset_id == "mcp-for-blender")),
+            "startupTimeoutMs": int(spec.get("startupTimeoutMs") or preset.get("startupTimeoutMs") or 30000),
+        }
+        return MCPClient(sid, spec.get("command"), spec.get("args"), spec.get("env"), meta)
 
     def load_config(self):
         servers = _read_config().get("mcpServers", {}) or {}
         for sid, spec in servers.items():
-            self.clients[sid] = MCPClient(
-                sid, spec.get("command"), spec.get("args"), spec.get("env"))
+            self.clients[sid] = self._make_client(sid, spec)
         log(f"configured {len(self.clients)} MCP server(s): {', '.join(self.clients) or '(none)'}", "cy")
+
+    def install_server(self, sid):
+        """Load a newly configured server into the ALREADY RUNNING bridge.
+
+        Used by add_preset. The alternative - add_server's full process restart
+        - drops every live MCP child (including an attached Roblox Studio
+        session) and the whole WebSocket just to add one addon, which is a lot
+        of collateral for an opt-in the user just performed. The new client
+        finishes its handshake in a background thread, so a slow server can
+        never block the socket; returns (ok, error) as soon as it is installed.
+        """
+        spec = (_read_config().get("mcpServers", {}) or {}).get(sid)
+        if not spec:
+            return False, f"server '{sid}' is not in the config"
+        old = self.clients.get(sid)
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:
+                pass
+        client = self._make_client(sid, spec)
+        self.clients[sid] = client
+
+        def _run():
+            try:
+                client.start()
+            except Exception as e:
+                log(f"[{sid}] failed to start: {e}  (other servers continue)", "rd")
+            finally:
+                self.rebuild_index()
+
+        threading.Thread(target=_run, daemon=True).start()
+        self.rebuild_index()
+        return True, None
 
     def start_all(self):
         # Launch every configured server IN PARALLEL, not one after another.
@@ -1955,40 +2723,115 @@ class MCPManager:
             t.join()
         self.rebuild_index()
 
+    def _advertised_name(self, sid, name, taken):
+        """How one server's tool is exposed in the unified catalogue.
+
+        A namespaced server (see MCP_SERVER_PRESETS) is ALWAYS prefixed, so an
+        addon can neither steal a Roblox command name nor have its own name
+        stolen by whichever server happened to be loaded first. Every other
+        server keeps the bare name unless it is already taken, then gets
+        "<server_id>/" - the historical collision behaviour, unchanged.
+        `taken` is the set of names already handed out in this rebuild.
+        """
+        ns = self.namespaces.get(sid)
+        if ns:
+            cand = f"{ns}/{name}"
+            if cand not in taken:
+                return cand
+        cand = f"{sid}/{name}" if name in taken else name
+        if cand in taken:
+            # Pathological only: two servers pinned to the SAME namespace.
+            # Keep both reachable instead of letting one shadow the other.
+            i = 2
+            while f"{cand}__{i}" in taken:
+                i += 1
+            cand = f"{cand}__{i}"
+        return cand
+
     def rebuild_index(self):
-        """Aggregate server tools. Collisions get a 'server/' prefix."""
+        """Aggregate server tools into one advertised catalogue."""
         with self.index_lock:
             self.index = {}
+            self.advertised = {}
             for sid, client in self.clients.items():
                 for t in (client.tools_cache or []):
                     name = t.get("name")
                     if not name:
                         continue
-                    advertised = name if name not in self.index else f"{sid}/{name}"
+                    advertised = self._advertised_name(sid, name, self.index)
                     self.index[advertised] = (client, name)
+                    self.advertised[(sid, name)] = advertised
+
+    def advertised_key_for(self, name):
+        """The catalogue key a caller may use for `name`.
+
+        An exact advertised key always wins. Failing that, a namespaced server's
+        BARE upstream name resolves to its namespaced key, because upstream
+        only accepts its own spelling and models copy names straight out of a
+        project's docs ("get_scene_info", not "blender/get_scene_info"). An
+        ambiguous bare name (two servers export the same one) resolves to None
+        rather than being guessed - safe_call turns that into a
+        validation_error naming the exact spellings.
+        """
+        with self.index_lock:
+            if name in self.index:
+                return name
+        # rebuild_index takes the lock itself, so it must run outside ours.
+        self.rebuild_index()
+        with self.index_lock:
+            if name in self.index:
+                return name
+            hits = [adv for adv, (_holder, real) in self.index.items() if real == name]
+        return hits[0] if len(hits) == 1 else None
+
+    def upstream_candidates(self, name):
+        """Every advertised key that dispatches to the upstream tool `name`."""
+        with self.index_lock:
+            return sorted(adv for adv, (_holder, real) in self.index.items() if real == name)
+
+    def provenance(self, advertised_name):
+        """{server, tool} with the EXACT upstream tool name behind an advertised
+        key. For a namespaced addon the two differ ("blender/get_scene_info" ->
+        "get_scene_info"), and the difference matters downstream: the image
+        branch of the extension labels a capture with the tool that really ran,
+        and the bridge's own error text quotes the upstream name."""
+        with self.index_lock:
+            entry = self.index.get(advertised_name)
+        if not entry:
+            return None
+        holder, real = entry
+        return {"server": getattr(holder, "id", ""), "tool": real}
 
     def list_tools(self, refresh=False):
         if refresh:
+            # Refresh only live children. Starting every configured server from
+            # a catalogue request made a dead Roblox/Blender child block the
+            # other server's tools for its full startup timeout; server_watch
+            # owns recovery and the next explicit start/restart owns launching.
             for sid, client in self.clients.items():
                 try:
-                    if not client.is_alive():
-                        client.start()
-                    else:
-                        client.refresh_tools()
+                    if client.is_alive():
+                        client.refresh_tools(timeout=3)
                 except Exception as e:
                     log(f"[{sid}] refresh failed: {e}", "yl")
+            self.rebuild_index()
+        # Self-heal a missing index. The advertised-key reverse map is built by
+        # rebuild_index; without it list_tools falls back to the BARE upstream
+        # name, which silently reintroduces the exact collision a namespace
+        # exists to prevent (a bare blender "get_scene_info" that config order
+        # can hand to Roblox). Landing here means something listed tools before
+        # start_all()/restart() finished, so rebuild rather than serve a
+        # catalogue we already know is wrong.
+        if not self.advertised and any(c.tools_cache for c in self.clients.values()):
             self.rebuild_index()
         out = []
         for sid, client in self.clients.items():
             for t in (client.tools_cache or []):
                 name = t.get("name")
-                advertised = name
-                with self.index_lock:
-                    # find the advertised key that maps to this (client, name)
-                    for k, (holder, real) in self.index.items():
-                        if holder is client and real == name:
-                            advertised = k
-                            break
+                # Reverse map built by rebuild_index: the advertised key for
+                # this (server, upstream name) pair - bare, collision-prefixed
+                # or namespace-prefixed.
+                advertised = self.advertised.get((sid, name), name)
                 tt = dict(t)
                 tt["name"] = advertised
                 tt["server"] = sid
@@ -2011,20 +2854,24 @@ class MCPManager:
         except Exception:
             pass
         # Single ownership: where our catalog and a live server advertise the
-        # SAME name with different params (Studio-native search_game_tree vs
-        # ours), exactly one may speak. While the plugin polls, execution
-        # routes to the queue - so the LIST shows our params too. Otherwise
-        # Studio's entry stands. List and execute can never disagree again.
+        # SAME name with different params (Studio-native search_asset vs ours),
+        # exactly one may speak. search_asset is bridge-local even when the
+        # plugin is offline, so its local schema must always win; other local
+        # entries retain the historical plugin-alive ownership behavior.
         try:
-            if _plugin_alive():
-                _new = []
-                for _e in out:
-                    if (_e.get("server") not in (None, "local")
-                            and _local_tool_entry(_e.get("name")) is not None):
-                        _new.append(_local_tool_entry(_e["name"]))
-                    else:
-                        _new.append(_e)
-                out = _new
+            _plugin_online = _plugin_alive()
+            _new = []
+            for _e in out:
+                _name = _e.get("name")
+                _bare_name = str(_name or "").split("/")[-1]
+                _local_entry = _local_tool_entry(_bare_name)
+                if (_e.get("server") in (None, "local", PRIMARY_SERVER_ID)
+                        and _local_entry is not None
+                        and (_bare_name == "search_asset" or _plugin_online)):
+                    _new.append(_local_entry)
+                else:
+                    _new.append(_e)
+            out = _new
         except Exception:
             pass
         return out
@@ -2037,6 +2884,13 @@ class MCPManager:
             self.rebuild_index()
             with self.index_lock:
                 entry = self.index.get(name)
+        if entry is None:
+            # Last resort: a namespaced server's bare upstream name (dispatched
+            # with its EXACT spelling - upstream does not know the prefix).
+            key = self.advertised_key_for(name)
+            if key:
+                with self.index_lock:
+                    entry = self.index.get(key)
         if entry is None:
             raise RuntimeError(f"unknown tool '{name}'")
         holder, real_name = entry
@@ -2052,8 +2906,29 @@ class MCPManager:
         self.rebuild_index()
 
     def health(self):
-        return [{"id": sid, "alive": c.is_alive(), "tools": len(c.tools_cache)}
-                for sid, c in self.clients.items()]
+        """Per-server liveness for the status push. `meta` is secret-free by
+        construction (env NAMES only - see server_meta); `error` surfaces the
+        launch failure the crash-loop forensics already collected, which is the
+        difference between "blender ○" and "blender ○ - uvx not found on PATH"."""
+        out = []
+        specs = (_read_config().get("mcpServers", {}) or {})
+        for sid, c in self.clients.items():
+            row = {"id": sid, "alive": c.is_alive(), "tools": len(c.tools_cache or []),
+                   "initialized": bool(getattr(c, "initialized", False)),
+                   "namespace": getattr(c, "namespace", ""),
+                   "label": getattr(c, "label", sid),
+                   "preset": getattr(c, "preset", ""),
+                   "safeMode": bool(getattr(c, "safe_mode", False)),
+                   "status": "mcp-ready" if c.is_alive() and c.tools_cache else "starting",
+                   "backend": "unverified"}
+            try:
+                row["meta"] = server_meta(sid, specs.get(sid))
+            except Exception:
+                pass
+            if c.start_error:
+                row["error"] = c.start_error
+            out.append(row)
+        return out
 
     def any_alive(self):
         return any(c.is_alive() for c in self.clients.values())
@@ -2154,6 +3029,10 @@ def probe_studio():
 
 
 def _ai_readable_error(kind: str, raw: str, tool: str) -> str:
+    try:
+        raw = re.sub(r"sabuiltin_[^.\s]*\.", "", str(raw or ""))
+    except Exception:
+        pass
     if kind == "studio_offline":
         return (f"ERROR calling {tool}: Roblox Studio did not return a result.\n"
                 f"Roblox Studio is open but its MCP server is unavailable or no place is loaded.\n"
@@ -2203,6 +3082,33 @@ def _classify_bridge_error(err_text: str) -> str:
         return "timeout"
     return "execution_error"
 
+_BRIDGE_OWNED_CACHE = None
+
+
+def _bridge_owned(name):
+    """True when the bridge answers this tool ITSELF: a local handler, a Studio
+    route, a plugin-queue route, a documented alias or a catalog tool.
+
+    Such a name is never redirected to a namespaced addon. Blender (and any
+    generic addon) exports plausible-looking names like get_time, and without
+    this a bare "get_time" would be silently rerouted to blender/get_time and
+    the bridge's own tool would vanish from reach. Bridge-owned wins by default;
+    a model that genuinely wants the addon tool can always spell the namespaced
+    name ("blender/get_time") explicitly, which is exact and therefore always
+    wins. Built lazily: the tables it reads are defined after this point.
+    """
+    global _BRIDGE_OWNED_CACHE
+    if _BRIDGE_OWNED_CACHE is None:
+        names = set(ROLINK_TOOL_NAMES) | set(_QUEUE_EXTRA_TOOLS) | set(STUDIO_ROUTED_TOOLS)
+        names |= set(_TOOL_ALIASES) | set(_TOOL_ALIASES.values())
+        try:
+            names |= set(LOCAL_HANDLERS) | set(STUDIO_QUEUE_TOOLS)
+        except Exception:
+            pass
+        _BRIDGE_OWNED_CACHE = frozenset(n for n in names if n)
+    return name in _BRIDGE_OWNED_CACHE
+
+
 def safe_call(name, arguments, timeout):
     """Never raises. Always returns a dict the extension can feed back. Deterministic handle_call_tool."""
     if not name or not isinstance(name, str):
@@ -2231,6 +3137,39 @@ def safe_call(name, arguments, timeout):
                               "get_studio_state", "list_roblox_studios",
                               "plugin_status", "get_memory", "update_memory"))
     if name not in _PASSTHROUGH and canonical not in _PASSTHROUGH:
+        # Namespace resolution. An addon server pinned to a namespace is
+        # advertised as "blender/get_scene_info" while upstream only accepts
+        # "get_scene_info", and a model that copies a name out of a project's
+        # own docs writes the bare one. Resolve it to the advertised key HERE,
+        # before anything else inspects the name, so every later stage (local
+        # fast-path, Studio gates, dispatch) sees a key that really exists.
+        # Bridge-owned names are excluded: an addon that happens to export
+        # "get_time" must not be able to take over the bridge's own tool just by
+        # being present (the model can still spell "blender/get_time").
+        try:
+            _adv = None if _bridge_owned(name) else mgr.advertised_key_for(name)
+        except Exception:
+            _adv = None
+        if _adv and _adv != name:
+            name = _adv
+            canonical = name
+        else:
+            # No exact advertised key, so a BARE upstream name that TWO servers
+            # export cannot be resolved without guessing - and guessing would
+            # silently run the wrong app's tool. This must be checked before the
+            # known-name test below: a bare upstream name IS "known" (it is in
+            # a server's tools_cache), so the unknown-name branch would never
+            # see it and the model would get a bare "unknown tool" with no
+            # usable spelling.
+            try:
+                _amb = mgr.upstream_candidates(name)
+            except Exception:
+                _amb = []
+            if len(_amb) > 1:
+                return {"ok": False, "kind": "validation_error",
+                        "error": ('ERROR: "' + name + '" is exported by more than one MCP server. '
+                                  'Call the exact name: ' + ", ".join(_amb) + ".")}
+    if name not in _PASSTHROUGH and canonical not in _PASSTHROUGH:
         try:
             _known = (set(ROLINK_TOOL_NAMES) | set(_QUEUE_EXTRA_TOOLS)
                       | set(_TOOL_ALIASES) | set(_TOOL_ALIASES.values()))
@@ -2243,6 +3182,17 @@ def safe_call(name, arguments, timeout):
             except Exception:
                 pass
             if name not in _known and canonical not in _known:
+                # Collision-prefixed spellings ("roblox/search_asset") look
+                # plausible but were never advertised - the prefix only exists
+                # inside the bridge's own index, so upstream would answer
+                # "unknown tool" after a full round trip. Refuse them here and
+                # hand back the real name.
+                if "/" in name:
+                    _bare = name.rsplit("/", 1)[-1]
+                    if _bare in _known:
+                        return {"ok": False, "kind": "validation_error",
+                                "error": ('ERROR: "' + name + '" is not a command name - the command is "'
+                                          + _bare + '". Use the exact name from list_commands.')}
                 import difflib as _dl
                 _sug = _dl.get_close_matches(name, sorted(_known), n=3, cutoff=0.6)
                 # Prefix boost: a truncated name ("create_animation") should
@@ -2262,10 +3212,64 @@ def safe_call(name, arguments, timeout):
     # Local fast-path: pure-local tools work with no Studio and no MCP alive.
     # This is what makes the 111-catalog usable offline and is the Option-A
     # routing agreed in docs/workflow-contract.md.
-    _local = LOCAL_HANDLERS.get(name)
+    # Alias spellings (search_assets -> search_asset) resolve to their local
+    # handler too, otherwise they would be queue-routed and never answered.
+    _local_name = name if name in LOCAL_HANDLERS else (
+        canonical if canonical in LOCAL_HANDLERS else None)
+    _local = LOCAL_HANDLERS.get(_local_name) if _local_name else None
     if _local is not None:
         try:
-            return _local(arguments)
+            _r = _local(arguments)
+            # search_asset: on a TRANSIENT catalog failure, prefer Studio's
+            # native search_asset tool over surfacing a network error. Only
+            # when Studio advertises it - and tag the result so the model
+            # knows which path answered.
+            if (not _r.get("ok") and _r.get("transient")
+                    and _local_name == "search_asset"):
+                try:
+                    _live = set(getattr(mgr, "index", {}) or {})
+                except Exception:
+                    _live = set()
+                _native_name = next((k for k in _live
+                                      if k == "search_asset" or k.endswith("/search_asset")), None)
+                if _native_name:
+                    try:
+                        _holder, _ = (getattr(mgr, "index", {}) or {}).get(_native_name, (None, None))
+                        if _holder is not None and getattr(_holder, "id", PRIMARY_SERVER_ID) != PRIMARY_SERVER_ID:
+                            _native_name = None
+                    except Exception:
+                        pass
+                if _native_name:
+                    try:
+                        _sid = _native_studio_id((arguments or {}).get("studio_id"))
+                        if _sid:
+                            _native_args, _kw, _cat, _lim = _native_asset_call_args(arguments, _sid)
+                            _sm = mgr.call(_native_name, _native_args, timeout)
+                        else:
+                            # Older/native-compatible servers may accept the
+                            # original shape without studio_id. Try it only as
+                            # a best-effort fallback; an error-shaped response
+                            # is rejected below and never becomes fake success.
+                            _kw = str((arguments or {}).get("keyword",
+                                          (arguments or {}).get("query",
+                                          (arguments or {}).get("q", ""))) or "").strip()
+                            _cat = _asset_category((arguments or {}).get("category"))
+                            try:
+                                _lim = max(1, min(int((arguments or {}).get("limit", 8)), 20))
+                            except (TypeError, ValueError):
+                                _lim = 8
+                            _sm = mgr.call(_native_name, arguments, timeout)
+                        _native_body = _native_asset_body(_sm.get("text"), _kw, _cat, _lim)
+                        if _native_body is not None:
+                            try:
+                                log("search_asset source=studio-mcp", "dim", terminal=False)
+                            except Exception:
+                                pass
+                            return {"ok": True, "text": json.dumps(_native_body),
+                                    "images": _sm.get("images") or []}
+                    except Exception:
+                        pass
+            return _r
         except Exception as e:
             return {"ok": False, "error": _ai_readable_error("execution_error", str(e), name), "kind": "execution_error"}
     if name == "batch_queue" and isinstance(arguments.get("commands"), list):
@@ -2295,15 +3299,30 @@ def safe_call(name, arguments, timeout):
         # output. Never forwarded: the plugin must not see bridge internals.
         _pending_risk = _risk
     # Marker leak guard: transport wrappers must never persist into files.
+    # Match the same case-insensitive/spaced/dash dialects as the extension
+    # parser; a lowercase marker must not survive into a Script/ModuleScript.
     for _k in ("content", "exports", "code", "handlerCode"):
-        if isinstance((arguments or {}).get(_k), str) and "###LUA" in arguments[_k]:
-            arguments[_k] = arguments[_k].replace("###LUA:Server###", "").replace("###LUA:Client###", "").replace("###LUA###", "").replace("###END_LUA###", "")
+        _v = (arguments or {}).get(_k)
+        if isinstance(_v, str) and (re.search(r"###\s*(?:LUA|RAW)", _v, re.I) or "```" in _v):
+            _v = re.sub(r"###\s*LUA(?:\s*:[^#\n]*)?\s*(?:###|---)", "", _v, flags=re.I)
+            _v = re.sub(r"###\s*END[_\- ]?LUA\s*(?:###|---)", "", _v, flags=re.I)
+            _v = re.sub(r"###\s*RAW(?:\s*:[^#\n]*)?\s*(?:###|---)", "", _v, flags=re.I)
+            _v = re.sub(r"###\s*END[_\- ]?RAW\s*(?:###|---)", "", _v, flags=re.I)
+            arguments[_k] = _v
     # Large script writes hang the plugin recompile: fail fast offline too,
     # before any queue wait or MCP hop.
     if canonical == "set_script_content" and isinstance((arguments or {}).get("content"), str):
         if len(arguments["content"]) > 100000:
             return {"ok": False, "kind": "validation_error",
                     "error": _ai_readable_error("validation_error", f"content too large ({len(arguments['content'])} chars, max 100000) - split into smaller writes", name)}
+    # If the RoLink queue is unavailable, prefer StudioMCP's type-aware native
+    # insert_asset over reporting a generic plugin-offline error. The adapter
+    # returns only a verified inserted path; malformed/native error responses
+    # fall through to the normal queue guidance below.
+    if canonical == "import_asset" and not _plugin_alive():
+        _native_import = _native_import_asset(arguments, timeout)
+        if _native_import is not None:
+            return _native_import
     # Third-party MCP path: our Studio plugin answers registry tools through
     # the embedded :3001 queue whenever it is polling. Falls through to
     # StudioMCP below when the plugin is absent (graceful degradation).
@@ -2369,7 +3388,22 @@ def safe_call(name, arguments, timeout):
                 return {"ok": False, "error": _ai_readable_error("studio_offline", "Studio open but no place loaded — open a place", name), "kind": "studio_offline"}
     try:
         result = mgr.call(name, arguments, timeout)
-        return {"ok": True, "text": result["text"], "images": result["images"]}
+        out = {"ok": True, "text": result["text"], "images": result["images"]}
+        # Provenance. For a namespaced addon the model asked for
+        # "blender/get_scene_info" but upstream ran "get_scene_info"; carry the
+        # EXACT upstream name plus the owning server so an image-carrying
+        # result can be labelled with the tool that really ran (the extension's
+        # image branch and its learned "this tool returns screenshots" memory
+        # both key off the name), and so the bridge's own later errors can
+        # quote a spelling upstream recognises.
+        try:
+            _prov = mgr.provenance(name)
+        except Exception:
+            _prov = None
+        if _prov:
+            out["tool"] = _prov["tool"]
+            out["server"] = _prov["server"]
+        return out
     except TimeoutError as e:
         raw = str(e)
         kind = "timeout"
@@ -2538,6 +3572,66 @@ async def handler(ws):
                 # loop awaits each result before sending the next), so this never
                 # overlaps tool executions.
                 asyncio.create_task(run_tool_task(ws, name, args, timeout, rid))
+
+            elif mtype == "list_mcp_servers":
+                # The settings page's view of the config: exact spawn specs,
+                # per-server health and the presets that are not installed yet.
+                # Env VALUES are never included (see server_meta).
+                try:
+                    info = await asyncio.to_thread(list_mcp_servers)
+                except Exception as e:
+                    info = {"ok": False, "error": str(e), "servers": [], "presets": []}
+                await ws.send(json.dumps({"type": "mcp_servers", "id": rid, **info}))
+
+            elif mtype == "add_preset":
+                # Opt-in only: this is the ONE path that writes a preset into
+                # config.json, and it is reachable only from an explicit click
+                # in the extension. Unlike add_server it does NOT restart the
+                # whole process - dropping every live MCP child (including an
+                # attached Studio session) to add one addon is a lot of
+                # collateral. The new server is loaded in place and finishes
+                # its handshake in the background; the process restart stays as
+                # the fallback if the in-place load cannot find the entry.
+                ok, err, info = await asyncio.to_thread(
+                    config_add_preset,
+                    msg.get("preset") or msg.get("preset_id"),
+                    msg.get("server_id"), msg.get("env"))
+                restarting = False
+                if ok:
+                    try:
+                        _loaded, _lerr = await asyncio.to_thread(
+                            mgr.install_server, info["server_id"])
+                        restarting = not _loaded
+                        if not _loaded:
+                            err = _lerr or err
+                    except Exception as e:
+                        restarting = True
+                        log(f"in-place preset load failed ({e}); restarting instead", "yl")
+                ack = {
+                    "type": "server_changed", "id": rid,
+                    "ok": ok, "error": err, "restarting": restarting,
+                    "servers": mgr.health(),
+                }
+                if ok and info:
+                    ack.update({"server_id": info["server_id"], "preset": info["preset"],
+                                "env_keys": info.get("env_keys") or [],
+                                "available": info.get("available"),
+                                "hint": info.get("hint") or ""})
+                await ws.send(json.dumps(ack))
+                if ok:
+                    # Give the ack a beat to flush over the socket, then either
+                    # restart (fallback) or push a fresh status so the freshly
+                    # installed server shows up in the UI.
+                    if restarting:
+                        async def _do_restart():
+                            await asyncio.sleep(0.4)
+                            restart_self()
+                        asyncio.create_task(_do_restart())
+                    else:
+                        async def _do_refresh():
+                            await asyncio.sleep(1.5)
+                            await broadcast_status()
+                        asyncio.create_task(_do_refresh())
 
             elif mtype in ("add_server", "remove_server"):
                 # Adding/removing an addon MCP server rewrites config.json, which
@@ -3250,7 +4344,7 @@ STUDIO_QUEUE_TOOLS = frozenset(
 # Native plugin tools that live OUTSIDE the 140 registry (real search
 # implementations, not aliases): routed + advertised exactly like registry
 # tools, so the registry file and all 140-counts stay untouched.
-_QUEUE_EXTRA_TOOLS = frozenset(("script_search", "script_grep", "search_game_tree"))
+_QUEUE_EXTRA_TOOLS = frozenset(("script_search", "script_grep", "search_game_tree", "inspect_keyframe_track"))
 _QUEUE_EXTRA_DESC = {
     "script_search": ("Tool. Full-text search across Script/ModuleScript/LocalScript "
                       "sources. Args: pattern* (or query/keyword), path?/scope?, limit? (default 20)."),
@@ -3258,6 +4352,10 @@ _QUEUE_EXTRA_DESC = {
                     "Args: pattern* (or query/keyword), path?/scope?, limit?."),
     "search_game_tree": ("Tool. Find instances by name (default), class, or attribute. "
                          "Args: query*, searchType? (name/class/attribute), mode?."),
+    "inspect_keyframe_track": ("Tool. Numeric KeyframeSequence dump: every keyframe time plus pose "
+                               "position (studs) and rotation (degrees). Args: path* "
+                               "(e.g. Workspace/RoLinkAnimations/M1). Use instead of "
+                               "export_animation_clip for motion verification."),
 }
 _PLUGIN_STATUS_DESC = ("Tool. Instant in-Studio plugin health "
                        "(queue up, polling, version, pending). Call FIRST when "
@@ -3266,6 +4364,11 @@ _LOCAL_EXTRA_DESC = {
     "get_studio_state": ("Tool. Aggregated Studio truth: connectivity, place, playState "
                          "(edit/play), current Selection, plugin/bridge versions, pending tasks. "
                          "Ask this when reasoning about reality - never assume. No args except projectId?."),
+    "search_asset": ("Tool. LIVE Roblox Creator Store / Library search (bridge-side, no Studio "
+                     "needed). Args: keyword* (also query/q), limit? 1-20 default 8, category? "
+                     "Model|MeshPart|Decal|Audio|Plugin|Video|FontFamily. Returns "
+                     "{assets:[{id,name,description,creator,assetType,url,hasScripts?,scriptCount?,isFree?,priceCents?}], source} - "
+                     "REAL: inspect access/script metadata, then import with import_asset{assetId}; executable sources are stripped. Never invent an asset id."),
     "get_memory": ("Tool. Structured project memory: one section (architecture, services, "
                    "remotes, instances, conventions, ui, dependencies, bugs, tasks, decisions) "
                    "or a table of contents. Pull only the section the task needs."),
@@ -3574,6 +4677,17 @@ async def main():
             if _queue_server_on[0]:
                 log("Studio queue :3001 up" + (" - plugin polling (third-party MCP live)"
                     if _plugin_alive() else " - waiting for the Studio plugin poll"), "gr" if _plugin_alive() else "yl")
+                if not _plugin_alive():
+                    try:
+                        _ist = _installed_plugin_state()
+                        if not _ist.get("exact_present"):
+                            log("installed plugin: no RoLink.lua in %s - run install-plugin.bat with Studio fully closed" % (_ist.get("dir") or "?"), "yl")
+                        elif _ist.get("copy_count", 1) != 1:
+                            log("installed plugin: %d *RoLink*.lua copies %s - keep only RoLink.lua, delete the rest" % (_ist["copy_count"], [_c["name"] for _c in _ist["copies"]]), "yl")
+                        elif not _ist.get("exact_matches_repo"):
+                            log("installed plugin differs from THIS folder (repo %s bytes) - reinstall with Studio fully closed" % (_ist.get("repo_size") or "?"), "yl")
+                    except Exception:
+                        pass
         else:
             log(f"ready {total} tools available ({len(mgr.clients)} MCP server(s))", "gr")
         asyncio.create_task(_supervised(

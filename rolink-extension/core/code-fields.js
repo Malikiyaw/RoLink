@@ -10,7 +10,7 @@
 window.ROLINK_CODE_FIELDS = {
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
-  "generatedAt": "2026-09-02T12:20:58.726Z",
+  "generatedAt": "2026-09-25T12:42:03.149Z",
   "toolCount": 140,
   "toolFields": {
     "get_instances": [
@@ -167,6 +167,7 @@ window.ROLINK_CODE_FIELDS = {
       "projectId"
     ],
     "generate_terrain": [
+      "material",
       "projectId"
     ],
     "set_terrain_region": [
@@ -174,6 +175,7 @@ window.ROLINK_CODE_FIELDS = {
       "projectId"
     ],
     "place_parts": [
+      "material",
       "parent",
       "projectId"
     ],
@@ -213,6 +215,7 @@ window.ROLINK_CODE_FIELDS = {
     "play_animation": [
       "animationId",
       "characterPath",
+      "path",
       "projectId",
       "target"
     ],
@@ -296,6 +299,8 @@ window.ROLINK_CODE_FIELDS = {
       "keyword"
     ],
     "import_asset": [
+      "assetName",
+      "assetType",
       "parent",
       "projectId"
     ],
@@ -441,6 +446,7 @@ window.ROLINK_CODE_FIELDS = {
     ],
     "get_animation_info": [
       "animationId",
+      "path",
       "projectId"
     ],
     "delete_animation": [
@@ -448,28 +454,23 @@ window.ROLINK_CODE_FIELDS = {
       "projectId"
     ],
     "create_cutscene": [
-      "loop",
       "name",
       "projectId",
-      "shots"
+      "shots[].easing"
     ],
     "create_dialogue": [
-      "lines",
+      "lines[].speaker",
+      "lines[].text",
       "npcPath",
       "projectId"
     ],
     "create_motion_effect": [
-      "duration",
-      "effect",
       "path",
-      "projectId",
-      "properties"
+      "projectId"
     ],
     "create_vfx": [
-      "effect",
       "parent",
-      "projectId",
-      "properties"
+      "projectId"
     ],
     "export_animation_clip": [
       "animationId",
@@ -477,7 +478,6 @@ window.ROLINK_CODE_FIELDS = {
       "trackPath"
     ],
     "publish_animation": [
-      "action",
       "animationId",
       "assetId",
       "projectId",
@@ -487,33 +487,29 @@ window.ROLINK_CODE_FIELDS = {
       "projectId"
     ],
     "inspect_ui": [
-      "root",
-      "projectId"
+      "projectId",
+      "root"
     ],
     "screenshot_studio": [
       "projectId"
     ],
     "playtest_scenario": [
-      "scenario",
-      "watch",
       "expect",
-      "projectId"
+      "projectId",
+      "scenario",
+      "watch"
     ],
     "migrate_system": [
-      "system",
       "goal",
-      "sources[]",
-      "projectId"
+      "projectId",
+      "steps[].tool",
+      "system"
     ],
     "analyze_animatable_model": [
       "projectId",
       "target"
     ],
     "create_model_animation": [
-      "confirm",
-      "duration",
-      "fps",
-      "loop",
       "name",
       "projectId",
       "target"
@@ -521,15 +517,12 @@ window.ROLINK_CODE_FIELDS = {
     "set_model_keyframe": [
       "anim",
       "ease",
-      "pose",
       "projectId",
-      "t",
       "track"
     ],
     "set_model_easing": [
       "anim",
       "ease",
-      "keyIndex",
       "projectId",
       "track"
     ],
@@ -537,14 +530,11 @@ window.ROLINK_CODE_FIELDS = {
       "anim",
       "event",
       "name",
-      "projectId",
-      "remove",
-      "t"
+      "projectId"
     ],
     "preview_model_animation": [
       "anim",
-      "projectId",
-      "step"
+      "projectId"
     ],
     "validate_model_animation": [
       "anim",
@@ -553,8 +543,7 @@ window.ROLINK_CODE_FIELDS = {
     "retime_animation": [
       "anim",
       "newName",
-      "projectId",
-      "scale"
+      "projectId"
     ],
     "reverse_animation": [
       "anim",
@@ -564,70 +553,47 @@ window.ROLINK_CODE_FIELDS = {
     "mirror_animation": [
       "anim",
       "newName",
-      "projectId",
-      "swapPairs"
+      "projectId"
     ],
     "blend_animation": [
       "base",
       "newName",
       "overlay",
-      "projectId",
-      "weight"
+      "projectId"
     ],
     "fix_animation": [
       "anim",
       "projectId"
     ],
     "create_attack_animation": [
-      "anticipation",
-      "confirm",
-      "duration",
-      "fps",
-      "impactT",
-      "loop",
       "name",
       "projectId",
-      "strike",
-      "target",
-      "tracks[]"
+      "target"
     ],
     "create_idle_animation": [
-      "confirm",
-      "duration",
-      "fps",
-      "loop",
       "name",
       "projectId",
-      "sway",
-      "target",
-      "tracks[]"
+      "target"
     ],
     "create_walk_cycle": [
-      "confirm",
-      "duration",
-      "fps",
-      "loop",
       "name",
       "projectId",
-      "stride",
-      "target",
-      "tracks[]"
+      "target"
     ],
     "set_track_lock": [
       "anim",
-      "locked",
       "projectId",
       "track"
     ]
   },
   "stringFields": [
     "a",
-    "action",
     "anim",
     "animationId",
-    "anticipation",
     "archive",
     "assetId",
+    "assetName",
+    "assetType",
     "attribute",
     "b",
     "base",
@@ -637,31 +603,24 @@ window.ROLINK_CODE_FIELDS = {
     "code",
     "commit",
     "condition",
-    "confirm",
     "content",
     "context",
     "datamodel_type",
     "description",
     "difficulty",
-    "duration",
     "ease",
-    "effect",
+    "easing",
     "event",
     "expect",
     "exports",
-    "fps",
     "fromId",
     "functionName",
     "goal",
     "handlerCode",
     "id",
-    "impactT",
     "key",
-    "keyIndex",
     "keyword",
     "label",
-    "lines",
-    "locked",
     "material",
     "message",
     "name",
@@ -672,43 +631,32 @@ window.ROLINK_CODE_FIELDS = {
     "parent",
     "part",
     "path",
-    "pose",
     "projectId",
     "prompt",
     "property",
     "query",
     "region",
-    "remove",
     "root",
     "sandboxId",
-    "scale",
     "scenario",
     "sessionId",
-    "shots",
     "snapshot",
     "snapshotId",
     "soundId",
-    "sources",
-    "step",
+    "speaker",
     "store",
-    "stride",
-    "strike",
     "studio_id",
-    "swapPairs",
-    "sway",
     "system",
-    "t",
     "target",
     "template",
+    "text",
     "theme",
     "toId",
     "tool",
     "track",
     "trackPath",
-    "tracks[]",
     "variable",
-    "watch",
-    "weight"
+    "watch"
   ],
   "codeLikeFields": [
     "code",
@@ -720,6 +668,7 @@ window.ROLINK_CODE_FIELDS = {
     "label",
     "message",
     "prompt",
-    "query"
+    "query",
+    "text"
   ]
 };

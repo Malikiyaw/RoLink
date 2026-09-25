@@ -15,10 +15,28 @@ if not exist "%~dp0studio-plugin\RoLink.lua" (
 
 set "PLUGINDIR=%LOCALAPPDATA%\Roblox\Plugins"
 if not exist "%PLUGINDIR%" mkdir "%PLUGINDIR%" >nul 2>nul
+
+REM Studio locks the plugin file while open: installing now keeps OLD bytes
+REM with no visible error, then Studio reports mystery syntax errors from the
+REM stale copy. Refuse a hot install instead of failing silently.
+tasklist /FI "IMAGENAME eq RobloxStudioBeta.exe" 2>nul | findstr /i "RobloxStudioBeta.exe" >nul
+if not errorlevel 1 (
+    echo.
+    echo   ############################################################
+    echo   ##  QUIT ROBLOX STUDIO FIRST - it is running right now.   ##
+    echo   ##  Installing now would leave the OLD plugin in place.   ##
+    echo   ##  Close EVERY Studio window, then run this file again.  ##
+    echo   ############################################################
+    echo.
+    pause
+    exit /b 2
+)
+
 REM Exactly ONE plugin copy may exist: two copies poll the same queue and
 REM fight over claims (one executes, the other reports confusing duplicates).
-REM Remove known strays from manual installs/renames (never touch other files).
-for %%F in ("%PLUGINDIR%\user_RoLink.lua" "%PLUGINDIR%\RoLink*.lua.bak") do (
+REM Remove known strays from manual installs/renames/duplicate downloads
+REM (never touch other files).
+for %%F in ("%PLUGINDIR%\user_RoLink.lua" "%PLUGINDIR%\RoLink*.lua.bak" "%PLUGINDIR%\RoLink (*).lua" "%PLUGINDIR%\RoLink - Copy.lua") do (
     if exist "%%~F" (
         echo   Removing stray duplicate: %%~nxF
         del "%%~F" >nul 2>nul
@@ -32,17 +50,26 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Studio loads plugins ONCE at startup: installing while it runs changes
-REM NOTHING until it fully quits. Detect that trap and say so loudly.
-tasklist /FI "IMAGENAME eq RobloxStudioBeta.exe" 2>nul | findstr /i "RobloxStudioBeta.exe" >nul
-if not errorlevel 1 (
-    echo.
-    echo   ############################################################
-    echo   ##  ROBLOX STUDIO IS RUNNING RIGHT NOW.                   ##
-    echo   ##  It keeps the OLD plugin in memory until it FULLY      ##
-    echo   ##  QUITS. Close EVERY Studio window now, then reopen.    ##
-    echo   ############################################################
-    echo.
+REM Byte-compare: a locked/shadowed destination can keep old bytes even when
+REM copy reports success. Sizes must match or the install did not take.
+for %%A in ("%~dp0studio-plugin\RoLink.lua") do set "SRCBYTES=%%~zA"
+for %%A in ("%PLUGINDIR%\RoLink.lua") do set "DSTBYTES=%%~zA"
+if not "%SRCBYTES%"=="%DSTBYTES%" (
+    echo   ERROR: installed file is %DSTBYTES% bytes but source is %SRCBYTES% bytes.
+    echo   A stale copy is shadowing the install - delete every *RoLink*.lua
+    echo   in %PLUGINDIR% by hand, then run this again with Studio closed.
+    pause
+    exit /b 3
+)
+echo   INSTALL OK (%DSTBYTES% bytes, matches source).
+
+REM Final single-copy check: Studio loads every match, so more than one is
+REM a broken install even if each file alone is fine.
+set "DUPCOUNT=0"
+for %%F in ("%PLUGINDIR%\*RoLink*.lua") do if exist "%%~F" set /a DUPCOUNT+=1
+if not "%DUPCOUNT%"=="1" (
+    echo   WARNING: %DUPCOUNT% *RoLink*.lua files in %PLUGINDIR% - Studio loads
+    echo   ALL of them and they fight. Keep only RoLink.lua, delete the rest.
 )
 
 echo.
@@ -54,7 +81,10 @@ echo     1. Open your place, press View ^> Command Bar, run:
 echo          game:GetService("HttpService").HttpEnabled = true
 echo        (lets the plugin reach the bridge queue on :3001)
 echo     2. Restart Studio if it was open. A "RoLink" toolbar button
-echo        appears; the bridge prints "plugin polling" when it connects.
+echo        appears, Output shows "RoLink 2.5.0 loaded [repo copy]",
+echo        and the bridge prints "plugin polling" when it connects.
+echo        No banner = the old copy is still installed; redo this
+echo        file with Studio fully closed.
 echo.
 echo   Verify: start.bat shows "Studio queue :3001 up - plugin polling".
 pause

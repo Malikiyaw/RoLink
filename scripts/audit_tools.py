@@ -64,6 +64,9 @@ def main():
         if_mock = any("mock" in ln.lower() for ln in plugin_lines(plugin, name))
         if if_mock:
             partial_notes.append("plugin branch is a mock/stub")
+        if_unsupported = any("unsupported" in ln.lower() for ln in plugin_lines(plugin, name))
+        if if_unsupported:
+            partial_notes.append("plugin branch explicitly unsupported (honest error)")
         p = prompts.get(name)
         if not p:
             problems.append("no prompt")

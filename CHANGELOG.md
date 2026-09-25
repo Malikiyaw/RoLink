@@ -1,5 +1,120 @@
 # Changelog
 
+## [Unreleased]
+
+### Roblox motion + separate Blender MCP
+
+- Added seven real Roblox motion tools: `create_motion_animation`, animation inspect/validate/preview/remove, and effect inspect/remove alongside the upgraded `create_motion_effect`. Motion animation now builds a native Motor6D pose hierarchy and a real Edit/Play controller; effects persist validated configs and execute bounded runtime Scripts. Every result reports verified paths/data and never claims Edit rendered pixels.
+- Added the opt-in `mcp-for-blender` preset and `blender/*` namespace. The bridge preserves exact upstream tool names for dispatch, keeps image results intact, exposes secret-free health metadata, and never lets Blender replace a Roblox-owned command.
+- Added reachable extension settings, preset UI, namespace-aware command validation, and fake-server routing/health/image tests. The shipped config remains Roblox-only; Blender is never added until the user clicks Add.
+
+Tool-truth fixes from live reports (plugin reinstall required — same 2.5.0
+versions, reinstall `studio-plugin/RoLink.lua` with Studio fully quit).
+
+- **`execute_luau` returns values again**: result is now
+  `{executed, returned, hasReturn, output, preview}` with the preview labeled
+  input-only; `print()` is captured into `output`. New `loadstring` → `load`
+  → ModuleScript-harness fallback so a disabled loader no longer silently
+  fails. Extension renders `executed/returned` instead of raw preview JSON.
+- **Exact-first path resolution**: `get_instances` no longer falls back to the
+  whole Workspace on a miss (reports `not_found` + siblings); every resolver
+  matches exact segments first, supports `Name[2]` duplicates, and reports
+  `matchedPath`. New `inspect_keyframe_track` + `get_animation_info{numeric}`
+  dump per-keyframe pose positions (studs) and rotations (degrees).
+- **`search_asset` is live and honest**: the retired catalog endpoint was
+  replaced with Roblox's current public v2 Creator Store search API in the
+  bridge and Node path. It returns real `{id,name,description,creator,assetType,url}`
+  rows, handles an empty result as `{assets: [], note: "no matches"}`, and
+  reports `asset_search_unavailable` on network/API failure without ever
+  fabricating IDs. The Studio branch is only an honest pointer to the bridge.
+- **`playtest_scenario` sees prints**: the observation window captured only
+  errors/warnings, so `expect` on printed lines always failed — it now
+  captures full Output (`lines[]`) and returns a real `playState`.
+- **RAW markers + error hygiene**: the extension parser now attaches
+  `###RAW:<field>###` blocks (and infers a generic `###RAW###` field) to the
+  parsed call, rejects an unterminated block/JSON Luau block, and normalizes
+  case/spacing/dash marker variants through bridge/plugin/sandbox paths;
+  internal `sabuiltin_*` prefixes are scrubbed from user-facing not-found
+  errors.
+- **Crash fixes**: `rlAnimGetLocked` was defined after its callers (nil call on
+  every set-keyframe/set-easing); clip-twin helpers likewise — definitions
+  moved above first use. `validate_model_animation` scoping clarified
+  (model store only; KeyframeSequence tracks use the numeric inspector).
+- **Path walks keep legacy fall-through**: exact-first slash/dot walks with
+  `Name[2]` disambiguation, but a failed walk still falls through to the
+  full-string scan so dotted names (`My.Part`) resolve; prompts, generated
+  mirrors, and the extension copy updated for the new result shapes, RAW
+  rules, numeric inspection, validator scope, and the live search_asset contract.
+- **Dead builders revived**: `execute_luau` reports which loader ran
+  (`loadstring`/`load`/`harness`, unique harness names per call) and fails
+  distinctly when all three are dead; `create_instance` / `set_properties` /
+  `set_ui_property` / model-table / lighting / emitter paths now coerce JSON
+  arrays to `Vector3`/`Color3` (`[11,3,4]`, `[150,95,45]` RGB), `"x,y,z"`
+  strings, and enum names — returning per-key `applied`/`failed` and erroring
+  on total failure instead of fake success. Listings carry `count` and
+  `truncated` flags. **Reinstall the plugin: none of this is live in Studio
+  until `RoLink.lua` is reinstalled with Studio fully quit.**
+- **Honest stubs**: `apply_material` is now real (path/region required, paints
+  up to 200 BaseParts through the same coercion, returns
+  `painted/of/truncated` plus per-part `failed`); `diff_snapshots`,
+  `get_performance_stats`, and `explain_code` fail explicitly as `unsupported`
+  with a working alternative instead of mock success. The audit tracks
+  `unsupported` branches as partial so the quarantine stays truthful, and the
+  extension appends a fix-the-failed-keys nudge whenever a result carries a
+  non-empty `failed` map.
+- **Stale-install defense**: `install-plugin.bat` now refuses while Studio
+  runs, purges duplicate strays, byte-verifies the copy (`INSTALL OK`),
+  and warns on multiple copies; the bridge read-only compares the installed
+  `RoLink.lua` against this folder (missing/duplicate/byte-differing) at
+  boot and inside `plugin_status` (`installed_plugin` + `install_note`),
+  and the plugin banner carries a `[repo copy]` tag. README has a plugin
+  troubleshooting box.
+- **`import_asset` is now a real, verified insert**: the plugin validates the
+  numeric ID, loads the actual Creator Store object, strips executable
+  LuaSourceContainer/PackageLink descendants before parenting, returns the
+  inserted path, and cancels late mutation after a tool timeout. Node waits
+  for a terminal `import_asset` result, propagates `projectId`, rejects stale
+  fake-success results, and can use StudioMCP's native type-aware insert when
+  the queue is unavailable. Search rows now expose script/price metadata.
+- **Node build/runtime repaired**: the TypeScript build now emits a consistent
+  ESM tree for the shared protocol, `npm start` points at the actual compiled
+  entrypoint, generator scripts use repository-root paths, and the HTTP
+  asset-search endpoint was verified end-to-end.
+- **Terrain and DataStore go real**: `generate_terrain` builds a base slab
+  plus seeded hills (`size` 64–2048, new optional `material`); 
+  `set_terrain_region` fills a validated min/max box (capped, `Air` clears);
+  `get_datastore_value` / `set_datastore_value` attempt real reads/writes
+  with `found` flags and fast `datastore_unavailable` errors instead of mock
+  receipts. Quarantine updated (`get_datastore_value` verified).
+- **`place_parts` honors pattern/count**: grid/circle/line layouts with
+  `spacing`, optional `size`/`material` (new schema fields), stray-free
+  partial placement with per-part `failed`, total failure errors.
+- **Hotfix: plugin failed to load** (`Cannot use '...' outside of a vararg
+  function`): the `print()` capture called the original through a nested
+  non-vararg closure referencing `...` — a compile error that killed the
+  whole plugin at load. Capture now packs varargs once (`table.pack`) and
+  unpacks from the upvalue; the file was swept for the same mistake (other
+  `...` uses are directly inside vararg bodies and legal) with a regression
+  pin. **Reinstall again — Studio caches the broken copy until a full
+  restart + reinstall.**
+- **Hotfix: `Expected 'end' (to close 'else' at line 3031), got 'elseif'`**
+  (root cause found via Studio's own logs — the compile error was real, not
+  a stale install): Studio's Luau parser loses block tracking on physical
+  lines past ~1KB. Three dispatcher branches (`generate_terrain`,
+  `set_terrain_region`, `place_parts`, `apply_material`) were single lines
+  of 1,103–1,654 chars; the parser recovered on the NEXT branch and blamed
+  it. All four are now short, multi-line functions (`buildTerrain`,
+  `fillTerrainRegion`, `placePatternParts`, `paintMaterial`) and the longest
+  line in the file is 761 chars. `scripts/check_luau_blocks.py` (grammar
+  aware: skips strings/comments, handles if-expressions, for/while `do`,
+  repeat/until) plus a 900-char line cap now guard the file in CI, and
+  `test_luau_blocks_and_line_cap` runs it on every test pass.
+- **`batch_queue` is deadline-bounded**: sub-calls previously each received
+  the full batch timeout, so a 10-step batch could outrun the extension's
+  listen window while Studio kept executing orphaned "failed" steps. Each
+  step now shares a ≤115s budget; unrun steps stop honestly as timeout, and
+  prompts document the budget plus atomic hash verification.
+
 ## [2.5.0] - 2026-09-24
 
 Model animation + provider honesty. 140 tools.

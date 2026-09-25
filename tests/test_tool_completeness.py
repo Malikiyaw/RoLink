@@ -1,4 +1,4 @@
-# tests/test_tool_completeness.py - all 140 tools exist in every layer.
+# tests/test_tool_completeness.py - all 147 tools exist in every layer.
 #   python3 tests/test_tool_completeness.py
 # For each registry name: (a) zod schema in mcp-server registry.ts,
 # (b) dispatcher branch in studio-plugin/RoLink.lua, (c) prompt entry in
@@ -35,9 +35,9 @@ class CompletenessTest(unittest.TestCase):
                             ROOT, "rolink-extension", "core", "__fixtures__",
                             "tool-calls", "*.txt"))}
 
-    def test_registry_is_124_unique(self):
-        self.assertEqual(len(self.registry), 140)
-        self.assertEqual(len(set(self.registry)), 140)
+    def test_registry_is_147_unique(self):
+        self.assertEqual(len(self.registry), 147)
+        self.assertEqual(len(set(self.registry)), 147)
 
     def test_every_tool_in_registry_ts(self):
         missing = [n for n in self.registry if f'name: "{n}"' not in self.registry_ts]
@@ -119,8 +119,10 @@ class CompletenessTest(unittest.TestCase):
         self.assertNotIn("while r[1] and coroutine.status", self.plugin)
         self.assertNotIn("while results[1] and coroutine.status", self.plugin)
         self.assertIn("runBudgeted", self.plugin)
-        # Main + heal paths both execute via runBudgeted exactly via pcall.
-        self.assertGreaterEqual(self.plugin.count("pcall(runBudgeted"), 2)
+        # Both the main and heal paths execute via runWithDeadline, which is
+        # the only caller of runBudgeted (it owns the instruction budget).
+        self.assertGreaterEqual(self.plugin.count("pcall(runWithDeadline"), 2)
+        self.assertGreaterEqual(self.plugin.count("pcall(runBudgeted"), 1)
 
     def test_findbypath_walk_order(self):
         # Slash-walk, then dot-walk, then legacy exact-name fallbacks. Order
@@ -140,9 +142,9 @@ class CompletenessTest(unittest.TestCase):
         self.assertIn("queue/next?projectId=&pv=", self.plugin)
 
     def test_alias_audit_no_arg_mismatch(self):
-        # Every bridge alias target must exist in the registry, and the three
-        # search natives must exist as plugin branches (not aliases) with
-        # queue routing + advertised descriptions in the bridge.
+        # Every bridge alias target must exist in the registry, and the native
+        # extras must exist as plugin branches (not aliases) with queue
+        # routing + advertised descriptions in the bridge.
         import re
         bridge_src = open(os.path.join(ROOT, "bridge.py"), encoding="utf-8").read()
         m = re.search(r"_TOOL_ALIASES = \{(.*?)\n\}", bridge_src, re.S)
@@ -154,7 +156,8 @@ class CompletenessTest(unittest.TestCase):
             self.assertIn(dst, self.registry + ["script_search"],
                           f"alias {src} -> unknown {dst}")
             self.assertNotIn(src, self.registry, f"alias {src} shadows a registry tool")
-        for native in ("script_search", "script_grep", "search_game_tree"):
+        for native in ("script_search", "script_grep", "search_game_tree",
+                       "inspect_keyframe_track"):
             self.assertNotIn(f'"{native}":', m.group(1), f"{native} must not be an alias")
             self.assertIn(f'tool=="{native}"', self.plugin, f"no plugin branch: {native}")
             self.assertIn(native, bridge_src, f"bridge does not route {native}")

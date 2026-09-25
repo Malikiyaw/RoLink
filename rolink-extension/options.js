@@ -30,8 +30,10 @@ document.getElementById("reset").onclick = () => {
 
 // ── multi-MCP server list (Phase 5a) ────────────────────────────────
 const listEl = document.getElementById("mcpServerList");
+const presetsEl = document.getElementById("mcpPresets");
 const mcpStatusEl = document.getElementById("mcpStatus");
 let mcpServers = [];
+let mcpPresets = [];
 
 function renderMcpList() {
   if (!Array.isArray(mcpServers) || !mcpServers.length) {
@@ -42,18 +44,113 @@ function renderMcpList() {
     const id = escapeHtml(s.id || s.server_id || "?");
     const cmd = escapeHtml(s.command || "");
     const args = escapeHtml((s.args || []).join(" "));
+    // env_values are NEVER sent by the bridge (they can hold API keys) - only
+    // the key names, which is what tells a user "BLENDER_PORT is not set"
+    // without ever putting a secret on screen or into the DOM.
+    const envKeys = Array.isArray(s.env_keys) && s.env_keys.length
+      ? ` <span style="opacity:.75">env: ${escapeHtml(s.env_keys.join(", "))}</span>` : "";
+    // A launch failure (e.g. "uvx not on PATH") is the difference between an
+    // unactionable "offline" and an obvious fix, so it is shown verbatim.
+    const why = s.error
+      ? `<div style="font-size:11px;color:var(--red);margin-top:4px">${escapeHtml(s.error)}</div>` : "";
+    const ns = s.namespace
+      ? ` <span class="status" style="font-weight:400">${escapeHtml(s.namespace)}/*</span>` : "";
     const alive = s.alive === false ? "○ offline" : "● ready";
-    return `
+    const row = `
       <div class="row" style="margin:6px 0;padding:8px;background:#0d1117;border:1px solid var(--border);border-radius:6px">
         <div style="flex:1;min-width:0">
-          <div style="font-weight:600">${id} <span class="status" style="font-weight:400">${alive}</span></div>
-          <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${cmd} ${args}</div>
+          <div style="font-weight:600">${id}${ns} <span class="status" style="font-weight:400">${alive}</span></div>
+          <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${cmd} ${args}${envKeys}</div>
+          ${why}
         </div>
         <button class="danger" data-remove="${id}">Remove</button>
       </div>`;
+    return row;
   }).join("");
   listEl.querySelectorAll("[data-remove]").forEach(btn => {
     btn.onclick = () => removeServer(btn.getAttribute("data-remove"));
+  });
+}
+
+// Preset cards. Rendered from what the bridge reports, never from a copy of the
+// spawn spec baked into the extension: the bridge owns the exact command/env,
+// and a second copy here would be free to drift out of sync with it.
+function renderPresets() {
+  if (!Array.isArray(mcpPresets) || !mcpPresets.length) {
+    presetsEl.innerHTML = '<p class="desc">No ready-made servers available. Start the bridge to load this list.</p>';
+    return;
+  }
+  presetsEl.innerHTML = mcpPresets.map(p => {
+    const id = escapeHtml(p.id);
+    const cmd = escapeHtml([p.command].concat(p.args || []).filter(Boolean).join(" "));
+    const env = p.env && Object.keys(p.env).length
+      ? ` <span style="opacity:.75">env: ${escapeHtml(Object.keys(p.env).join(", "))}</span>` : "";
+    const installed = !!p.installed;
+    // "available" is the bridge's per-machine probe of the launcher (uvx). A
+    // missing launcher is reported BEFORE the click rather than as a silent
+    // server that starts and advertises nothing.
+    const badge = installed
+      ? '<span class="preset-badge on">installed</span>'
+      : p.available
+        ? '<span class="preset-badge">not added</span>'
+        : '<span class="preset-badge off">missing ' + escapeHtml((p.missing || []).join(", ")) + '</span>';
+    const note = installed ? ""
+      : p.hint ? `<p class="preset-note warn">${escapeHtml(p.hint)}</p>`
+      : p.notes ? `<p class="preset-note">${escapeHtml(p.notes)}</p>` : "";
+    const nsNote = p.namespace
+      ? `<p class="preset-note">Commands appear as <code>${escapeHtml(p.namespace)}/*</code> in RoLink.</p>` : "";
+    const btn = installed ? "" :
+      `<button class="primary" data-preset="${id}"${p.available ? "" : " disabled title=\"" + escapeHtml(p.hint || "") + "\""}>Add</button>`;
+    return `
+      <div class="preset${installed ? " installed" : ""}">
+        <div class="preset-top">
+          <span class="preset-name">${escapeHtml(p.label || id)}</span>
+          ${badge}
+        </div>
+        <p class="preset-cmd">${cmd}${env}</p>
+        <p class="preset-note">${escapeHtml(p.summary || "")}</p>
+        ${nsNote}${note}
+        <div class="preset-actions">${btn}<span class="status" data-preset-status="${id}"></span></div>
+      </div>`;
+  }).join("");
+  presetsEl.querySelectorAll("[data-preset]").forEach(btn => {
+    btn.onclick = () => addPreset(btn.getAttribute("data-preset"));
+  });
+}
+
+// One preset status line ("Starting blender…"), independent of the shared
+// banner, so a slow install does not blank out the other server's feedback.
+function presetStatus(id, msg, err) {
+  const el = presetsEl.querySelector(`[data-preset-status="${id}"]`);
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "status " + (err ? "err" : "ok");
+  if (!msg) return;
+  setTimeout(() => { if (el.textContent === msg) { el.textContent = ""; el.className = "status"; } }, 4000);
+}
+
+function addPreset(id) {
+  const p = (mcpPresets || []).find(x => x.id === id);
+  if (!p) { mcpStatus("Unknown server preset: " + id, true); return; }
+  // The preset may create a new child process the next time the bridge calls
+  // into Blender, and the bridge may need to restart itself: say so up front.
+  if (!confirm("Add " + (p.label || id) + "?\n\n"
+    + "This writes one entry to config.json and asks the bridge to load it.\n"
+    + (p.notes ? p.notes + "\n" : "")
+    + "Nothing is installed or launched until you click OK.")) return;
+  presetStatus(id, "Adding…");
+  chrome.runtime.sendMessage({ type: "add_preset", preset: id }, r => {
+    if (r && r.ok) {
+      // restarting:false means the bridge hot-loaded the server, so the tool
+      // list is already updating and no reconnect wait is needed.
+      presetStatus(id, r.restarting ? "Added - bridge restarting…" : "Added");
+      mcpStatus("Added " + (p.label || id));
+      setTimeout(refreshMcpList, r.restarting ? 4000 : 1200);
+    } else {
+      const err = (r && r.error) || "unknown error";
+      presetStatus(id, "Add failed", true);
+      mcpStatus("Add failed: " + err, true);
+    }
   });
 }
 
@@ -64,7 +161,10 @@ function escapeHtml(s) {
 function refreshMcpList() {
   chrome.runtime.sendMessage({ type: "list_mcp_servers" }, r => {
     mcpServers = (r && r.mcp_servers) || [];
+    mcpPresets = (r && r.presets) || [];
     renderMcpList();
+    renderPresets();
+    if (r && r.error && !(r.mcp_servers || []).length) mcpStatus(r.error, true);
   });
 }
 

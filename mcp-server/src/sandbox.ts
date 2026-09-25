@@ -74,7 +74,8 @@ export function validateLuau(code: string): SandboxResult {
     return { ok: false, errors, warnings, sanitized: norm };
   }
   if (norm.length > 50000) errors.push("code too large (max 50k)");
-  if (norm.includes("###LUA") || norm.includes("###END_LUA"))
+  const lowNorm = norm.toLowerCase();
+  if (/###\s*lua/.test(lowNorm) || /###\s*end[_\- ]?lua/.test(lowNorm))
     errors.push("render chrome: Luau transport markers (###LUA###) leaked into code - strip them before sending");
   if (norm.startsWith("```") || /^(?:copy\s+code|copy|json)(?![A-Za-z0-9_(])[\s]/i.test(norm))
     errors.push("render chrome prefix (Copy/fence) — strip before sending to Studio");

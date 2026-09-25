@@ -39,6 +39,13 @@ ok("legacy tool/arguments schema", legacy.length === 1 && legacy[0].tool === "sc
 const mcp = RLParse.parseToolCalls('###MCP_TOOL###\n{"command":"get_studio_state"}\n###END_MCP_TOOL###');
 ok("mcp_tool wrapper", mcp.length === 1 && mcp[0].tool === "get_studio_state");
 
+// RAW blocks sit outside JSON so source can contain quotes/braces/newlines.
+const rawCall = RLParse.parseToolCalls('###MCP_TOOL###\n{"tool":"set_script_content","args":{"path":"Workspace/Script"}}\n###RAW:content###\nlocal p = Instance.new("Part")\np.Name = "Hello"\n###END_RAW###\n###END_MCP_TOOL###');
+ok("raw field is attached", rawCall.length === 1 && rawCall[0].arguments.content.includes('Instance.new("Part")'));
+ok("raw field is mirrored", rawCall[0].rawFields && rawCall[0].rawFields.content.includes('p.Name = "Hello"'));
+const rawGeneric = RLParse.parseToolCalls('###MCP_TOOL###\n{"tool":"create_module","args":{"path":"ReplicatedStorage/M"}}\n###RAW###\nreturn {}\n###END_RAW###\n###END_MCP_TOOL###');
+ok("generic raw field inferred", rawGeneric.length === 1 && rawGeneric[0].arguments.exports === "return {}");
+
 ok("open lua block detected", RLParse.hasOpenToolBlock("###LUA###\nlocal x=1") === true);
 ok("closed lua block not open", RLParse.hasOpenToolBlock("###LUA###\nreturn 1\n###END_LUA###") === false);
 ok("open json command detected", RLParse.hasOpenToolBlock('{"command":"multi_edit","params":{"a":1') === true);

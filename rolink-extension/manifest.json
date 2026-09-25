@@ -29,6 +29,10 @@
   "background": {
     "service_worker": "background.js"
   },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "icons": {
     "16": "icon.png",
     "48": "icon.png",
@@ -52,6 +56,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/deepseek.js",
         "ui/build-panel.js",
@@ -81,6 +86,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/chatgpt.js",
         "ui/build-panel.js",
@@ -98,6 +104,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/gemini.js",
         "ui/build-panel.js",
@@ -116,6 +123,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/kimi.js",
         "ui/build-panel.js",
@@ -133,6 +141,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/glm.js",
         "ui/build-panel.js",
@@ -153,6 +162,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/arena.js",
         "ui/build-panel.js",
@@ -170,6 +180,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/generic.js",
         "providers/agent.js",
@@ -189,6 +200,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/meta.js",
         "ui/build-panel.js",
@@ -206,6 +218,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/generic.js",
         "providers/claude.js",
@@ -234,6 +247,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/generic.js",
         "providers/hfchat.js",
@@ -253,6 +267,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/generic.js",
         "providers/dola.js",
@@ -271,6 +286,7 @@
       "js": [
         "core/config.js",
         "core/tool-events.js",
+        "core/code-fields.js",
         "core/parser.js",
         "providers/qwen.js",
         "ui/build-panel.js",

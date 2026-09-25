@@ -19,7 +19,7 @@ const RLParse = (() => {
   // ###LUA### defaults to "Edit" so the model never has to think about it
   // outside play-testing).
   const LUA_START_RE = /###\s*lua(?:\s*[:\-_ ]\s*(edit|client|server))?\s*(?:###|---)/i;
-  const LUA_END_RE = /###\s*end[_\- ]?lua\s*###/i;
+  const LUA_END_RE = /###\s*end[_\- ]?lua\s*(?:###|---)/i;
   const LUA_DEFAULT_DM = "Edit";
   const dmName = (m) => (m ? m[0].toUpperCase() + m.slice(1).toLowerCase() : LUA_DEFAULT_DM);
 
@@ -208,6 +208,76 @@ const RLParse = (() => {
     return null;
   }
 
+  // RAW argument blocks are deliberately outside the JSON object so Luau
+  // source can contain quotes, braces, and newlines without model-specific
+  // escaping.  Attach them after JSON normalization; otherwise the JSON parser
+  // sees a valid prefix and silently drops the actual code payload.
+  function rawDefaultField(tool) {
+    const preferred = {
+      set_script_content: "content",
+      create_module: "exports",
+      add_event_handler: "handlerCode",
+      bind_ui_click: "handlerCode",
+      execute_luau: "code",
+      run_in_sandbox: "code",
+    };
+    if (preferred[tool]) return preferred[tool];
+    try {
+      const catalog = window.ROLINK_CODE_FIELDS;
+      const fields = catalog && catalog.toolFields && catalog.toolFields[tool];
+      if (Array.isArray(fields)) {
+        for (const name of ["code", "content", "exports", "handlerCode"]) {
+          if (fields.includes(name)) return name;
+        }
+      }
+    } catch (_) {}
+    return "code";
+  }
+
+  function trimRawEdges(value) {
+    return value.replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+  }
+
+  function attachRawFields(call, text) {
+    if (!call || typeof text !== "string") return call;
+    let pos = 0;
+    while (pos < text.length) {
+      let start = -1;
+      let end = -1;
+      let field = null;
+      const tagged = /###\s*RAW\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*###/gi;
+      tagged.lastIndex = pos;
+      const tm = tagged.exec(text);
+      if (tm) {
+        start = tm.index;
+        end = start + tm[0].length;
+        field = tm[1];
+      } else {
+        const plain = /###\s*RAW\s*###/gi;
+        plain.lastIndex = pos;
+        const pm = plain.exec(text);
+        if (!pm) break;
+        start = pm.index;
+        end = start + pm[0].length;
+        field = rawDefaultField(call.tool);
+      }
+      const close = /###\s*END[_\- ]?RAW\s*###/gi;
+      close.lastIndex = end;
+      const cm = close.exec(text);
+      if (!cm) {
+        call.rawError = "RAW block is missing ###END_RAW###";
+        return call;
+      }
+      const value = trimRawEdges(text.slice(end, cm.index));
+      call.arguments = call.arguments || {};
+      call.arguments[field] = value;
+      call.rawFields = call.rawFields || {};
+      call.rawFields[field] = value;
+      pos = cm.index + cm[0].length;
+    }
+    return call;
+  }
+
   function parseToolCalls(r) {
     // Lowercase for case-insensitive end-marker search. Models write
     // ###end_mcp_tool### (underscore) or ###end-mcp_tool### (dash).
@@ -231,7 +301,8 @@ const RLParse = (() => {
       const { pos: ls, len: luaLen, dm } = findLuaStart(body);
       const le = findLuaEnd(body, ls === -1 ? 0 : ls + luaLen);
       if (ls !== -1 && le !== -1 && le > ls) {
-        out.push({ tool: "execute_luau", arguments: { code: stripCodeChrome(body.slice(ls + luaLen, le).trim()), datamodel_type: dm } });
+        const call = { tool: "execute_luau", arguments: { code: stripCodeChrome(body.slice(ls + luaLen, le).trim()), datamodel_type: dm } };
+        out.push(attachRawFields(call, body));
         from = em + END_M.length;
         continue;
       }
@@ -239,7 +310,7 @@ const RLParse = (() => {
         const cleaned = sub.trim().replace(/^(?:json|JSON|Copy|copy)\s*/i, "").trim();
         if (!cleaned) continue;
         const p = normalizeCall(extractJson(cleaned));
-        if (p) out.push(p);
+        if (p) out.push(attachRawFields(p, body));
       }
       from = em + END_M.length;
     }
@@ -250,7 +321,7 @@ const RLParse = (() => {
     // JSON-decodes it; cleanLuaCall (applied at the end) then strips the markers.
     if (out.length === 0) {
       const f = extractToolAnywhere(r);
-      if (f) out.push(f);
+      if (f) out.push(attachRawFields(f, r));
     }
     // Bare ###LUA### … ###END_LUA### block with no JSON envelope at all.
     if (out.length === 0) {
@@ -277,7 +348,11 @@ const RLParse = (() => {
     const s = findLuaStart(code);
     if (s.pos === -1) return call;
     const e = findLuaEnd(code, s.pos + s.len);
-    call.arguments.code = code.slice(s.pos + s.len, e === -1 ? code.length : e).trim();
+    if (e === -1) {
+      call.parseError = "execute_luau is missing ###END_LUA###";
+      return call;
+    }
+    call.arguments.code = code.slice(s.pos + s.len, e).trim();
     if (!call.arguments.datamodel_type) call.arguments.datamodel_type = s.dm;
     return call;
   }

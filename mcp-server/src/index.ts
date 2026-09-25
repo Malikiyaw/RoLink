@@ -16,7 +16,7 @@ import { templateStore } from "./templates.js";
 import { buildContext } from "./contextInjection.js";
 import { aiTraining } from "./aiTraining.js";
 import { collabManager } from "./collab.js";
-import { searchAssets, importInstruction } from "./assetStore.js";
+import { searchAssets, importInstruction, assetCategory, isValidAssetImportResult } from "./assetStore.js";
 import { gameplayFeedback } from "./gameplayFeedback.js";
 import { generateGDD } from "./gdd.js";
 import { generateAsset, generateVariants } from "./assetGen.js";
@@ -140,8 +140,38 @@ app.get("/collab/list", (req,res)=> res.json({ ok:true, clients: collabManager.l
 app.post("/collab/join", (req,res)=>{ const c=collabManager.join(req.body?.projectId||"default", req.body?.clientId, req.body?.role||"ai"); res.json({ ok:true, client:c }); });
 app.post("/collab/broadcast", (req,res)=>{ const b=collabManager.broadcast(req.body?.projectId||"default", req.body?.event||"msg", req.body?.data, req.body?.from||"ai"); res.json({ ok:true, broadcast:b }); });
 app.get("/collab/history", (req,res)=> res.json({ ok:true, history: collabManager.recent(req.query.projectId as string||"default", Number(req.query.limit||20)) }));
-app.get("/assets/search", async (req,res)=>{ const kw=String(req.query.keyword||"crate"); const lim=Number(req.query.limit||8); const cat=req.query.category as string|undefined; const r=await searchAssets(kw, lim, cat); res.json({ ok:true, assets:r }); });
-app.post("/assets/import", (req,res)=>{ const code=importInstruction(Number(req.body?.assetId), req.body?.parent||"workspace"); const cmd=cq.enqueue({ tool:"run_code", command:code, args:{ assetId: req.body?.assetId, projectId: req.body?.projectId||"default" }}); res.json({ ok:true, id:cmd.id, codePreview: code.slice(0,400) }); });
+app.get("/assets/search", async (req,res)=>{
+  const kw=String(req.query.keyword ?? req.query.q ?? "").trim();
+  if(!kw || kw.length > 64) return res.status(400).json({ ok:false, error:"asset_search_invalid: keyword must be 1-64 characters (e.g. ?keyword=medieval+sword)" });
+  const lim=Number(req.query.limit ?? 8);
+  const cat=req.query.category as string|undefined;
+  try{ const r=await searchAssets(kw, lim, cat); res.json({ ok:true, keyword:kw, category:assetCategory(cat), count:r.length, assets:r, source:"roblox-catalog", ...(r.length ? {} : { note:"no matches" }) }); }
+  catch(e:any){ const msg=String(e?.message||e); const invalid=msg.startsWith("asset_search_invalid"); res.status(invalid ? 400 : 503).json({ ok:false, error:msg, errorCode:invalid ? "ASSET_SEARCH_INVALID" : "ASSET_SEARCH_UNAVAILABLE", assets:[] }); }
+});
+app.post("/assets/import", async (req,res)=>{
+  try {
+    const assetId = Number(req.body?.assetId);
+    const parent = req.body?.parent || "workspace";
+    // Keep validation in one place; execution still goes through the real
+    // plugin import_asset branch, not a fire-and-forget run_code queue item.
+    importInstruction(assetId, parent);
+    const projectId = req.body?.projectId || "default";
+    const timeoutMs = 45000;
+    const cmd = commandQueue.enqueue({
+      tool: "import_asset", command: "--import", timeoutMs, projectId,
+      args: { assetId, assetName:req.body?.assetName, assetType:req.body?.assetType, parent, projectId },
+    });
+    const result = await commandQueue.waitForResult(cmd.id, timeoutMs);
+    if (!isValidAssetImportResult(result)) {
+      return res.status(502).json({ ok:false, tool:"import_asset", error:"Studio did not return a verified inserted path", result });
+    }
+    res.json({ ok:true, tool:"import_asset", executionId:cmd.id, status:"success", result, verification:{checked:true} });
+  } catch(e:any) {
+    const msg = String(e?.message || e);
+    const timeout = /timeout/i.test(msg);
+    res.status(timeout ? 504 : 400).json({ ok:false, tool:"import_asset", error:msg, errorCode:timeout ? "TIMEOUT" : "ASSET_IMPORT_INVALID" });
+  }
+});
 app.post("/metrics", (req,res)=>{ const m=gameplayFeedback.ingest({ projectId: req.body?.projectId||"default", timestamp: Date.now(), deathsPerMinute: req.body?.deathsPerMinute, avgFPS: req.body?.avgFPS, killDeathRatio: req.body?.killDeathRatio, completionTimeSec: req.body?.completionTimeSec, coinsPerMin: req.body?.coinsPerMin, activePlayers: req.body?.activePlayers }); res.json({ ok:true, ...m }); });
 app.get("/metrics", (req,res)=> res.json({ ok:true, recent: gameplayFeedback.recent(req.query.projectId as string||"default", Number(req.query.limit||20)) }));
 app.post("/gdd", (req,res)=>{ const g=generateGDD(req.body?.prompt||""); teamLog.append("info", req.body?.projectId||"default","ai","gdd",{ title:g.title, genre:g.genre }); res.json({ ok:true, gdd:g }); });

@@ -1,5 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tools } from "../mcp-server/src/tools/registry.js";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function unwrap(schema: any): any {
   let s = schema;
@@ -39,7 +43,7 @@ ${rows}
 Tier 1 and Tier 2 tools must be run against a live Roblox Studio place before the final status is changed to Y. A result must be recorded, not inferred from a successful enqueue.
 `;
 
-  await mkdir("docs", { recursive: true });
-  await writeFile("docs/tool-audit.md", doc, "utf8");
+  await mkdir(join(ROOT, "docs"), { recursive: true });
+  await writeFile(join(ROOT, "docs", "tool-audit.md"), doc, "utf8");
   console.log(`generated docs/tool-audit.md with ${tools.length} tools`);
 }

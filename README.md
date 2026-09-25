@@ -8,7 +8,7 @@ Twelve providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** 
 
 ## New in 2.5.0
 
-See [CHANGELOG.md](CHANGELOG.md): model-animation tools 125–140 (analyze, keyframes, markers, preview, validate, composites, generators) plus the in-Studio timeline editor (beta), 140-tool catalog, and hardened provider startup.
+See [CHANGELOG.md](CHANGELOG.md): real Roblox motion-animation/effect controllers, model-animation tools 125–140, an opt-in Blender MCP integration under `blender/*`, the in-Studio timeline editor, and hardened provider startup.
 
 ## New in 2.4.0
 
@@ -46,7 +46,7 @@ Open Studio and load a Place, then enable MCP (first time only):
 - Click **Manage MCP Servers**
 - Click **Enable Studio as MCP Server**
 
-### 2b. Install the RoLink Studio plugin (unlocks all 140 tools)
+### 2b. Install the RoLink Studio plugin (unlocks all 147 tools)
 
 Roblox's built-in MCP only speaks ~27 commands. The rest of the catalog runs
 through our own plugin:
@@ -57,6 +57,7 @@ through our own plugin:
   `game:GetService("HttpService").HttpEnabled = true` (once per place — lets the plugin reach the bridge).
 - **Quit Studio completely first** — it caches plugins at startup, so installing while open changes nothing until a full restart. A **RoLink** toolbar button appears; the bridge prints `plugin polling` when it connects. Without this step, registry tools report a clear `plugin_offline` error instead of running.
 - After every RoLink update, reinstall the plugin the same way (quit Studio → run installer → reopen).
+- **Plugin not showing up, or red `user_RoLink.lua` errors in Output?** Two causes: (1) a stale copy — quit Studio fully (check Task Manager for `RobloxStudioBeta.exe`), delete every `*RoLink*.lua` in `%LOCALAPPDATA%\Roblox\Plugins`, run `install-plugin.bat` again (it refuses while Studio runs, purges duplicates, and byte-verifies with `INSTALL OK`); (2) a compile error in the file itself — the plugin source is checked by `scripts/check_luau_blocks.py` (grammar-aware block balance + a 900-char line cap, because Studio's parser loses block tracking past ~1KB and misreports the error on a later branch). Proof it worked: Output shows `RoLink 2.5.0 loaded [repo copy]` — no tag, no toolbar means the old file is still installed. Each Team Create collaborator installs locally; plugin errors are per-machine.
 
 ### 3. Run the Bridge
 
@@ -85,12 +86,13 @@ If any one differs, that component came from a different install — reinstall i
 - Read and edit scripts, run Luau directly in Studio
 - Inspect the game tree, create/move/clone instances, apply materials
 - Build terrain, UI, particles, lighting, animations (keyframe tracks — easing names need their suffix: `quadIn`, not bare `quad`; max 1024 poses per track)
-- Generate assets, levels, quests, sounds; browse the Creator Store
+- Generate assets, levels, quests, sounds; browse the Creator Store. `search_asset` uses Roblox's live v2 Creator Store API in the bridge (no Studio call required), exposes script/price metadata, and `import_asset` inserts the real returned ID after stripping executable sources.
 - Control play-testing, debug with breakpoints and watches
 - Scan Output errors, inspect UI rects, map the viewport schematically
 - Verify gameplay with scenario playtests, migrate systems atomically
 - **Remember your project across sessions** (structured project memory: architecture, services, bugs, decisions)
 - **Animate any model (beta)**: model-animation tools (analyze, keyframes, markers, preview, validate, retime/blend/fix, attack/idle/walk scaffolds) plus the in-Studio timeline editor (RoLink toolbar → Anim, beta)
+- **Create and manage Roblox motion**: `create_motion_animation` builds a native Motor6D pose hierarchy and Play-time controller; `create_motion_effect` creates real tween/shake/FOV/pulse controllers with inspect/remove lifecycle tools. Studio plugins cannot prove rendered pixels, so results report verified paths/data and use Play for the visual check.
 
 ## Panel status
 
@@ -110,7 +112,17 @@ If any one differs, that component came from a different install — reinstall i
 
 ## Multi-MCP servers
 
-`config.json` declares every MCP server (default: `roblox`). Add more (Blender, etc.) from the extension popup or by editing the file — the Bridge restarts itself to reload. The `roblox` entry is the primary server and can't be removed.
+`config.json` declares every MCP server (default: `roblox`). Add more from the extension's **Settings → MCP servers** page; the Bridge restarts itself to reload custom entries. The `roblox` entry is the primary server and can't be removed.
+
+### Blender (optional, separate namespace)
+
+RoLink includes an opt-in **Blender (MCP for Blender)** preset. It adds only the reviewed stdio server configuration; it does not install Blender, modify a `.blend`, or start the addon automatically. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first, then:
+
+1. Open the extension **Settings** page and click **Add** on the Blender preset.
+2. In Blender, install the MCP for Blender addon using its documented command, enable it, and start its MCP server. The preset uses `localhost:9876` with `BLENDER_MCP_SAFE_MODE=1` and telemetry disabled. The addon socket has no authentication: keep it loopback-only and save your work before allowing arbitrary Blender code.
+3. Ask RoLink to `list_mcp_servers`, then use `list_commands` with `server: "blender"`.
+
+Blender tools are always advertised as `blender/<upstream-tool>` (for example `blender/get_scene_info` and `blender/get_viewport_screenshot`) and route only to the Blender MCP client. Roblox remains independent; a Blender failure never changes the Roblox session.
 
 ## License
 

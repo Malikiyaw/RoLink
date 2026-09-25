@@ -8,7 +8,24 @@
 // even when the bridge is offline. The agentic loop must never hang waiting.
 
 const PORT = 17613;
-const URL = `ws://127.0.0.1:${PORT}`;
+const DEFAULT_BRIDGE_URL = `ws://127.0.0.1:${PORT}`;
+// The options page persists the endpoint. Resolve it asynchronously at worker
+// startup, but keep the loopback-only default so a malformed saved value can
+// never turn this local bridge into a remote WebSocket client.
+let BRIDGE_URL = DEFAULT_BRIDGE_URL;
+function isLoopbackBridgeUrl(value) {
+  try {
+    const u = new URL(String(value || ""));
+    return (u.protocol === "ws:" || u.protocol === "wss:") &&
+      (u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "::1");
+  } catch (_) { return false; }
+}
+try {
+  chrome.storage.local.get(["bridgeUrl"], (v) => {
+    if (isLoopbackBridgeUrl(v && v.bridgeUrl)) BRIDGE_URL = v.bridgeUrl;
+    connect();
+  });
+} catch (_) { connect(); }
 
 // Chat sites where a RoLink provider content script runs. Status pushes go
 // to every tab matching these. Add the new provider's URL pattern here (and in
@@ -35,6 +52,12 @@ const pending = new Map(); // id -> {resolve, timer}
 let toolsCache = [];
 let mcpAlive = false;
 let serversCache = [];
+// Preset catalogue from the bridge (mcp-for-blender & co) plus the configured
+// server list, so the settings page can render a "Blender" button without
+// hard-coding a spawn spec in the extension. Cached on first fetch and
+// refreshed whenever the bridge reconnects or a server is added/removed.
+let presetsCache = [];
+let mcpServersCache = [];
 // true/false = a PLACE is loaded and usable in Roblox Studio; null = unknown.
 // The MCP process stays alive when Studio is closed or its MCP option is off,
 // so this is probed separately (bridge "studio_status").
@@ -70,7 +93,7 @@ function connect() {
   }
   clearTimeout(reconnectTimer);
   try {
-    ws = new WebSocket(URL);
+    ws = new WebSocket(BRIDGE_URL);
   } catch (e) {
     log("WebSocket ctor failed", e);
     scheduleReconnect();
@@ -104,6 +127,12 @@ function connect() {
     studioApp = null;
     studioProc = null;
     serversCache = [];
+    // NOTE: presetsCache / mcpServersCache are deliberately NOT cleared here.
+    // They describe config.json + the machine's PATH, not the socket: a dropped
+    // socket does not un-install Blender, and blanking them would make the
+    // settings page's "Add Blender" button disappear exactly when the user most
+    // needs it (the bridge is down / mid-restart). They are re-fetched on the
+    // next successful list_mcp_servers.
     catalogTotal = 0;
     catalogLoaded = false;
     pluginState = null;
@@ -256,8 +285,8 @@ function handleBridgeMessage(msg) {
   }
   if (msg.type === "tool_result") {
     resolvePending(msg.id, msg.ok
-      ? { ok: true, text: msg.text, images: msg.images || [] }
-      : { ok: false, kind: msg.kind, error: msg.error });
+      ? { ok: true, text: msg.text, images: msg.images || [], tool: msg.tool, server: msg.server }
+      : { ok: false, kind: msg.kind, error: msg.error, tool: msg.tool, server: msg.server });
     return;
   }
   if (msg.type === "mcp_status") {
@@ -268,11 +297,36 @@ function handleBridgeMessage(msg) {
     broadcastStatus();
     return;
   }
+  if (msg.type === "mcp_servers") {
+    // Settings-page view of config.json + the preset catalogue. Not an error
+    // channel: ok:false here still carries whatever the bridge could read.
+    if (Array.isArray(msg.servers)) mcpServersCache = msg.servers;
+    if (Array.isArray(msg.presets)) presetsCache = msg.presets;
+    resolvePending(msg.id, {
+      ok: !!msg.ok, error: msg.error,
+      mcp_servers: mcpServersCache, presets: presetsCache,
+    });
+    return;
+  }
   if (msg.type === "server_changed") {
-    // The bridge acks, then restarts itself to reload config.json. The socket
-    // will drop right after this - the content script shows a spinner until the
-    // reconnect lands and a fresh status arrives.
-    resolvePending(msg.id, { ok: !!msg.ok, error: msg.error, restarting: !!msg.restarting });
+    // Either path ends in a config.json change: `restarting` is true only when
+    // the bridge had to restart itself (add_server / remove_server / a preset
+    // it could not hot-load), false when it loaded the new server in place.
+    // The content script shows a spinner only for the restart case.
+    if (Array.isArray(msg.servers)) serversCache = msg.servers;
+    if (msg.ok) {
+      // A write landed: the cached config view is now stale, so re-read it
+      // instead of letting the next page load replay pre-write state. The
+      // re-read REPLACES the cache through the mcp_servers branch above, and
+      // the settings page updates even if its caller does not re-render.
+      send({ type: "list_mcp_servers" }, 20000).catch(() => {});
+      broadcastStatus();
+    }
+    resolvePending(msg.id, {
+      ok: !!msg.ok, error: msg.error, restarting: !!msg.restarting,
+      server_id: msg.server_id, preset: msg.preset,
+      available: msg.available, hint: msg.hint,
+    });
     return;
   }
   if (msg.type === "error") {
@@ -300,7 +354,7 @@ function failAllPending(reason) {
 // ── status push to any open DeepSeek tab + popup ─────────────────────────
 function statusObj() {
   const catalogWarn = connected && catalogTotal > 0 && toolsCache.length < catalogTotal;
-  return { type: "rl-status", connected, mcpAlive, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache, catalogTotal, catalogLoaded, catalogWarn, plugin: pluginState };
+  return { type: "rl-status", connected, mcpAlive, studio: studioConnected, studioApp, studioProc, tools: toolsCache.length, servers: serversCache, catalogTotal, catalogLoaded, catalogWarn, plugin: pluginState, presets: presetsCache };
 }
 
 function broadcastStatus() {
@@ -343,6 +397,36 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse(r);
         break;
       }
+      case "list_mcp_servers": {
+        // Serves the settings page: the configured servers (command + env KEY
+        // names only, never values) and the preset catalogue with per-machine
+        // availability. Falls back to the last good answer when the bridge is
+        // offline, so the page still renders instead of going blank.
+        const r = await send({ type: "list_mcp_servers" }, 20000);
+        if (r && r.mcp_servers) {
+          sendResponse(r);
+        } else {
+          sendResponse({
+            ok: mcpServersCache.length > 0 || presetsCache.length > 0,
+            mcp_servers: mcpServersCache, presets: presetsCache,
+            error: (r && r.error) || "bridge offline - showing the last known server list",
+          });
+        }
+        break;
+      }
+      case "add_preset": {
+        // Opt-in: writes the reviewed spawn spec into config.json and has the
+        // bridge load that one server in place (restarting only if it cannot).
+        // 60s, not 15s: the write itself is instant but the bridge may fall
+        // back to a self-restart, and the extension must not report a timeout
+        // for an install that actually succeeded.
+        const r = await send({
+          type: "add_preset", preset: msg.preset,
+          server_id: msg.server_id, env: msg.env,
+        }, 60000);
+        sendResponse(r);
+        break;
+      }
       case "add_server": {
         const r = await send({
           type: "add_server", server_id: msg.server_id,
@@ -356,6 +440,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse(r);
         break;
       }
+      case "version":
+        // The options page shows the installed build here; before this existed
+        // the badge stayed on its hardcoded fallback forever.
+        sendResponse({ ok: true, version: chrome.runtime.getManifest().version });
+        break;
+      case "open_options":
+        // A content script runs on the AI site's origin and cannot open a
+        // chrome-extension:// page itself (blocked by the page's own CSP), so
+        // the in-page "Extension settings" row routes the request here.
+        try { chrome.runtime.openOptionsPage(); sendResponse({ ok: true }); }
+        catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
+        break;
       case "reconnect":
         reconnectDelay = RECONNECT_MIN;
         connect();
@@ -369,7 +465,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 // Wake/keepalive hooks.
-chrome.runtime.onStartup.addListener(connect);
-chrome.runtime.onInstalled.addListener(connect);
-
-connect();
+chrome.runtime.onStartup.addListener(() => {
+  try {
+    chrome.storage.local.get(["bridgeUrl"], (v) => {
+      if (isLoopbackBridgeUrl(v && v.bridgeUrl)) BRIDGE_URL = v.bridgeUrl;
+      connect();
+    });
+  } catch (_) { connect(); }
+});
+chrome.runtime.onInstalled.addListener(() => {
+  try {
+    chrome.storage.local.get(["bridgeUrl"], (v) => {
+      if (isLoopbackBridgeUrl(v && v.bridgeUrl)) BRIDGE_URL = v.bridgeUrl;
+      connect();
+    });
+  } catch (_) { connect(); }
+});

@@ -202,6 +202,10 @@
     parked: false,
     // Timestamp of the last successful tool-catalogue refresh (see ensureTools).
     toolsAt: 0,
+    // Ready-made MCP server presets (mcp-for-blender & co) as reported by the
+    // bridge, which owns the exact command/env. [] means "not fetched yet";
+    // an empty array is never cached, so a first open always asks.
+    presets: [],
   };
 
   // Bounded wait with hidden-time excluded: a user who tabs to Studio (or any
@@ -730,7 +734,13 @@
       }
       if (RLParse.hasToolSignature(r)) {
         const calls = RLParse.parseToolCalls(r);
-        if (calls.length) { finalizeDiag("tool"); return { kind: "tool", calls, item: d.item }; }
+        if (calls.length) {
+          const rawBad = calls.find((c) => c && c.rawError);
+          if (rawBad) return { kind: "parse_error", reason: "raw", raw: r, item: d.item };
+          const parseBad = calls.find((c) => c && c.parseError);
+          if (parseBad) return { kind: "parse_error", reason: "lua", raw: r, item: d.item };
+          finalizeDiag("tool"); return { kind: "tool", calls, item: d.item };
+        }
         // A half-written command + the site's "Continue" button means the command
         // was truncated mid-stream → resume it rather than reporting bad JSON.
         if (P.findContinueBtn()) return { kind: "truncated", text: r, item: d.item };
@@ -920,6 +930,22 @@
   const ALWAYS_BLOCKED_TOOLS = new Set(["subagent"]);
   const VISION_TOOLS = new Set(["screen_capture"]);
   const bareToolName = (name) => (name && name.includes("/") ? name.split("/").pop() : name) || "";
+  // Keep the extension's preflight in sync with the bridge/MCP alias map. The
+  // catalog normally advertises canonical names, so a model using a documented
+  // alias must be canonicalized before the exact-name check below.
+  const RL_TOOL_ALIASES = Object.freeze({
+    run_code: "execute_luau", get_snapshot: "take_snapshot", set_property: "set_properties",
+    get_logs: "export_session_log", perf_stats: "get_performance_stats",
+    translate_code: "validate_command", validate_code: "validate_command",
+    run_sandbox_tests: "run_in_sandbox", plan: "plan_game", get_context: "get_context_summary",
+    list_templates: "list_templates", use_template: "apply_template", style_profile: "train_model",
+    personalize_code: "train_model", generate_tests: "generate_test", search_assets: "search_asset",
+    generate_gdd: "plan_game", compile_visual: "compile_visual_graph", analytics_report: "report_analytics",
+    analytics_suggestions: "suggest_design", collab_join: "session_users", collab_list: "session_users",
+    collab_broadcast: "session_users", get_instance_tree: "get_instances",
+    search_scripts: "script_search", inspect_instance: "get_instances", heal_code: "refactor_code", rollback_list: "rollback",
+  });
+  const canonicalToolName = (name) => RL_TOOL_ALIASES[bareToolName(name)] || name;
   // Is `name` a tool we actually have? The bridge ADVERTISES names that may carry
   // a per-server prefix when two MCP servers expose the same tool (see
   // list_tools in bridge.py), while the model always writes the bare name - so a
@@ -928,11 +954,54 @@
   const bareKey = (n) => String(n || "").split("/").pop().split(".").pop();
   function knownTool(name) {
     if (!name || !A.toolNames.size) return false;
-    if (A.toolNames.has(name) || A.toolNames.has(bareToolName(name))) return true;
-    const b = bareKey(name);
-    for (const t of A.toolNames) if (bareKey(t) === b) return true;
+    const canonical = canonicalToolName(name);
+    if (A.toolNames.has(canonical) || A.toolNames.has(bareToolName(canonical))) return true;
+    const b = bareKey(canonical);
+    for (const t of A.toolNames) if (bareKey(canonicalToolName(t)) === b) return true;
     return false;
   }
+  // ── Namespaced addon tools (e.g. "blender/get_scene_info") ───────────────
+  // A server pinned to a namespace is ALWAYS advertised prefixed by the bridge
+  // (see MCP_SERVER_PRESETS / rebuild_index in bridge.py), because its upstream
+  // tool names are generic enough to collide with Roblox's. Two consequences
+  // the naive path above gets wrong:
+  //   1. A model copying a name out of the project's own docs writes the BARE
+  //      "get_scene_info". It validates fine, but the bridge only accepts the
+  //      advertised key, so the call has to be rewritten to "blender/..." first
+  //      - otherwise the user gets "unknown tool" for a name we ourselves
+  //      printed in list_commands.
+  //   2. The exact upstream name has to survive into the result. A
+  //      namespaced image result (blender/get_blender_screenshot) is labelled
+  //      and remembered by the tool that REALLY ran, so the learned
+  //      "returns images" memory keys off a spelling that matches next time.
+  const isNamespaced = (name) => String(name || "").indexOf("/") > 0;
+  // Catalogue name for a possibly-bare addon call. Exact advertised names win;
+  // a bare name resolves only when exactly ONE advertised name carries it
+  // (an ambiguous one belongs to two servers, and guessing would silently run
+  // the wrong app's tool - the bridge reports that case as a validation error).
+  function advertisedKey(name) {
+    if (!name || !A.toolNames.size) return name;
+    if (A.toolNames.has(name)) return name;
+    if (isNamespaced(name)) return name; // already exact; don't second-guess a prefix
+    const b = bareKey(canonicalToolName(name));
+    if (!b) return name;
+    const hits = [];
+    for (const t of A.toolNames) if (bareKey(canonicalToolName(t)) === b) hits.push(t);
+    if (hits.length === 1) return hits[0];
+    // A bare Roblox/local name is far more likely what the model meant when
+    // several namespaced servers happen to export the same upstream name, so
+    // only redirect when NO bare advertised name exists for it.
+    if (hits.length > 1 && A.toolNames.has(b)) return b;
+    return name;
+  }
+  // The tool name that actually ran upstream, for labels/memory. Prefers the
+  // name the bridge reports back in the result envelope (it is authoritative
+  // and knows the exact upstream spelling) and falls back to the advertised
+  // key with its namespace stripped.
+  const upstreamName = (advertised, reported) => {
+    if (reported) return String(reported);
+    return String(advertised || "").split("/").pop() || String(advertised || "");
+  };
   const isBlockedTool = (name) => {
     const bare = bareToolName(name);
     if (ALWAYS_BLOCKED_TOOLS.has(bare)) return true;
@@ -962,8 +1031,8 @@
       if (r && Array.isArray(r.rlImageTools)) {
         for (const n of r.rlImageTools) A.imageTools.add(n);
       } else {
-        // legacy: one-time copy from the legacy key, then it ages out.
         try {
+          // legacy: one-time copy from the legacy key, then it ages out.
           chrome.storage.local.get("zsImageTools", (r2) => {
             if (r2 && Array.isArray(r2.zsImageTools)) {
               for (const n of r2.zsImageTools) A.imageTools.add(n);
@@ -1008,6 +1077,7 @@
   }
 
   async function runTool(call) {
+    call.tool = canonicalToolName(call.tool);
     const name = call.tool;
     const args = call.arguments || {};
     if (!name) return RL.FEEDBACK.parseError("malformed");
@@ -1044,7 +1114,18 @@
       const lines = servers.length
         ? servers.map((sv) => {
             const label = sv.id === "roblox" ? "Roblox Studio (primary)" : `${sv.id} (addon)`;
-            return `- ${sv.id}: ${label} - ${sv.alive ? `${sv.tools || 0} commands available` : "offline (no tools)"}`;
+            // A namespaced addon says so here, and a namespaced name is what the
+            // model must actually CALL. Without this the model only ever sees
+            // bare upstream names (from a project's docs) and would call names
+            // the bridge does not accept.
+            const ns = (sv.meta && sv.meta.namespace) || sv.namespace;
+            const nsHint = ns ? `; call its commands as "${ns}/<command>"` : "";
+            const health = sv.alive ? `${sv.tools || 0} commands available` : "offline (no tools)";
+            // A launch failure is the single most useful fact about a dead
+            // addon ("uvx not on PATH" is not the same problem as "Blender is
+            // closed"), and the bridge already collects it.
+            const why = sv.error ? ` - ${sv.error}` : "";
+            return `- ${sv.id}: ${label}${nsHint} - ${health}${why}`;
           })
         : ["- roblox: Roblox Studio (primary) - unknown (bridge did not report server health)"];
       return (
@@ -1073,9 +1154,17 @@
         const rbxUsable = !!s.connected && rbxAlive && s.studio !== false;
         if (!rbxUsable) {
           const others = srv.filter((x) => x.id !== "roblox" && x.alive && (x.tools || 0) > 0);
+          // An addon that is CONFIGURED but down is a different problem from
+          // one that was never added, and the fix is different too: the first
+          // needs its app opened, the second needs the extension's settings
+          // page. Silently reporting "no other MCP server" for both sends the
+          // user to open Blender that they never installed.
+          const down = srv.filter((x) => x.id !== "roblox" && x.alive === false);
           const otherStr = others.length
             ? `Other connected MCP server(s): ${others.map((x) => x.id).join(", ")}. Call list_mcp_servers, then list_commands with a "server" param to use them for anything that does not need Roblox.`
-            : `No other MCP server is connected right now.`;
+            : down.length
+              ? `Other MCP server(s) are configured but not responding: ${down.map((x) => x.id).join(", ")}. ${down.map((x) => x.error).filter(Boolean).join("; ")} Open that app (e.g. Blender + its MCP addon), or manage servers from the extension's Settings.`
+              : `No other MCP server is connected right now.`;
           return `Output of '${name}':\nRoblox Studio is currently OFFLINE (closed, no place open, or its MCP server disabled), so its commands cannot run. This is an environment problem on the user's machine, not your mistake. Tell the user in one short sentence to open their place in Roblox Studio and enable its MCP server. ${otherStr}`;
         }
       }
@@ -1085,7 +1174,11 @@
       // hiding everything. The "local" padded catalog (offline + queue tools)
       // belongs to the Roblox workflow, so the default roblox scope includes it.
       const inScope = (t) => {
-        const srv = t.server || "roblox";
+        // A namespaced tool ("blender/get_scene_info") belongs to the namespace
+        // even when an older bridge omitted .server - otherwise list_commands
+        // {"server":"blender"} would come back empty and read as "Blender is
+        // not connected".
+        const srv = t.server || (isNamespaced(t.name) ? t.name.split("/")[0] : "roblox");
         return requested === "roblox" ? (srv === "roblox" || srv === "local") : srv === requested;
       };
       const scoped = A.toolList.filter(inScope);
@@ -1135,12 +1228,20 @@
       // instead of waving any spelling through to a slow bridge path.
       await ensureTools(true);
     }
-    if (A.toolNames.size && !A.toolNames.has(name)) {
+    if (A.toolNames.size && !knownTool(name)) {
       return RL.FEEDBACK.unknownTool(name, [...A.toolNames]);
     }
     if (!A.toolNames.size) {
       return "ERROR: no commands are loaded - the bridge is unreachable. Reconnect from the extension popup and retry instead of guessing.";
     }
+    // Namespaced addon tool: the model wrote the bare upstream name
+    // ("get_scene_info") but the bridge only accepts the advertised key
+    // ("blender/get_scene_info"). Rewrite before dispatch - it validated fine
+    // above, so without this the user gets "unknown tool" for a name RoLink
+    // itself printed in list_commands. `name` becomes the advertised key, which
+    // is what the rest of this function (and the UI) should use.
+    const wireName = advertisedKey(name);
+    if (wireName !== name) diag("tool.namespaceRewrite", { from: name, to: wireName });
     // The Roblox MCP REQUIRES datamodel_type on execute_luau (enum Edit/Client/
     // Server). The ###LUA### parser already fills it in, but the model may also
     // write the JSON form without it - default to "Edit" so the call never
@@ -1165,7 +1266,7 @@
     const stopWatch = new Promise((res) => {
       stopTimer = setInterval(() => { if (A.stop) res({ ok: false, kind: "stopped" }); }, 150);
     });
-    let r = await Promise.race([bg({ type: "call_tool", name, arguments: args, timeout }), hardCap, stopWatch]);
+    let r = await Promise.race([bg({ type: "call_tool", name: wireName, arguments: args, timeout }), hardCap, stopWatch]);
     clearInterval(stopTimer);
     if (r && r.kind === "stopped") return "(stopped by user)";
     if (!r) return RL.FEEDBACK.bridgeOffline;
@@ -1211,9 +1312,16 @@
         return `ERROR: '${bareName}' returned an image, but this assistant cannot see images. Do NOT call it again. Use a different command to get the information as text instead.`;
       }
       if (r.images && r.images.length) {
+        // The exact UPSTREAM tool name behind the result. The bridge reports it
+        // in the envelope (authoritative - it knows the real spelling), and the
+        // advertised key minus its namespace is the fallback. Matters for a
+        // namespaced addon: the image label and the learned "this tool returns
+        // screenshots" memory must key off the same spelling the next call
+        // will use, or the chip is forgotten on the following turn.
+        const ranAs = upstreamName(wireName, r.tool);
         // Show the capture in a left-hand RoLink popup (from the in-memory
         // base64 - simple and reliable on every site; no DOM-embedded preview).
-        ui.showImages(r.images, name);
+        ui.showImages(r.images, ranAs);
         // Do NOT attach the image here: submitAndGetBase/typeAndSend types the
         // feedback text into the editor LATER, and on providers whose editor is
         // rebuilt via select-all + insertText (e.g. Gemini's setEditorText),
@@ -1231,6 +1339,28 @@
         return `Output of '${name}':\n${caption}\n(The image is attached to THIS message - you can see it directly. Analyse it and continue.)`;
       }
       const text = r.text && r.text.length ? r.text : "(tool returned an empty result)";
+      if (bareName === "execute_luau") {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && parsed.executed === true) {
+            const ret = parsed.returned !== undefined ? JSON.stringify(parsed.returned) : "nil (ran, no return value)";
+            const out = parsed.output ? `\nprint output:\n${parsed.output}` : "";
+            const via = parsed.loader ? ` via ${parsed.loader}` : "";
+            const hint = parsed.hasReturn === false ? "\n(no return value - side effects applied; verify with get_instances/get_all_properties)." : "";
+            return `Output of '${name}':\nexecuted:true${via}, returned:${ret}${out}${hint}`;
+          }
+        } catch (_) { /* fall through to raw text */ }
+      }
+      // Partial property failure: some keys applied, some did not. The failed
+      // map is already in the text below; the nudge makes sure it is read as
+      // action (fix those keys) rather than skimmed as success.
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && parsed.failed && Object.keys(parsed.failed).length) {
+          const n = Object.keys(parsed.failed).length;
+          return `Output of '${name}':\n${text}\n(${n} propert${n === 1 ? "y" : "ies"} failed - read the failed map for exact coercion errors, fix the values, retry those keys.)`;
+        }
+      } catch (_) { /* not JSON - fall through to raw text */ }
       return `Output of '${name}':\n${text}`;
     }
     // Orphaned content script - a page reload is the only cure, so say exactly
@@ -3119,8 +3249,8 @@
           customPrompt = r.rlCustomPrompt;
           syncMenuPrompt();
         } else {
-          // legacy: one-time copy from the legacy key, then it ages out.
           try {
+            // legacy: one-time copy from the legacy key, then it ages out.
             chrome.storage.local.get("zsCustomPrompt", (r2) => {
               if (r2 && typeof r2.zsCustomPrompt === "string") {
                 customPrompt = r2.zsCustomPrompt;
@@ -3153,8 +3283,8 @@
           customMcpServers = r.rlCustomMcpServers;
           if (!menuEl.hidden) buildMenu();
         } else {
-          // legacy: one-time copy from the legacy key, then it ages out.
           try {
+            // legacy: one-time copy from the legacy key, then it ages out.
             chrome.storage.local.get("zsCustomMcpServers", (r2) => {
               if (r2 && Array.isArray(r2.zsCustomMcpServers)) {
                 customMcpServers = r2.zsCustomMcpServers;
@@ -3184,6 +3314,10 @@
         return {
           id: sv.id, name: (cached && cached.name) || sv.id, command: cached && cached.command,
           alive: sv.alive, tools: sv.tools,
+          // The namespace is the bridge's, never the display-name cache's: it
+          // decides how this server's commands are actually called.
+          namespace: (sv.meta && sv.meta.namespace) || sv.namespace,
+          error: sv.error,
         };
       });
       // Self-heal: cache didn't know about a server the bridge actually has.
@@ -3214,6 +3348,18 @@
       const parts = String(raw || "").match(/"[^"]*"|'[^']*'|\S+/g) || [];
       const clean = parts.map((p) => p.replace(/^["']|["']$/g, ""));
       return { command: clean[0] || "", args: clean.slice(1) };
+    }
+    // Pull the preset catalogue (and the per-machine "is uvx installed?" probe)
+    // from the bridge. Cached in A so the menu renders synchronously; re-renders
+    // once if the fetch actually changed something. Never throws into the UI.
+    async function refreshPresets() {
+      const r = await bg({ type: "list_mcp_servers" });
+      const list = (r && Array.isArray(r.presets)) ? r.presets : null;
+      if (!list) return [];
+      const changed = JSON.stringify(list) !== JSON.stringify(A.presets || []);
+      A.presets = list;
+      if (changed && menuEl && menuEl.isConnected) { try { buildMenu(); } catch {} }
+      return list;
     }
     // Wait for the bridge to come back after its restart (config reload). Resolves
     // true once reconnected (optionally once `id` shows up in server health).
@@ -3247,6 +3393,10 @@
           : `<button class="rl-site-opt" data-u="${s.url}">${label}<span class="rl-site-go">&rarr;</span></button>`;
       }
       const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      // The preset catalogue comes from the bridge (it owns the exact spawn
+      // spec), cached in A by the status broadcast. Fetch it on a MISS so the
+      // first open of a session is not empty, then re-render once it lands.
+      if (!A.presets || !A.presets.length) refreshPresets();
       const mergedServers = mergedMcpServers();
       // Roblox always heads the list - greyed out, no health dot (its own status
       // is already the main RoLink dot elsewhere) and no remove button (it's
@@ -3257,9 +3407,40 @@
         // alive === undefined -> the bridge hasn't reported this server's health
         // yet (just added/removed, still restarting) - shown neutral, not red.
         const healthClass = s.alive === true ? "on" : s.alive === false ? "off" : "unknown";
-        const healthTitle = s.alive === true ? `${s.tools || 0} tools available` : s.alive === false ? "offline" : "status unknown";
-        mcpList += `<div class="rl-mcp-item"><span class="rl-mcp-health rl-mcp-health-${healthClass}" title="${healthTitle}"></span><div class="rl-mcp-info"><span class="rl-mcp-name">${esc(s.name)}</span><span class="rl-mcp-url">${esc(s.command || s.id)}</span></div><button class="rl-mcp-remove" data-id="${esc(s.id)}" title="Remove">✕</button></div>`;
+        // The launch failure is the actionable part of "offline" ("uvx not on
+        // PATH" is not the same problem as "Blender is closed") and the bridge
+        // already collects it - show it as the tooltip.
+        const healthTitle = s.alive === true ? `${s.tools || 0} tools available`
+          : s.alive === false ? (s.error || "offline") : "status unknown";
+        // A namespaced server is labelled with its namespace: its commands are
+        // called server/command, and that is the difference between "blender
+        // is down" and "blender/* is down" being understood as the same thing.
+        const nsTag = s.namespace ? ` <span class="rl-mcp-url">${esc(s.namespace)}/*</span>` : "";
+        mcpList += `<div class="rl-mcp-item"><span class="rl-mcp-health rl-mcp-health-${healthClass}" title="${healthTitle}"></span><div class="rl-mcp-info"><span class="rl-mcp-name">${esc(s.name)}${nsTag}</span><span class="rl-mcp-url">${esc(s.command || s.id)}</span></div><button class="rl-mcp-remove" data-id="${esc(s.id)}" title="Remove">✕</button></div>`;
       });
+      // Ready-made server presets (mcp-for-blender & co), rendered from what the
+      // bridge reports. Strictly opt-in: nothing is written until the click, and
+      // the whole settings page (endpoints, this list, HUD categories) is one
+      // "Extension settings" row away - the in-page panel is a summary, not the
+      // only place a server can be managed.
+      const presets = A.presets || [];
+      const presetList = presets.length
+        ? presets.map((p) => {
+            const installed = !!p.installed;
+            const label = esc(p.label || p.id);
+            if (installed) {
+              return `<div class="rl-mcp-item"><span class="rl-mcp-health ${p.available ? "on" : "off"}" title="${p.available ? "installed" : "installed, but its launcher is missing"}"></span><div class="rl-mcp-info"><span class="rl-mcp-name">${label}</span><span class="rl-mcp-url">${esc([p.command].concat(p.args || []).join(" "))} - added</span></div></div>`;
+            }
+            // A preset whose launcher is missing is rendered disabled rather
+            // than clickable: adding it would write a config entry that can
+            // never work, and the failure would look like a RoLink bug.
+            const disabled = p.available ? "" : " disabled";
+            const unavail = p.available ? "" : ' data-unavailable="1"';
+            const why = p.available ? esc(p.notes || p.summary || "")
+              : esc(p.hint || `missing ${(p.missing || []).join(", ")} - ${p.hint || "install it first"}`);
+            return `<div class="rl-mcp-item"><span class="rl-mcp-health unknown" title="not added"></span><div class="rl-mcp-info"><span class="rl-mcp-name">${label}</span><span class="rl-mcp-url">${why}</span></div><button class="rl-mcp-add-preset" data-preset="${esc(p.id)}"${disabled}${unavail}>Add</button></div>`;
+          }).join("")
+        : "";
       menuEl.innerHTML =
         `<div class="rl-menu-head"><span class="rl-menu-logo">RoLink</span><span class="rl-menu-tag">v${EXT_VERSION}</span></div>
          <section class="rl-menu-sec">
@@ -3274,12 +3455,14 @@
          </section>
          <section class="rl-menu-sec">
            <div class="rl-sec-label"><span>MCP servers</span></div>
-           <div class="rl-menu-note">Roblox Studio is always connected (primary). Add another MCP server (e.g. Blender, Sketchfab) as an addon - the bridge restarts briefly to load it. Experimental.</div>
+           <div class="rl-menu-note">Roblox Studio is always connected (primary). Add another MCP server as an addon. A namespaced server's commands are called <b>server/command</b> (e.g. blender/get_scene_info) so they can never collide with a Roblox command.</div>
+           ${presetList}
            ${mcpList}
            <div class="rl-mcp-sep"></div>
-           <input id="rl-mcp-name" class="rl-mcp-field" placeholder="Name, e.g. Blender" />
+           <input id="rl-mcp-name" class="rl-mcp-field" placeholder="Name, e.g. Sketchfab" />
            <input id="rl-mcp-url" class="rl-mcp-field" placeholder="Start command, e.g. npx -y @some/mcp-server" />
            <div class="rl-set-row"><button id="rl-mcp-add">Add server</button><span id="rl-mcp-status"></span></div>
+           <div class="rl-set-row"><button id="rl-open-settings" style="font-size:11px;padding:5px 12px">⚙ Extension settings (endpoints, servers, categories)</button></div>
          </section>`;
       const open = (url) => { try { window.open(url, "_blank", "noopener"); } catch {} menuEl.hidden = true; };
       menuEl.querySelectorAll("button.rl-site-opt").forEach((b) =>
@@ -3306,9 +3489,53 @@
         mcpBusy = on;
         mcpAddBtn.disabled = on;
         menuEl.querySelectorAll(".rl-mcp-remove").forEach((b) => (b.disabled = on));
+        menuEl.querySelectorAll(".rl-mcp-add-preset").forEach((b) => (b.disabled = on || b.dataset.unavailable === "1"));
         mcpStatus.innerHTML = on
           ? `<span class="rl-mcp-spin-row"><span class="rl-mcp-spin"></span>${label || "Restarting bridge…"}</span>`
           : "";
+      }
+
+      // Ready-made presets. Same opt-in contract as the options page: the click
+      // is the ONLY thing that writes config.json, and it is a real confirm
+      // because the server it adds can execute code in another application.
+      menuEl.querySelectorAll(".rl-mcp-add-preset").forEach((b) =>
+        b.addEventListener("click", async () => {
+          if (mcpBusy) return;
+          const id = b.dataset.preset;
+          if (!id) return;
+          const p = (A.presets || []).find((x) => x.id === id) || {};
+          if (!confirm(`Add ${p.label || id}?\n\nThis writes one entry to config.json and asks the bridge to load it.\n${p.notes || ""}\nNothing is installed or launched until you click OK.`)) return;
+          setMcpBusy(true, "Adding server…");
+          const r = await bg({ type: "add_preset", preset: id });
+          if (!r || !r.ok) {
+            setMcpBusy(false);
+            mcpStatus.textContent = (r && r.error) || "Couldn't add server";
+            setTimeout(() => { if (!mcpBusy) mcpStatus.textContent = ""; }, 2400);
+            return;
+          }
+          // Track the display name so the row is labelled the same way the
+          // options page does, and re-render from the bridge's live list.
+          if (!customMcpServers.some((x) => x.id === (r.server_id || id)))
+            customMcpServers.push({ id: r.server_id || id, name: p.label || id, command: p.command });
+          saveCustomMcpServers();
+          await refreshPresets();
+          // The bridge hot-loads a preset, so there is normally no reconnect to
+          // wait for; the wait is only the fallback path.
+          if (r.restarting) await waitForBridgeBack(r.server_id || id);
+          buildMenu();
+        }));
+
+      // One click from the in-page panel to the real settings page (endpoints,
+      // the full server list, the preset catalogue, HUD categories). A content
+      // script cannot open a chrome-extension:// page itself, so this goes
+      // through the service worker.
+      const openSettingsBtn = menuEl.querySelector("#rl-open-settings");
+      if (openSettingsBtn) {
+        openSettingsBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          bg({ type: "open_options" });
+          menuEl.hidden = true;
+        });
       }
 
       menuEl.querySelectorAll(".rl-mcp-remove").forEach((b) =>
@@ -4619,6 +4846,14 @@
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.type === "rl-status") {
       ui.setStatus({ connected: msg.connected, mcpAlive: msg.mcpAlive, studio: msg.studio, studioApp: msg.studioApp, studioProc: msg.studioProc, tools: msg.tools, servers: msg.servers });
+      // The background pushes the preset catalogue with every status, so the
+      // ⋯ menu can render its "Add Blender" row without a round trip. Rendered
+      // at most once per real change (a 5s status poll must not rebuild a menu
+      // the user is looking at).
+      if (Array.isArray(msg.presets) && JSON.stringify(msg.presets) !== JSON.stringify(A.presets || [])) {
+        A.presets = msg.presets;
+        try { buildMenu(); } catch {}
+      }
     }
     if (msg && msg.type === "rl-open-menu") {
       ui.openMenu(false); // from the popup's Settings button — opens at the top (Switch AI / custom prompt)
@@ -4673,8 +4908,8 @@
         for (const p of r.rlStartedSessions) startedSessions.add(p);
         syncSessionState();
       } else {
-        // legacy: one-time copy from the legacy key, then it ages out.
         try {
+          // legacy: one-time copy from the legacy key, then it ages out.
           chrome.storage.local.get("zsStartedSessions", (r2) => {
             if (r2 && Array.isArray(r2.zsStartedSessions)) {
               for (const p of r2.zsStartedSessions) startedSessions.add(p);

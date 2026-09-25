@@ -350,7 +350,7 @@
   "search_asset": {
     "keyword": "test",
     "limit": 1,
-    "category": "test"
+    "category": "Model"
   },
   "import_asset": {
     "assetId": 1,

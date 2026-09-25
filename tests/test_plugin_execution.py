@@ -151,6 +151,26 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertEqual(res["kind"], "validation_error")
         self.assertIn("10", res["error"])
 
+    def test_batch_local_fanout_succeeds(self):
+        # Studio-free: local sub-calls fan out through the same path.
+        res = bridge.safe_call("batch_queue", {"commands": [{"tool": "get_time", "args": {}}] * 3,
+                                                      "mode": "best_effort"}, 30)
+        self.assertTrue(res["ok"], res)
+        body = json.loads(res["text"])
+        self.assertEqual(body["status"], "success")
+        self.assertEqual(body["succeeded"], 3)
+
+    def test_batch_deadline_bounded(self):
+        with open(os.path.join(ROOT, "bridge.py"), encoding="utf-8") as f:
+            src = f.read()
+        # No sub-call may receive the full batch timeout: the batch must
+        # settle before the extension stops listening, or Studio keeps
+        # running steps the model recorded as failed (ghost writes).
+        self.assertIn("_deadline", src)
+        self.assertIn("safe_call(sub_name, sub_args, min(_remaining, 60.0))", src)
+        self.assertNotIn("r = safe_call(sub_name, sub_args, timeout)", src)
+        self.assertIn("batch time budget exhausted", src)
+
     def test_clip_and_publish_wired(self):
         for name in ("export_animation_clip", "publish_animation"):
             with open(os.path.join(ROOT, "tests", "__registry__.json"), encoding="utf-8") as f:
@@ -174,6 +194,7 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertNotIn("unknown tool", str(res.get("error", "")).lower())
 
     def test_deepseek_reskin_fallbacks(self):
+        import re
         with open(os.path.join(ROOT, "rolink-extension", "providers", "deepseek.js"), encoding="utf-8") as f:
             src = f.read()
         # v4.1 composer: send lookup survives a missing .ds-button--primary,
@@ -183,7 +204,9 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertNotIn("composerFrame() || document", src)  # no recurse: frame scoping stays direct
         # findSendBtn must query the DOM, never itself (self-recursion kills
         # the content script: no bar, Errors button on the extension card).
+        # Strip comments first: a comment may MENTION the call it warns about.
         body = src.split("function findSendBtn", 1)[1].split("\n  }\n", 1)[0]
+        body = re.sub(r"//[^\n]*", "", body)
         self.assertNotIn("findSendBtn()", body)
         self.assertIn("document.querySelector(S.sendBtn)", body)
         with open(os.path.join(ROOT, "rolink-extension", "core", "main.js"), encoding="utf-8") as f:
@@ -254,17 +277,20 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertEqual(hits, [], "legacy remnants:\n" + "\n".join(hits[:20]))
 
     def test_sandbox_exposes_standard_builtins(self):
+        import re
         # pcall(require, ...) failed with "attempt to call a nil value" because
         # safeEnv lacked the builtins themselves. All three env definitions
-        # must provide them.
+        # must provide them. Whitespace-insensitive: the Rojo mirror writes
+        # `pcall = pcall` while the production file writes `pcall=pcall`.
         for rel in ("studio-plugin/RoLink.lua",
                     "studio-plugin/src/plugin/init.plugin.luau",
                     "studio-plugin/src/sandbox.luau"):
             with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
                 src = f.read()
-            for name in ("pcall=pcall", "require=require", "assert=assert",
-                         "select=select", "unpack=unpack"):
-                self.assertIn(name, src, "%s missing %s" % (rel, name))
+            flat = re.sub(r"\s+", "", src)
+            for name in ("pcall", "require", "assert", "select", "unpack"):
+                self.assertRegex(flat, name + r"=" + name,
+                                 "%s missing %s=..." % (rel, name))
 
     def test_hanging_snippet_times_out_without_wedging(self):
         for rel in ("studio-plugin/RoLink.lua",
@@ -296,8 +322,9 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertIn("errLineCtx", src)
         self.assertIn('>> line "', src)
         self.assertIn("attempt to call a nil value", src)
-        # Both runtime-failure returns in sandboxRun attach the context.
-        self.assertEqual(src.count("errLineCtx(code,"), 2)
+        # Both runtime-failure returns in sandboxRun attach the context, plus
+        # the wall-clock timeout path in runWithDeadline.
+        self.assertEqual(src.count("errLineCtx(code,"), 3)
         with open(os.path.join(ROOT, "studio-plugin", "src", "plugin", "init.plugin.luau"),
                   encoding="utf-8") as f:
             mirror = f.read()
@@ -342,6 +369,314 @@ class PluginExecutionTest(unittest.TestCase):
             import json as _json2
             gen = _json2.load(f)["prompts"]["create_animation_track"]["pitfalls"]
         self.assertIn("bare quad", gen)
+
+
+    def test_toolbugfix_execute_luau_shape_and_loader(self):
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        # Result must prove execution: executed/hasReturn/output, with preview
+        # explicitly labeled input-only (never the whole result).
+        for pin in ("executed=true", "hasReturn=", "previewNote=",
+                    "input echo only", "code is required for execute_luau"):
+            self.assertIn(pin, src)
+        # Loader fallback: loadstring, then load, then ModuleScript harness
+        # for ANY code (not just require snippets).
+        for pin in ("function compileChunk", 'loader_unavailable',
+                    '"loadstring", nil', "for ANY code"):
+            self.assertIn(pin, src)
+        # print() captured into output.
+        for pin in ("oldPrint", "captured", "safeEnv.print = function"):
+            self.assertIn(pin, src)
+
+    def test_toolbugfix_exact_first_paths(self):
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        for pin in ("parseIndexedName", "childByName", "matchedPath",
+                    "Name[2]", "matchedPath=inst:GetFullName()"):
+            self.assertIn(pin, src)
+        # Walk order is the contract: slash, then dot, then legacy scan
+        # (which must survive for dotted names like "My.Part").
+        self.assertLess(src.index("slash-walk"), src.index("dot-walk"))
+        self.assertLess(src.index("dot-walk"), src.index("legacy fallbacks"))
+        self.assertIn('gmatch("[^/]+")', src)
+        self.assertIn('gmatch("[^.]+")', src)
+        # get_instances must not silently fall back to the whole workspace.
+        self.assertNotIn('findByPath(args.path or "workspace") or workspace', src)
+        self.assertIn("inspect_keyframe_track", src)
+        self.assertIn("function inspectKeyframeTrack", src)
+        self.assertIn("ToEulerAnglesXYZ", src)
+
+    def test_toolbugfix_raw_markers_and_notfound(self):
+        res = bridge.safe_call("set_script_content", {"path": "Workspace/X", "content": "###RAW###\nreturn 1\n###END_RAW###"}, 5)
+        self.assertIn(res["kind"], ("mcp_offline", "plugin_offline", "validation_error"))
+        self.assertNotIn("###RAW", str(res.get("error", "")) + str(res.get("text", "")))
+        err = bridge._ai_readable_error("execution_error", "sabuiltin_Assistant.rbxm.Assistant.Foo not found", "get_script_content")
+        self.assertNotIn("sabuiltin_", err)
+        self.assertIn("not found", err.lower())
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("END_RAW", src)
+        self.assertIn("file not found", src)
+
+    def test_toolbugfix_search_asset_live_bridge_side(self):
+        # search_asset is now a REAL bridge-side catalog search
+        # (bridge.py _local_search_asset). The plugin branch may only exist as
+        # an honest pointer - it must never fabricate results.
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("search_asset is served by the bridge", src)
+        self.assertNotIn("mock asset", src)
+        self.assertNotIn("unsupported: search_asset", src)
+        with open(os.path.join(ROOT, "bridge.py"), encoding="utf-8") as f:
+            br = f.read()
+        self.assertIn("def _local_search_asset", br)
+        self.assertIn("apis.roblox.com/toolbox-service/v2/assets:search", br)
+        self.assertIn('"search_asset": _local_search_asset', br)
+        self.assertNotIn("mockAssets", br)
+
+    def test_toolbugfix_forward_declarations(self):
+        import re
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        # Lock helper is called by earlier-defined model-animation writers;
+        # defined further down it resolved to nil at runtime. It must be a
+        # single `local function` located BEFORE first use.
+        self.assertEqual(len(re.findall(r"local function rlAnimGetLocked\b", src)), 1)
+        self.assertLess(src.find("local function rlAnimGetLocked"),
+                        src.find("local function rlModelSetKey"))
+        # Same for the clip-twin helpers used inside summarizeSequence.
+        self.assertEqual(len(re.findall(r"local function findClipTwin\b", src)), 1)
+        self.assertEqual(len(re.findall(r"local function clipCurvesSummary\b", src)), 1)
+        self.assertLess(src.find("local function findClipTwin"),
+                        src.find("local function summarizeSequence"))
+
+    def test_toolbugfix_inspect_keyframe_track_routed(self):
+        self.assertIn("inspect_keyframe_track", bridge._QUEUE_EXTRA_TOOLS)
+        res = bridge.safe_call("inspect_keyframe_track", {"path": "Workspace/X"}, 0.3)
+        self.assertIn(res["kind"], ("plugin_offline", "stuck-execution", "mcp_offline"))
+        self.assertNotIn("unknown tool", str(res.get("error", "")).lower())
+
+    def test_toolbugfix_numeric_inspector_advertised(self):
+        with open(os.path.join(ROOT, "mcp-server", "src", "tools", "registry.ts"), encoding="utf-8") as f:
+            reg = f.read()
+        self.assertIn("numeric:true", reg)
+        self.assertIn("numeric: z.boolean().optional()", reg)
+        self.assertIn("MODEL animations only", reg)
+
+    def test_toolbugfix_loader_hardening(self):
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        # Unique harness names per call (require() caches by ModuleScript).
+        self.assertIn("harnessSeq", src)
+        self.assertIn('RoLinkHarness_"', src)
+        # Loader used is reported; total loader failure is distinct from a
+        # syntax error so the model stops retrying identical code.
+        self.assertIn("loader_unavailable: loadstring/load disabled", src)
+        self.assertIn("loader=loader2", src)
+        self.assertIn("local function finish(ok:boolean, val:any, used:string?)", src)
+        # Extension surfaces the loader.
+        with open(os.path.join(ROOT, "rolink-extension", "core", "main.js"), encoding="utf-8") as f:
+            main = f.read()
+        self.assertIn("parsed.loader", main)
+        # Print capture must pack varargs first: a nested non-vararg closure
+        # referencing `...` is a load-time compile error that kills the whole
+        # plugin ("Cannot use '...' outside of a vararg function").
+        self.assertIn("table.pack(...)", src)
+        self.assertIn("table.unpack(args, 1, args.n)", src)
+        self.assertNotIn("(oldPrint :: any)(...)", src)
+
+    def test_toolbugfix_prop_coercion(self):
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        for pin in ("function num3", "function coerceProp", "function applyProps",
+                    "function propsFailedSummary", "Color3.fromRGB(math.clamp",
+                    "properties_failed", "applied=applied, failed=failed",
+                    "coerceProp(inst, key"):
+            self.assertIn(pin, src)
+        # No silent raw-assign loops remain on the property paths.
+        self.assertNotIn("[k]=v end", src)
+        # Total property failure errors instead of fake success.
+        self.assertIn("none of the properties applied", src)
+        # Listings carry counts and truncation flags.
+        self.assertIn("count=#t, instances=t", src)
+        self.assertIn("truncated=truncated", src)
+
+    def test_toolbugfix_array_forms_advertised(self):
+        for rel in ("mcp-server/src/tools/toolPrompts.ts",
+                    "generated/tool-prompts.json",
+                    "rolink-extension/core/tool-prompts.js"):
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
+                txt = f.read()
+            self.assertIn("Size [11,3,4]", txt, rel)
+            self.assertIn("150,95,45", txt, rel)
+            self.assertIn("Loader used is reported in loader", txt, rel)
+
+    def test_toolbugfix_apply_material_real(self):
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        for pin in ("local function paintMaterial", 'tool=="apply_material"',
+                    "result=paintMaterial(args)", "material_failed",
+                    "nothing to paint", "of = all", "truncated = all > #parts",
+                    "applyProps(bt, {Material = matName})"):
+            self.assertIn(pin, src)
+        # The echo stub must be gone.
+        self.assertNotIn("result={material=args.material}", src)
+        for rel in ("mcp-server/src/tools/toolPrompts.ts",
+                    "generated/tool-prompts.json",
+                    "rolink-extension/core/tool-prompts.js"):
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
+                txt = f.read()
+            self.assertIn("path* or region*", txt, rel)
+            self.assertIn("painted", txt, rel)
+
+    def test_toolbugfix_honest_stubs(self):
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        for tool in ("diff_snapshots", "get_performance_stats", "explain_code"):
+            lines = [ln for ln in src.splitlines() if '"%s"' % tool in ln]
+            self.assertTrue(lines, tool + " branch missing")
+            self.assertTrue(any("unsupported" in ln.lower() for ln in lines),
+                            tool + " must fail honestly, not mock success")
+        for mock in ("mock diff", "plugin stats mock", "explanation mock"):
+            self.assertNotIn(mock, src)
+        # The audit tracks explicit-unsupported branches as partial so the
+        # quarantine stays truthful.
+        with open(os.path.join(ROOT, "scripts", "audit_tools.py"), encoding="utf-8") as f:
+            audit = f.read()
+        self.assertIn("explicitly unsupported", audit)
+
+    def test_toolbugfix_partial_failure_nudge(self):
+        with open(os.path.join(ROOT, "rolink-extension", "core", "main.js"), encoding="utf-8") as f:
+            main = f.read()
+        self.assertIn("parsed.failed", main)
+        self.assertIn("read the failed map", main)
+
+    def test_luau_blocks_and_line_cap(self):
+        # Studio's Luau parser loses block tracking on physical lines past
+        # ~1KB and then reports a bogus "Expected 'end' (to close 'else' at
+        # line N), got 'elseif'" on the NEXT branch (seen live: lines 3028/
+        # 3029/3031 were 1103/1654/1391 chars). Run the repo's grammar-aware
+        # checker: every line <= 900 chars and all blocks balanced.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "check_luau_blocks", os.path.join(ROOT, "scripts", "check_luau_blocks.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        issues = mod.check(os.path.join(ROOT, "studio-plugin", "RoLink.lua"))
+        self.assertEqual(issues, [], "luau structure: " + "; ".join(issues[:10]))
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            for i, ln in enumerate(f.read().splitlines(), 1):
+                self.assertLessEqual(len(ln), 900, "line %d is %d chars" % (i, len(ln)))
+
+    def test_plugin_build_tag_present(self):
+        # The Output banner must identify a repo-fresh copy ("[repo copy]")
+        # so a stale install is distinguishable from the release zip at a
+        # glance. The documented `RoLink 2.5.0 loaded` prefix must survive.
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("RoLink 2.5.0 loaded [repo copy]", src)
+
+    def test_installed_plugin_state(self):
+        import tempfile
+        import shutil
+        plugdir = tempfile.mkdtemp()
+        repodir = tempfile.mkdtemp()
+        try:
+            repo = os.path.join(repodir, "RoLink.lua")
+            with open(repo, "w", encoding="utf-8") as f:
+                f.write("-- repo copy")
+            # Missing install.
+            st = bridge._installed_plugin_state(plugdir, repo)
+            self.assertFalse(st["exact_present"])
+            self.assertTrue(st["stale_or_missing"])
+            self.assertEqual(st["copy_count"], 0)
+            # Matching install.
+            with open(os.path.join(plugdir, "RoLink.lua"), "w", encoding="utf-8") as f:
+                f.write("-- repo copy")
+            st = bridge._installed_plugin_state(plugdir, repo)
+            self.assertTrue(st["exact_matches_repo"])
+            self.assertFalse(st["stale_or_missing"])
+            # One byte off -> stale.
+            with open(os.path.join(plugdir, "RoLink.lua"), "w", encoding="utf-8") as f:
+                f.write("-- repo copY")
+            st = bridge._installed_plugin_state(plugdir, repo)
+            self.assertTrue(st["exact_present"])
+            self.assertFalse(st["exact_matches_repo"])
+            self.assertTrue(st["stale_or_missing"])
+            # Duplicate stray copy.
+            with open(os.path.join(plugdir, "user_RoLink.lua"), "w", encoding="utf-8") as f:
+                f.write("-- stray")
+            st = bridge._installed_plugin_state(plugdir, repo)
+            self.assertEqual(st["copy_count"], 2)
+        finally:
+            shutil.rmtree(plugdir, ignore_errors=True)
+            shutil.rmtree(repodir, ignore_errors=True)
+
+    def test_plugin_status_reports_install_state(self):
+        res = bridge._local_plugin_status({})
+        body = json.loads(res["text"])
+        self.assertIn("installed_plugin", body)
+        self.assertIn("install_note", body)
+        self.assertIn("copy_count", body["installed_plugin"])
+
+    def test_installer_refuses_hot_stale_installs(self):
+        with open(os.path.join(ROOT, "install-plugin.bat"), encoding="utf-8", errors="replace") as f:
+            bat = f.read()
+        for pin in ("QUIT ROBLOX STUDIO FIRST", "exit /b 2", "INSTALL OK",
+                    "matches source", "DUPCOUNT", "user_RoLink.lua",
+                    "RoLink 2.5.0 loaded [repo copy]"):
+            self.assertIn(pin, bat, "installer missing: " + pin)
+
+    def test_toolbugfix_terrain_and_datastore_real(self):
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        for pin in ("local function buildTerrain", 'tool=="generate_terrain"',
+                    "result=buildTerrain(args)", "FillBlock", "FillBall",
+                    "local function fillTerrainRegion", 'tool=="set_terrain_region"',
+                    "result=fillTerrainRegion(args)", "min must be below max",
+                    "GetDataStore", "datastore_unavailable", "datastore_error",
+                    "found=val ~= nil"):
+            self.assertIn(pin, src)
+        # The echo stubs must be gone.
+        for stub in ('result={terrain=true, size=args.size}', "result={region=true}",
+                     "result={value=nil, mock=true}", "then result={set=true}"):
+            self.assertNotIn(stub, src)
+        # Terrain material is a real schema field, not a silent extra.
+        with open(os.path.join(ROOT, "mcp-server", "src", "tools", "registry.ts"), encoding="utf-8") as f:
+            reg = f.read()
+        self.assertIn('material: z.string().optional().default("Grass")', reg)
+        # Quarantine reflects the datastore read going real.
+        import json as _json
+        with open(os.path.join(ROOT, "generated", "tool-quarantine.json"), encoding="utf-8") as f:
+            q = _json.load(f)
+        self.assertNotIn("get_datastore_value", q["partial"])
+        self.assertEqual(q["failing"], [])
+
+    def test_toolbugfix_place_parts_patterns(self):
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        for pin in ("local function placePatternParts", 'tool=="place_parts"',
+                    "result=placePatternParts(args)",
+                    "pattern must be grid|circle|line",
+                    "placed = made", "spacing = num(args.spacing, 6)",
+                    "math.cos(a) * r", "% cols) * spacing"):
+            self.assertIn(pin, src)
+        # The line-stamper that ignored pattern/count is gone.
+        self.assertNotIn("for i=1, math.min(args.count or 5, 50) do local p=Instance.new",
+                         src)
+        # spacing/size/material are real schema fields on both paths.
+        with open(os.path.join(ROOT, "mcp-server", "src", "tools", "registry.ts"), encoding="utf-8") as f:
+            reg = f.read()
+        self.assertIn("spacing: z.number().optional()", reg)
+        self.assertIn("size: z.tuple([z.number(),z.number(),z.number()]).optional()", reg)
+        self.assertIn("material: z.string().optional()", reg)
+        for rel in ("mcp-server/src/tools/toolPrompts.ts",
+                    "generated/tool-prompts.json",
+                    "rolink-extension/core/tool-prompts.js"):
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
+                txt = f.read()
+            self.assertIn("spacing? studs default 6", txt, rel)
+            self.assertIn("placed, of, pattern, parent, spacing, failed", txt, rel)
 
 
 if __name__ == "__main__":

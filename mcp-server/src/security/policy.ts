@@ -18,8 +18,8 @@ export const ALLOWED_TOOLS = new Set([
   "generate_terrain","set_terrain_region","place_parts","create_model_from_table","apply_material",
   // GUI 43-46
   "create_ui","set_ui_property","get_ui_tree","bind_ui_click",
-  // Animation 47-50
-  "create_animation_track","play_animation","set_lighting","add_particle_emitter",
+  // Animation 47-50 + motion controllers
+  "create_animation_track","create_motion_animation","inspect_motion_animation","validate_motion_animation","preview_motion_animation","remove_motion_animation","play_animation","create_motion_effect","inspect_motion_effect","remove_motion_effect","set_lighting","add_particle_emitter",
   // DataStore 51-53
   "setup_datastore","get_datastore_value","set_datastore_value",
   // Team 54-60

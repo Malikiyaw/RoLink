@@ -646,3 +646,5 @@ ok("VOLATILE_SEL declared exactly once",
   (agentSrc.match(/const VOLATILE_SEL =/g) || []).length === 1);
 ok("core fails loud on a dead provider",
   /typeof RLProvider === "undefined"/.test(mainSrc2) && /provider failed to load/.test(mainSrc2));
+ok("documented aliases are canonicalized before dispatch",
+  /search_assets:\s*"search_asset"/.test(mainSrc2) && /canonicalToolName/.test(mainSrc2));

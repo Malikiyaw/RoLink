@@ -12,6 +12,8 @@ export async function generateToolPrompts(): Promise<void> {
   const registryNames = new Set(tools.map((t) => t.name));
   const orphans = names.filter((n) => !registryNames.has(n));
   if (orphans.length) throw new Error(`toolPrompts has unknown tools: ${orphans.join(", ")}`);
+  const missing = [...registryNames].filter((n) => !toolPrompts[n]);
+  if (missing.length) throw new Error(`toolPrompts is missing registry tools: ${missing.join(", ")}`);
 
   const payload = {
     version: 1,
@@ -32,7 +34,7 @@ export async function generateToolPrompts(): Promise<void> {
     `// rolink-extension/core/tool-prompts.js — GENERATED. Do not edit by hand.\n` +
     `// Re-emit with: npm run generate:prompts (from mcp-server/)\n` +
     `//\n` +
-    `// Source of truth: mcp-server/src/tools/toolPrompts.ts (all 119 tools; lazy lookup, ~60KB one-time parse).\n` +
+    `// Source of truth: mcp-server/src/tools/toolPrompts.ts (all ${tools.length} tools; lazy lookup, ~60KB one-time parse).\n` +
     `// Loaded by content scripts (see rolink-extension/manifest.json) AFTER\n` +
     `// core/code-fields.js. main.js consults window.ROLINK_TOOL_PROMPTS on the\n` +
     `// error-recovery path (failed tool -> usage + pitfalls fed back to model).\n` +

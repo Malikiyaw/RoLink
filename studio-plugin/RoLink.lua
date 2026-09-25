@@ -1,4 +1,4 @@
--- RoLink.lua — Studio Plugin (140 tools, production)
+-- RoLink.lua — Studio Plugin (147 tools, production)
 -- Place in Studio Plugins folder or Rojo. Polls MCP every 200ms, executes, snapshots, heals, reports.
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
@@ -10,7 +10,7 @@ local PLUGIN_NAME = "RoLink 2.1"
 local PLUGIN_VERSION = "2.5.0"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
-local btn = toolbar:CreateButton("RoLink", "AI bridge (140 tools, poll 200ms)", "rbxassetid://0")
+local btn = toolbar:CreateButton("RoLink", "AI bridge (147 tools, poll 200ms)", "rbxassetid://0")
 btn.ClickableWhenViewportHidden = true
 local enabled = true
 
@@ -53,10 +53,21 @@ end
 -- persist into files or the compiler. The extension wraps execute_luau code
 -- in them; if they leak into set_script_content/create_module the whole
 -- script fails at line 1 ("Expected identifier, got '#'"). Strip them at
--- every write/exec entry point. Returns stripped, didStrip.
+-- every write/exec entry point. The canonical spellings are ###LUA###,
+-- ###END_LUA###, ###RAW###, and ###END_RAW###; character classes below also
+-- accept case/spacing/dash variants. Returns stripped, didStrip.
 local function stripMarkers(s:string): (string, boolean)
   local orig = s
-  s = s:gsub("###%s*LUA%s*:[^#\n]*###", ""):gsub("###%s*LUA%s*###", ""):gsub("###%s*END_LUA%s*###", "")
+  s = s:gsub("###%s*[Ll][Uu][Aa]%s*:[^#\n]*###", "")
+  s = s:gsub("###%s*[Ll][Uu][Aa]%s*###", "")
+  s = s:gsub("###%s*[Ll][Uu][Aa]%s*---", "")
+  s = s:gsub("###%s*[Ee][Nn][Dd][_\- ]?[Ll][Uu][Aa]%s*###", "")
+  s = s:gsub("###%s*[Ee][Nn][Dd][_\- ]?[Ll][Uu][Aa]%s*---", "")
+  s = s:gsub("###%s*[Rr][Aa][Ww]%s*:[^#\n]*###", "")
+  s = s:gsub("###%s*[Rr][Aa][Ww]%s*###", "")
+  s = s:gsub("###%s*[Rr][Aa][Ww]%s*---", "")
+  s = s:gsub("###%s*[Ee][Nn][Dd][_\- ]?[Rr][Aa][Ww]%s*###", "")
+  s = s:gsub("###%s*[Ee][Nn][Dd][_\- ]?[Rr][Aa][Ww]%s*---", "")
   s = s:gsub("^%s*```%w*\n?", ""):gsub("\n?%s*```%s*$", "")
   s = s:gsub("^%s*[Cc]opy%s+[Cc]ode%s*\n?", "")
   return s, s ~= orig
@@ -181,17 +192,52 @@ local function runWithDeadline(fn:any, code:string): (boolean, any)
   return okRun, a, b
 end
 
-local function sandboxRun(code:string): (boolean, any)
+local function compileChunk(chunkName:string, code:string): (boolean, any, string, string?)
+  local ls:any = (loadstring :: any)
+  if type(ls) == "function" then
+    local ok, fn, loadErr = pcall(function() return (ls :: any)(code, chunkName) end)
+    if ok and type(fn) == "function" then return true, fn, "loadstring", nil end
+    if ok and fn == nil then return false, tostring(loadErr), "loadstring", "compile" end
+  end
+  local ld:any = (load :: any)
+  if type(ld) == "function" then
+    local ok2, fn2, err2 = pcall(function() return (ld :: any)(code, chunkName) end)
+    if ok2 and type(fn2) == "function" then return true, fn2, "load", nil end
+    if ok2 and fn2 == nil then return false, tostring(err2), "load", "compile" end
+  end
+  return false, "loader_unavailable: loadstring() and load() are both unavailable/disabled in this plugin context", "none", "loader"
+end
+
+local harnessSeq = 0
+local function sandboxRun(code:string): (boolean, any, string, string)
   code, _ = stripMarkers(code)
   local risk = riskyLoop(code)
-  if risk then return false, risk .. " [code: " .. code:gsub("%s+", " "):sub(1, 120) .. "]" end
-  local ok, fn, loadErr = pcall(function() return loadstring(code, "RoLink") end)
+  if risk then return false, risk .. " [code: " .. code:gsub("%s+", " "):sub(1, 120) .. "]", "", "none" end
+  local captured:{string} = {}
+  local oldPrint = safeEnv.print
+  -- NOTE: the inner pcall closure must NOT reference `...` directly: Luau
+  -- forbids varargs outside the vararg function itself (compile error
+  -- "Cannot use '...' outside of a vararg function" kills the whole plugin
+  -- at load). Pack once, unpack from the upvalue instead.
+  safeEnv.print = function(...)
+    local args = table.pack(...)
+    local parts:{string} = {}
+    for i = 1, args.n do parts[i] = tostring(args[i]) end
+    local line = table.concat(parts, "\t")
+    table.insert(captured, line)
+    pcall(function() (oldPrint :: any)(table.unpack(args, 1, args.n)) end)
+  end
+  local function finish(ok:boolean, val:any, used:string?): (boolean, any, string, string)
+    safeEnv.print = oldPrint
+    return ok, val, table.concat(captured, "\n"):sub(1, 4000), used or "unknown"
+  end
+  local cok, cfn, loader, kind = compileChunk("RoLink", code)
   -- loadstring returns nil+message on syntax failure (no throw): surface the
   -- compiler message directly. The old ModuleScript harness appended
   -- "\nreturn true", turning `return {...}` into "Expected eof, got
   -- 'return'" and burying the real error under require_failed.
-  if ok and type(fn) == "function" then
-    local res = fn
+  if cok and type(cfn) == "function" then
+    local res = cfn
     applyEnv(res)
     local okRun, a, b = pcall(runWithDeadline, res, code)
     local ok2: boolean? = nil
@@ -200,50 +246,48 @@ local function sandboxRun(code:string): (boolean, any)
       ok2 = a :: any
       ret = b
     else
-      return false, tostring(a) .. " [code: " .. code:gsub("%s+", " "):sub(1, 120) .. "]" .. errLineCtx(code, tostring(a))
+      return finish(false, tostring(a) .. " [code: " .. code:gsub("%s+", " "):sub(1, 120) .. "]" .. errLineCtx(code, tostring(a)), loader)
     end
-    if ok2 then return true, ret end
+    if ok2 then return finish(true, ret, loader) end
     local err=tostring(ret); local healed=code
     if err:find("expected") or err:find("unfinished") then healed=balanceParens(healed); healed=healMissingEnds(healed) end
     healed=healed:gsub(":connect%(", ":Connect("):gsub("WatiForChild","WaitForChild"):gsub("Instnace","Instance")
     if healed~=code then
-      local okH, resH = pcall(function() return loadstring(healed, "RoLinkHeal") end)
-      if okH and resH then
-        applyEnv(resH)
-        local hOk, hA, hB = pcall(runWithDeadline, resH, healed)
-        if hOk and (hA :: any) then return true, hB end
+      local hok, hfn, hloader = compileChunk("RoLinkHeal", healed)
+      if hok and type(hfn) == "function" then
+        applyEnv(hfn)
+        local hOk, hA, hB = pcall(runWithDeadline, hfn, healed)
+        if hOk and (hA :: any) then return finish(true, hB, hloader) end
       end
     end
     -- Error context: the model only sees a line number otherwise. Attach the
     -- offending head so it can fix the actual expression.
     local head = code:gsub("%s+", " "):sub(1, 120)
-    return false, err .. " [code: " .. head .. ( #code > 120 and "..." or "") .. "]" .. errLineCtx(code, err)
-  elseif ok and fn == nil then
+    return finish(false, err .. " [code: " .. head .. ( #code > 120 and "..." or "") .. "]" .. errLineCtx(code, err), loader)
+  elseif kind == "compile" then
     -- Genuine compile failure: report the loader message, no harness detour.
     local head0 = code:gsub("%s+", " "):sub(1, 120)
-    return false, "compiler_error: " .. tostring(loadErr) .. " [code: " .. head0 .. ( #code > 120 and "..." or "") .. "]"
+    return finish(false, "compiler_error (" .. tostring(loader) .. "): " .. tostring(cfn) .. " [code: " .. head0 .. ( #code > 120 and "..." or "") .. "]", loader)
   else
-    -- loadstring itself threw (host protection): harness only for snippets
-    -- that actually use require(); anything else gets the raw message.
-    if not code:find("require%s*%(", 1) and not code:find("require%s*%s", 1) then
-      local headX = code:gsub("%s+", " "):sub(1, 120)
-      return false, "compiler_error: " .. tostring(fn) .. " [code: " .. headX .. ( #code > 120 and "..." or "") .. "]"
-    end
-    -- loadstring itself failed (syntax the parser rejects): try a ModuleScript
-    -- harness so require-style snippets still get a real compiler error.
+    -- Loader itself unavailable/disabled: fall back to a ModuleScript harness
+    -- for ANY code (not just require snippets), so execution still works.
     -- The ModuleScript MUST be parented before require() or Studio throws a
     -- bare "Requested module experienced an error" with no inner context.
+    -- Unique names per call: require() caches by ModuleScript, so reusing one
+    -- name across rapid snippets can return a stale cached chunk.
     local m: ModuleScript? = nil
+    harnessSeq += 1
+    local harnessName = "RoLinkHarness_" .. tostring(harnessSeq)
     local okHarness, harnessRes = pcall(function()
       local mod = Instance.new("ModuleScript")
-      mod.Name = "RoLinkHarness"
+      mod.Name = harnessName
       mod.Source = code
       mod.Parent = game:GetService("ServerStorage")
       m = mod
       return require(mod :: any)
     end)
     if m then pcall(function() (m :: any):Destroy() end) end
-    if okHarness then return true, harnessRes end
+    if okHarness then return finish(true, harnessRes, "harness") end
     local raw = tostring(harnessRes)
     local head2 = code:gsub("%s+", " "):sub(1, 120)
     local suffix = " [code: " .. head2 .. ( #code > 120 and "..." or "") .. "]"
@@ -253,9 +297,9 @@ local function sandboxRun(code:string): (boolean, any)
       local inner = raw:match("Requested module experienced an error[^:]*:%s*(.+)$")
         or raw:match("Requested module[^:]*:%s*(.+)$")
         or raw
-      return false, "require_failed: " .. tostring(inner) .. suffix
+      return finish(false, "require_failed: " .. tostring(inner) .. suffix, "harness")
     end
-    return false, "compiler_error: " .. raw .. suffix
+    return finish(false, "loader_unavailable: loadstring/load disabled and ModuleScript harness failed (" .. harnessName .. "): " .. raw .. suffix, "none")
   end
 end
 
@@ -271,50 +315,79 @@ local function captureSnapshot(maxDepth:number?, filter:string?): string
   return table.concat(acc, "\n"):sub(1,8000)
 end
 
+local function parseIndexedName(part:string): (string, number?)
+  local base, idx = part:match("^(.-)%[(%d+)%]$")
+  if base and idx then return base, tonumber(idx) end
+  return part, nil
+end
+local function childByName(parent:Instance, name:string): Instance?
+  local base, idx = parseIndexedName(name)
+  if idx == nil then
+    local exact = parent:FindFirstChild(base)
+    if exact then return exact end
+    for _, c in ipairs(parent:GetChildren()) do if c.Name == base then return c end end
+    return nil
+  end
+  local n = 0
+  for _, c in ipairs(parent:GetChildren()) do
+    if c.Name == base then n += 1; if n == idx then return c end end
+  end
+  return nil
+end
 local function findByPath(path:string): Instance?
   if not path or path == "" then return nil end
   if path == "workspace" or path == "Workspace" then return workspace end
   local p = path
   if p:sub(1,5) == "game." then p = p:sub(6) end
   -- slash-walk: "Workspace/ProofCube", "game.Workspace/Folder/X" (dots kept
-  -- for service names like "ServerScriptService")
+  -- for service names like "ServerScriptService"). Exact segment match
+  -- first; Name[2] disambiguates duplicates ("Keyframe[2]"). A failed walk
+  -- falls through to the legacy exact-name scan below, never to a fuzzy
+  -- descendant match, so callers report not_found + siblings.
   if p:find("/") then
     local cur: Instance? = game
     local walked = false
+    local failed = false
     for part in p:gmatch("[^/]+") do
       if part == "game" and cur == game then continue end
       if (part == "Workspace" or part == "workspace") and cur == game then
         cur = workspace; walked = true; continue
       end
-      if not cur then break end
-      local nxt = cur:FindFirstChild(part)
-      if not nxt then cur = nil; break end
+      if not cur then failed = true; break end
+      local nxt = childByName(cur, part)
+      if not nxt then failed = true; break end
       cur = nxt; walked = true
     end
-    if walked and cur then return cur end
-  end
-  -- dot-walk: "Workspace.Rig", "game.Workspace.Folder.X" (the shape models
-  -- actually write). Runs only without slashes; a failed walk falls through
-  -- to the legacy exact-name scan below, so names containing dots
-  -- ("My.Part") still resolve.
-  if p:find(".", 1, true) then
+    if not failed and walked and cur then return cur end
+  elseif p:find(".", 1, true) then
+    -- dot-walk: "Workspace.Rig", "game.Workspace.Folder.X" (the shape models
+    -- actually write). Same exact-first semantics as the slash-walk.
     local cur: Instance? = game
     local walked = false
+    local failed = false
     for part in p:gmatch("[^.]+") do
       if part == "game" and cur == game then continue end
       if (part == "Workspace" or part == "workspace") and cur == game then
         cur = workspace; walked = true; continue
       end
-      if not cur then break end
-      local nxt = cur:FindFirstChild(part)
-      if not nxt then cur = nil; break end
+      if (part == "ServerScriptService" or part == "ReplicatedStorage" or part == "StarterGui" or part == "ServerStorage") and cur == game then
+        local okSvc, svc = pcall(function() return game:GetService(part) end)
+        if okSvc and svc then cur = svc; walked = true; continue end
+      end
+      if not cur then failed = true; break end
+      local nxt = childByName(cur, part)
+      if not nxt then failed = true; break end
       cur = nxt; walked = true
     end
-    if walked and cur then return cur end
+    if not failed and walked and cur then return cur end
   end
-  -- legacy fallbacks (bare names, old single-segment behavior)
+  -- legacy fallbacks (full-string match, bare names, old single-segment
+  -- behavior). The full-string scan must survive for dotted names
+  -- ("My.Part") that the dot-walk above cannot segment.
   local ok, res = pcall(function() return game:FindFirstChild(p, true) end)
   if ok and res then return res end
+  local okW, direct = pcall(function() return workspace:FindFirstChild(p) end)
+  if okW and direct then return direct end
   local found:Instance? = nil
   pcall(function() for _,v in ipairs(game:GetDescendants()) do if v.Name==p then found=v; break end end end)
   return found
@@ -337,7 +410,8 @@ local function siblingHint(path:any): string
     end
   end)
   if #names == 0 then return "" end
-  return " Siblings under " .. parent:GetFullName() .. ": " .. table.concat(names, ", ")
+  local full = parent:GetFullName():gsub("sabuiltin_[^%.]*%.", "")
+  return " Siblings under " .. full .. ": " .. table.concat(names, ", ")
 end
 
 -- Safe property dump: iterating an Instance with pairs() throws
@@ -628,18 +702,57 @@ local function playAnimation(args:{ [string]: any }): { [string]: any }
   ret.note = "Edit mode never renders animation playback - press Play to see it move."
   return ret
 end
-local function summarizeSequence(seq: Instance, animId: string): { [string]: any }
+local function clipCurvesSummary(clip: Instance): { [string]: any }
+  local curves:{ [string]: any } = {}
+  pcall(function()
+    for _, child in ipairs(clip:GetChildren()) do
+      if child:IsA("StringValue") and child.Name:find("Curve_") == 1 then
+        local okDec, data = pcall(function()
+          return game:GetService("HttpService"):JSONDecode((child::any).Value or "[]")
+        end)
+        table.insert(curves, { part = child.Name:sub(7), keys = (okDec and type(data) == "table") and #data or 0 })
+      end
+    end
+  end)
+  return curves
+end
+local function findClipTwin(seq: Instance): Instance?
+  local twin: Instance? = nil
+  pcall(function()
+    local parent = seq.Parent
+    if parent then twin = parent:FindFirstChild(seq.Name .. "Clip") end
+    if twin and not twin:IsA("AnimationClip") then twin = nil end
+  end)
+  return twin
+end
+local function poseNumbers(pose: Instance): { [string]: any }
+  local out:{ [string]: any } = { part = pose.Name }
+  pcall(function()
+    local cf: CFrame = (pose::any).CFrame
+    local px, py, pz = cf.X, cf.Y, cf.Z
+    local rx, ry, rz = cf:ToEulerAnglesXYZ()
+    out.position = { x = math.floor(px * 1000 + 0.5) / 1000, y = math.floor(py * 1000 + 0.5) / 1000, z = math.floor(pz * 1000 + 0.5) / 1000 }
+    out.rotation = { x = math.floor(math.deg(rx) * 100 + 0.5) / 100, y = math.floor(math.deg(ry) * 100 + 0.5) / 100, z = math.floor(math.deg(rz) * 100 + 0.5) / 100 }
+  end)
+  return out
+end
+local function summarizeSequence(seq: Instance, animId: string, numeric:boolean?): { [string]: any }
   local kfs = (seq::any):GetKeyframes()
   local parts:{string} = {}; local seen:{[string]:boolean} = {}; local dur = 0
   local detail:{any} = {}
+  local cap = numeric and 200 or 50
   for idx, kf in ipairs(kfs) do
-    if idx > 50 then break end
+    if idx > cap then break end
     if (kf::any).Time > dur then dur = (kf::any).Time end
-    local poses:{string} = {}
+    local poses:{any} = {}
     for _, d in ipairs((kf::any):GetDescendants()) do
       if d:IsA("Pose") then
         if not seen[d.Name] then seen[d.Name] = true; table.insert(parts, d.Name) end
-        if #poses < 12 then table.insert(poses, d.Name) end
+        if numeric then
+          if #poses < 64 then table.insert(poses, poseNumbers(d)) end
+        else
+          if #poses < 12 then table.insert(poses, d.Name) end
+        end
       end
     end
     -- Duplicate Keyframe names are legal; index disambiguates them.
@@ -647,7 +760,9 @@ local function summarizeSequence(seq: Instance, animId: string): { [string]: any
   end
   table.sort(parts)
   local ret:{ [string]: any } = { animationId = animId, name = (seq::any).Name, path = (seq::any):GetFullName(),
-    keyframeCount = #kfs, duration = dur, parts = parts, keyframes = detail, loop = (seq::any).Loop }
+    keyframeCount = #kfs, duration = dur, parts = parts, keyframes = detail, loop = (seq::any).Loop,
+    numeric = numeric == true, truncated = #kfs > cap,
+    note = "rotations in degrees, positions in studs. Use Name[2] indexing for duplicate Keyframe/Pose names." }
   -- Clip-twin enrichment is optional and must NEVER fail the read: a stale
   -- plugin copy missing findClipTwin (seen live as Script:651 "attempt to
   -- call a nil value") used to turn a good info call into a crash.
@@ -671,25 +786,34 @@ end
 local function getAnimationInfo(args:{ [string]: any }): { [string]: any }
   local animId = tostring(args.animationId or "")
   local pathArg = tostring(args.path or "")
+  local numeric = args.numeric == true or tostring(args.mode or ""):lower() == "numeric"
   if pathArg ~= "" then
     local inst = findByPath(pathArg)
     if not inst then error("not found " .. pathArg .. siblingHint(pathArg)) end
     if not (inst:IsA("KeyframeSequence")) then
       error("not a KeyframeSequence: " .. inst:GetFullName() .. " (" .. inst.ClassName .. ")")
     end
-    return summarizeSequence(inst, animId ~= "" and animId or inst:GetFullName())
+    return summarizeSequence(inst, animId ~= "" and animId or inst:GetFullName(), numeric or nil)
   end
   if animId == "" then error("animationId or path required (e.g. path=Workspace/RoLinkAnimations/HelloWave)") end
   local seq = animCache[animId]
   if not seq then
     -- A path may have been passed as animationId by older prompts.
     local byPath = findByPath(animId)
-    if byPath and byPath:IsA("KeyframeSequence") then return summarizeSequence(byPath, animId) end
+    if byPath and byPath:IsA("KeyframeSequence") then return summarizeSequence(byPath, animId, numeric or nil) end
     local ok, got = pcall(function() return game:GetService("KeyframeSequenceProvider"):GetKeyframeSequenceAsync(animId) end)
     if not ok or not got then error("animation not found: " .. animId) end
     seq = got
   end
-  return summarizeSequence(seq, animId)
+  return summarizeSequence(seq, animId, numeric or nil)
+end
+local function inspectKeyframeTrack(args:{ [string]: any }): { [string]: any }
+  local pathArg = tostring(args.path or args.trackPath or args.animationId or "")
+  if pathArg == "" then error("path required (e.g. path=Workspace/RoLinkAnimations/M1)") end
+  local inst = findByPath(pathArg)
+  if not inst then error("not found " .. pathArg .. siblingHint(pathArg)) end
+  if not inst:IsA("KeyframeSequence") then error("not a KeyframeSequence: " .. inst:GetFullName() .. " (" .. inst.ClassName .. ") - for model animations use validate_model_animation with a ReplicatedStorage/RoLinkModelAnims/<Name>") end
+  return summarizeSequence(inst, inst:GetFullName(), true)
 end
 local function deleteAnimation(args:{ [string]: any }): { [string]: any }
   local animId = tostring(args.animationId or "")
@@ -702,7 +826,661 @@ local function deleteAnimation(args:{ [string]: any }): { [string]: any }
   return { deleted = false, animationId = animId, error = "not cached (only temp tracks can be deleted)" }
 end
 
--- ── Cinematics (tools 114-117) ──────────────────────────────────────
+-- ── Roblox motion animation controllers (tools 126-130) ─────────────
+-- These controllers are real Edit-time data plus a real Play-time Script.
+-- The temporary KeyframeSequence hash is intentionally not trusted across
+-- DataModels: the generated script registers the sequence by its verified
+-- path when the game starts. This is the same Animation -> Animator chain
+-- required by Roblox, but it is wired automatically for the user.
+local MOTION_ROOT_NAME = "RoLinkMotionAnimations"
+local function motionCleanName(raw:any, fallback:string): string
+  local n = tostring(raw or fallback):gsub("^%s+", ""):gsub("%s+$", "")
+  n = n:gsub("[^%w_%-]", "_"):sub(1, 64)
+  if n == "" then n = fallback end
+  return n
+end
+local function motionPath(inst: Instance): string
+  local parts:{string} = {}
+  local cur: Instance? = inst
+  while cur and cur ~= game do
+    table.insert(parts, 1, cur.Name)
+    cur = cur.Parent
+  end
+  return table.concat(parts, "/")
+end
+local function motionRoot(): Instance
+  local rs = game:GetService("ReplicatedStorage")
+  local root = rs:FindFirstChild(MOTION_ROOT_NAME)
+  if not root then
+    root = Instance.new("Folder")
+    root.Name = MOTION_ROOT_NAME
+    root.Parent = rs
+  end
+  return root
+end
+local function motionPlain(v:any, depth:number?, seen:{ [any]: boolean }?): any
+  depth = depth or 0
+  if depth > 8 then error("motion configuration is nested too deeply") end
+  local t = typeof(v)
+  if t == "string" or t == "number" or t == "boolean" or t == "nil" then return v end
+  if t == "Vector3" then
+    return { x = v.X, y = v.Y, z = v.Z }
+  end
+  if t == "Vector2" then
+    return { x = v.X, y = v.Y }
+  end
+  if t == "Color3" then return { r = v.R, g = v.G, b = v.B } end
+  if t == "CFrame" then
+    local p, r = v.Position, v:ToEulerAnglesXYZ()
+    return { position = { x = p.X, y = p.Y, z = p.Z },
+      rotation = { x = math.deg(r.X), y = math.deg(r.Y), z = math.deg(r.Z) } }
+  end
+  if t ~= "table" then error("motion properties must contain JSON values, got " .. t) end
+  seen = seen or {}
+  if seen[v] then error("motion properties contain a cycle") end
+  seen[v] = true
+  local out:{ [string]: any } = {}
+  for k, value in pairs(v) do
+    if type(k) ~= "string" and type(k) ~= "number" then
+      error("motion property keys must be strings or numbers")
+    end
+    out[tostring(k)] = motionPlain(value, depth + 1, seen)
+  end
+  seen[v] = nil
+  return out
+end
+local function motionJson(value:any): string
+  local ok, encoded = pcall(function() return HttpService:JSONEncode(motionPlain(value)) end)
+  if not ok then error("motion configuration is not JSON-safe: " .. tostring(encoded):sub(1, 180)) end
+  return encoded
+end
+local function motionScriptSource(folderName:string): string
+  return "local CONFIG_FOLDER = " .. string.format("%q", folderName) .. "\n" .. [==[
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
+local RunService = game:GetService("RunService")
+local root = ReplicatedStorage:WaitForChild("RoLinkMotionAnimations")
+local folder = root:WaitForChild(CONFIG_FOLDER)
+local configValue = folder:WaitForChild("Config")
+local ok, config = pcall(function()
+  return HttpService:JSONDecode(configValue.Value)
+end)
+if not ok or type(config) ~= "table" then
+  warn("[RoLink] motion controller has invalid Config JSON")
+  return
+end
+local function resolve(path)
+  local current = game
+  for part in string.gmatch(path or "", "[^/]+") do
+    if part == "Workspace" then
+      current = Workspace
+    elseif part == "ReplicatedStorage" or part == "ServerStorage"
+      or part == "ServerScriptService" or part == "StarterPlayer" then
+      current = game:GetService(part)
+    elseif current then
+      current = current:FindFirstChild(part, true)
+    end
+    if not current then return nil end
+  end
+  return current
+end
+local target = resolve(config.targetPath)
+if not target then
+  warn("[RoLink] motion target is not present: " .. tostring(config.targetPath))
+  return
+end
+local sequence = resolve(config.sequencePath)
+if not sequence or not sequence:IsA("KeyframeSequence") then
+  warn("[RoLink] motion KeyframeSequence is not present: " .. tostring(config.sequencePath))
+  return
+end
+local humanoid = target:FindFirstChildOfClass("Humanoid")
+if not humanoid then
+  warn("[RoLink] motion target has no Humanoid: " .. target:GetFullName())
+  return
+end
+local animator = humanoid:FindFirstChildOfClass("Animator")
+if not animator then
+  animator = Instance.new("Animator")
+  animator.Parent = humanoid
+end
+if tonumber(config.startDelay or 0) > 0 then task.wait(tonumber(config.startDelay)) end
+if config.autoPlay == false then
+  folder:SetAttribute("RoLinkRuntimeState", "manual")
+  return
+end
+local registered, animationId = pcall(function()
+  return KeyframeSequenceProvider:RegisterKeyframeSequence(sequence)
+end)
+if not registered or not animationId then
+  warn("[RoLink] could not register motion KeyframeSequence at runtime")
+  return
+end
+local animation = Instance.new("Animation")
+animation.Name = tostring(config.name or "RoLinkMotion")
+animation.AnimationId = animationId
+local track = animator:LoadAnimation(animation)
+track.Looped = config.loop == true
+local speed = tonumber(config.speed or 1) or 1
+if speed ~= 1 then track:AdjustSpeed(math.clamp(speed, 0.1, 8)) end
+folder:SetAttribute("RoLinkRuntimeState", "playing")
+folder:SetAttribute("RoLinkAnimationId", tostring(animationId))
+track:Play()
+]==]
+end
+local function motionDestroy(name:string, includeSequence:boolean): { [string]: any }
+  local root = motionRoot()
+  local folder = root:FindFirstChild(name)
+  local config:any = nil
+  local configValue: Instance? = nil
+  if folder then
+    configValue = folder:FindFirstChild("Config")
+    if configValue and configValue:IsA("StringValue") then
+      pcall(function() config = HttpService:JSONDecode((configValue :: StringValue).Value) end)
+    end
+  end
+  local destroyed:{ [string]: any } = {}
+  if folder then
+    destroyed.controller = folder:GetFullName()
+    folder:Destroy()
+  end
+  local serviceList:{ Instance } = {game:GetService("ServerScriptService")}
+  local starter = game:GetService("StarterPlayer")
+  local starterScripts = starter:FindFirstChild("StarterPlayerScripts")
+  if starterScripts then table.insert(serviceList, starterScripts) end
+  for _, service in ipairs(serviceList) do
+    local scripts = service:FindFirstChild("RoLinkMotionScripts")
+    if scripts then
+      local script = scripts:FindFirstChild("RoLinkMotion_" .. name)
+      if script then
+        destroyed.script = script:GetFullName()
+        script:Destroy()
+      end
+    end
+  end
+  if includeSequence then
+    local sequencePath = type(config) == "table" and config.sequencePath or nil
+    local sequence = sequencePath and findByPath(sequencePath) or nil
+    if sequence and sequence:IsA("KeyframeSequence")
+      and sequence:GetAttribute("RoLinkMotionAnimation") == name then
+      destroyed.sequence = sequence:GetFullName()
+      sequence:Destroy()
+    end
+  end
+  return destroyed
+end
+local function motionFolderAndConfig(name:string): (Instance, { [string]: any })
+  local folder = motionRoot():FindFirstChild(name)
+  if not folder then
+    error("MOTION_CONTROLLER_NOT_FOUND: no motion animation named '" .. name:sub(1, 64)
+      .. "' under ReplicatedStorage/" .. MOTION_ROOT_NAME)
+  end
+  local value = folder:FindFirstChild("Config")
+  if not value or not value:IsA("StringValue") then
+    error("MOTION_CONTROLLER_CORRUPT: '" .. name:sub(1, 64) .. "' has no Config StringValue")
+  end
+  local ok, config = pcall(function() return HttpService:JSONDecode((value :: StringValue).Value) end)
+  if not ok or type(config) ~= "table" then
+    error("MOTION_CONTROLLER_CORRUPT: '" .. name:sub(1, 64) .. "' Config is not valid JSON")
+  end
+  return folder, config
+end
+local function motionSequence(config:any): Instance?
+  local path = type(config) == "table" and tostring(config.sequencePath or "") or ""
+  if path == "" then return nil end
+  local inst = findByPath(path)
+  if inst and inst:IsA("KeyframeSequence") then return inst end
+  return nil
+end
+local function motionControllerSummary(name:string): { [string]: any }
+  local folder, config = motionFolderAndConfig(name)
+  local target = findByPath(tostring(config.targetPath or ""))
+  local sequence = motionSequence(config)
+  local out:{ [string]: any } = {
+    name = name, controller = folder:GetFullName(),
+    targetPath = tostring(config.targetPath or ""),
+    targetResolved = target ~= nil,
+    targetClass = target and target.ClassName or nil,
+    sequencePath = tostring(config.sequencePath or ""),
+    sequenceResolved = sequence ~= nil,
+    playback = tostring(config.playback or "server"),
+    autoPlay = config.autoPlay ~= false,
+    loop = config.loop == true,
+    speed = tonumber(config.speed or 1) or 1,
+    startDelay = tonumber(config.startDelay or 0) or 0,
+    runtimeState = folder:GetAttribute("RoLinkRuntimeState"),
+  }
+  if sequence then
+    out.sequence = summarizeSequence(sequence, tostring(config.animationId or sequence:GetFullName()), true)
+  end
+  local warnings:{ [string]: any } = {}
+  if not target then table.insert(warnings, "target does not resolve in the current Edit DataModel") end
+  if not sequence then table.insert(warnings, "KeyframeSequence does not resolve") end
+  out.warnings = warnings
+  return out
+end
+local function motionSampleSequence(seq: Instance, t:number): { [string]: any }
+  local kfs = (seq :: any):GetKeyframes()
+  table.sort(kfs, function(a, b) return (a :: any).Time < (b :: any).Time end)
+  local before: any = nil
+  local after: any = nil
+  for _, kf in ipairs(kfs) do
+    if (kf :: any).Time <= t then before = kf else after = kf break end
+  end
+  if not before then before = kfs[1] end
+  if not after then after = kfs[#kfs] end
+  local function poseMap(kf:any): { [string]: any }
+    local map:{ [string]: any } = {}
+    if not kf then return map end
+    for _, d in ipairs((kf :: any):GetDescendants()) do
+      if d:IsA("Pose") and map[d.Name] == nil then map[d.Name] = d.CFrame end
+    end
+    return map
+  end
+  local a, b = poseMap(before), poseMap(after)
+  local t0, t1 = (before :: any).Time, (after :: any).Time
+  local f = 0
+  if t1 > t0 then f = math.clamp((t - t0) / (t1 - t0), 0, 1) end
+  local names:{string} = {}
+  local seen:{[string]:boolean} = {}
+  for n in pairs(a) do seen[n] = true; table.insert(names, n) end
+  for n in pairs(b) do if not seen[n] then table.insert(names, n) end end
+  table.sort(names)
+  local out:{ [string]: any } = {}
+  for _, n in ipairs(names) do
+    local cf = a[n] or b[n]
+    if a[n] and b[n] then cf = a[n]:Lerp(b[n], f) end
+    local p = cf.Position
+    local r = cf:ToEulerAnglesXYZ()
+    out[n] = {
+      position = { x = math.floor(p.X * 1000 + 0.5) / 1000,
+        y = math.floor(p.Y * 1000 + 0.5) / 1000,
+        z = math.floor(p.Z * 1000 + 0.5) / 1000 },
+      rotation = { x = math.floor(math.deg(r.X) * 100 + 0.5) / 100,
+        y = math.floor(math.deg(r.Y) * 100 + 0.5) / 100,
+        z = math.floor(math.deg(r.Z) * 100 + 0.5) / 100 },
+    }
+  end
+  return out
+end
+local function motionFindRigPart(target: Instance, wanted:string): BasePart
+  local found: BasePart? = nil
+  local count = 0
+  for _, d in ipairs(target:GetDescendants()) do
+    if d:IsA("BasePart") and d.Name == wanted then
+      count += 1
+      found = d
+    end
+  end
+  if count == 0 then
+    error("MOTION_TRACK_NOT_FOUND: target '" .. target:GetFullName() .. "' has no BasePart named '"
+      .. wanted:sub(1, 64) .. "' - run analyze_animatable_model and use an exact part name")
+  end
+  if count > 1 then
+    error("MOTION_TRACK_AMBIGUOUS: target '" .. target:GetFullName() .. "' has duplicate BasePart name '"
+      .. wanted:sub(1, 64) .. "' - rename the part or use a unique rig")
+  end
+  return found
+end
+local function motionRigInfo(target: Instance, trackNames:{ [string]: boolean }): (BasePart, { [string]: BasePart }, { [BasePart]: BasePart? })
+  local root: BasePart? = target:FindFirstChild("HumanoidRootPart")
+  if not root and target:IsA("Model") then
+    pcall(function() root = (target :: Model).PrimaryPart end)
+  end
+  if not root then
+    error("MOTION_RIG_ROOT_MISSING: model '" .. target:GetFullName()
+      .. "' needs HumanoidRootPart or PrimaryPart before a KeyframeSequence can be built")
+  end
+  local parts:{ [string]: BasePart } = {}
+  for _, d in ipairs(target:GetDescendants()) do
+    if d:IsA("BasePart") then
+      if parts[d.Name] then
+        error("MOTION_RIG_DUPLICATE_PART: duplicate BasePart name '" .. d.Name:sub(1, 64) .. "'")
+      end
+      parts[d.Name] = d
+    end
+  end
+  local parent:{ [BasePart]: BasePart? } = {}
+  local seenParts:{ [BasePart]: boolean } = {[(root :: BasePart)] = true}
+  local queue:{ BasePart } = {root :: BasePart}
+  local qi = 1
+  while qi <= #queue do
+    local current = queue[qi]
+    qi += 1
+    for _, d in ipairs(target:GetDescendants()) do
+      if d:IsA("Motor6D") then
+        local p0, p1 = d.Part0, d.Part1
+        if p0 == current and p1 and not seenParts[p1] then
+          parent[p1] = current
+          seenParts[p1] = true
+          table.insert(queue, p1)
+        elseif p1 == current and p0 and not seenParts[p0] then
+          parent[p0] = current
+          seenParts[p0] = true
+          table.insert(queue, p0)
+        end
+      end
+    end
+  end
+  for name in pairs(trackNames) do
+    local part = parts[name]
+    if not part then
+      error("MOTION_TRACK_NOT_FOUND: no BasePart named '" .. name:sub(1, 64)
+        .. "' under '" .. target:GetFullName() .. "'")
+    end
+    local seen = part
+    while seen and seen ~= root do
+      if parent[seen] == nil then
+        error("MOTION_TRACK_DISCONNECTED: '" .. name:sub(1, 64)
+          .. "' is not connected to the rig root by a Motor6D")
+      end
+      seen = parent[seen]
+    end
+  end
+  return root :: BasePart, parts, parent
+end
+local function motionPoseCFrame(data:any): CFrame
+  local p = (type(data) == "table" and (data :: any).position) or data
+  local r = type(data) == "table" and (data :: any).rotation or nil
+  return CFrame.new(vec3(p)) * CFrame.Angles(
+    math.rad(num(r and (r :: any).x, 0)),
+    math.rad(num(r and (r :: any).y, 0)),
+    math.rad(num(r and (r :: any).z, 0)))
+end
+local function motionEasingParts(name:string): (string, string)
+  local resolved = resolveEasing(name) or "linear"
+  if resolved == "linear" then return "Linear", "InOut" end
+  if resolved:find("InOut", 1, true) then
+    local family = resolved:match("^(quad|cubic|sine)") or "quad"
+    if family == "cubic" then return "Cubic", "InOut" end
+    if family == "sine" then return "Sine", "InOut" end
+    return "Quad", "InOut"
+  end
+  local family = resolved:match("^(quad|cubic|sine)") or "quad"
+  local direction = resolved:find("Out", 1, true) and "Out" or "In"
+  if family == "cubic" then return "Cubic", direction end
+  if family == "sine" then return "Sine", direction end
+  return "Quad", direction
+end
+local function createMotionSequence(args:{ [string]: any }, target: Model): { [string]: any }
+  local kfData = args.keyframes
+  if type(kfData) ~= "table" or #kfData == 0 then error("keyframes must be a non-empty array") end
+  if #kfData > 200 then error("too many keyframes (max 200)") end
+  local trackNames:{ [string]: boolean } = {}
+  local totalPoses = 0
+  local lastTime = -1
+  for i, kfD in ipairs(kfData) do
+    if type(kfD) ~= "table" then error("keyframe " .. i .. " must be an object") end
+    local t = num((kfD :: any).time, 0)
+    if t < 0 or t ~= t or t == math.huge or t == -math.huge then
+      error("keyframe " .. i .. " time must be a finite number >= 0")
+    end
+    if t < lastTime then error("keyframe times must be non-decreasing (keyframe " .. i .. " goes backwards)") end
+    lastTime = t
+    local poses = (kfD :: any).poses
+    if type(poses) ~= "table" or #poses == 0 then error("keyframe " .. i .. " poses must be non-empty") end
+    if #poses > 64 then error("too many poses on keyframe " .. i .. " (max 64)") end
+    for _, pD in ipairs(poses) do
+      if type(pD) ~= "table" or tostring((pD :: any).part or "") == "" then
+        error("keyframe " .. i .. " has a pose without a part name")
+      end
+      local partName = tostring((pD :: any).part)
+      if trackNames[partName] then
+        -- A duplicate pose in one keyframe is almost always a typo. Reject it
+        -- before creating any instances so a failed call leaves no half-track.
+        local seen = false
+        for _, other in ipairs(poses) do
+          if other ~= pD and tostring((other :: any).part or "") == partName then seen = true break end
+        end
+        if seen then error("duplicate pose part '" .. partName:sub(1, 64) .. "' on keyframe " .. i) end
+      end
+      trackNames[partName] = true
+      totalPoses += 1
+    end
+  end
+  if totalPoses > 1024 then error("too many animated poses (" .. totalPoses .. ", max 1024)") end
+  local root, parts, parent = motionRigInfo(target, trackNames)
+  local allParts:{ BasePart } = {root}
+  local included:{ [BasePart]: boolean } = {[root] = true}
+  local function includeAncestors(part:BasePart)
+    local cur = parent[part]
+    while cur and not included[cur] do
+      included[cur] = true
+      table.insert(allParts, cur)
+      cur = parent[cur]
+    end
+  end
+  for name in pairs(trackNames) do includeAncestors(motionFindRigPart(target, name)) end
+  local children:{ [BasePart]: { BasePart } } = {}
+  for _, part in ipairs(allParts) do
+    local p = parent[part]
+    if p then
+      if not children[p] then children[p] = {} end
+      table.insert(children[p], part)
+    end
+  end
+  for _, list in pairs(children) do
+    table.sort(list, function(a, b) return a.Name < b.Name end)
+  end
+  local seq = Instance.new("KeyframeSequence")
+  seq.Name = tostring(args.name or "RoLinkMotion")
+  if args.loop == true then pcall(function() (seq :: any).Loop = true end) end
+  for _, kfD in ipairs(kfData) do
+    local kf = Instance.new("Keyframe")
+    kf.Time = math.max(0, num((kfD :: any).time, 0))
+    local byName:{ [string]: any } = {}
+    for _, pD in ipairs((kfD :: any).poses or {}) do byName[tostring((pD :: any).part)] = pD end
+    local made:{ [BasePart]: any } = {}
+    local function build(part:BasePart, parentPose:any)
+      local pose = Instance.new("Pose")
+      pose.Name = part.Name
+      local data = byName[part.Name]
+      pose.CFrame = data and motionPoseCFrame(data) or CFrame.new()
+      local style, direction = motionEasingParts(tostring((kfD :: any).easing or "linear"))
+      pcall(function() (pose :: any).EasingStyle = Enum.EasingStyle[style] end)
+      pcall(function() (pose :: any).EasingDirection = Enum.EasingDirection[direction] end)
+      if parentPose then
+        local ok = pcall(function() (parentPose :: any):AddSubPose(pose) end)
+        if not ok then pose.Parent = parentPose end
+      else
+        pose.Parent = kf
+      end
+      made[part] = pose
+      for _, child in ipairs(children[part] or {}) do build(child, pose) end
+    end
+    build(root, nil)
+    kf.Parent = seq
+  end
+  local okRead, readKfs = pcall(function() return (seq :: any):GetKeyframes() end)
+  if not okRead or type(readKfs) ~= "table" or #readKfs ~= #kfData then
+    pcall(function() seq:Destroy() end)
+    error("MOTION_BUILD_VERIFY_FAILED: KeyframeSequence readback did not match the requested keyframes")
+  end
+  for _, kf in ipairs(readKfs) do
+    local rootPose = kf:FindFirstChild(root.Name)
+    if not rootPose or not rootPose:IsA("Pose") then
+      pcall(function() seq:Destroy() end)
+      error("MOTION_BUILD_VERIFY_FAILED: root Pose '" .. root.Name .. "' is missing")
+    end
+  end
+  return { sequence = seq, keyframes = #kfData, duration = lastTime,
+    trackCount = #trackNames, root = root }
+end
+
+local function createMotionAnimation(args:{ [string]: any }): { [string]: any }
+  local targetPath = tostring(args.target or "")
+  local target = findByPath(targetPath)
+  if not target then error("not found " .. targetPath .. siblingHint(targetPath)) end
+  if not target:IsA("Model") then
+    error("MOTION_TARGET_INVALID: create_motion_animation needs a Model path with a Humanoid, got "
+      .. target:GetFullName() .. " (" .. target.ClassName .. ")")
+  end
+  if not target:FindFirstChildOfClass("Humanoid") then
+    error("MOTION_TARGET_INVALID: model '" .. target:GetFullName() .. "' has no Humanoid")
+  end
+  local name = motionCleanName(args.name, "RoLinkMotion")
+  local root = motionRoot()
+  local oldFolder = root:FindFirstChild(name)
+  local animFolder = game.Workspace:FindFirstChild("RoLinkAnimations")
+  local oldSequence = animFolder and animFolder:FindFirstChild(name) or nil
+  if (oldFolder or oldSequence) and args.confirm ~= true then
+    error("CONFIRM_REQUIRED: motion animation '" .. name .. "' already exists - re-send with confirm:true to replace it")
+  end
+  if oldFolder or oldSequence then motionDestroy(name, true) end
+  local animArgs:{ [string]: any } = {}
+  for k, v in pairs(args) do animArgs[k] = v end
+  animArgs.name = name
+  local made = createMotionSequence(animArgs, target)
+  local sequence = made.sequence
+  local sequenceFolder = game.Workspace:FindFirstChild("RoLinkAnimations")
+  if not sequenceFolder then
+    sequenceFolder = Instance.new("Folder")
+    sequenceFolder.Name = "RoLinkAnimations"
+    sequenceFolder.Parent = game.Workspace
+  end
+  sequence.Name = name
+  sequence.Parent = sequenceFolder
+  local registered, animationId = pcall(function()
+    return game:GetService("KeyframeSequenceProvider"):RegisterKeyframeSequence(sequence)
+  end)
+  if not registered or not animationId then
+    pcall(function() sequence:Destroy() end)
+    error("MOTION_BUILD_FAILED: Studio could not register the KeyframeSequence")
+  end
+  animCache[tostring(animationId)] = sequence
+  made.animationId = tostring(animationId)
+  made.path = sequence:GetFullName()
+  sequence:SetAttribute("RoLinkMotionAnimation", name)
+  local playback = tostring(args.playback or "server")
+  if playback ~= "server" and playback ~= "client" then
+    error("playback must be server or client")
+  end
+  local config = {
+    name = name, targetPath = motionPath(target),
+    sequencePath = motionPath(sequence), animationId = tostring(made.animationId or ""),
+    loop = args.loop == true, playback = playback,
+    autoPlay = args.autoPlay ~= false, speed = num(args.speed, 1),
+    startDelay = num(args.startDelay, 0),
+  }
+  local folder = Instance.new("Folder")
+  folder.Name = name
+  folder:SetAttribute("RoLinkMotionAnimation", true)
+  folder:SetAttribute("targetPath", config.targetPath)
+  folder:SetAttribute("sequencePath", config.sequencePath)
+  folder:SetAttribute("playback", playback)
+  folder:SetAttribute("autoPlay", config.autoPlay)
+  folder:SetAttribute("loop", config.loop)
+  local value = Instance.new("StringValue")
+  value.Name = "Config"
+  value.Value = motionJson(config)
+  value.Parent = folder
+  folder.Parent = root
+  local serviceName = playback == "client" and "StarterPlayer" or "ServerScriptService"
+  local service = game:GetService(serviceName)
+  local scripts = service:FindFirstChild("RoLinkMotionScripts")
+  if not scripts then
+    scripts = Instance.new("Folder")
+    scripts.Name = "RoLinkMotionScripts"
+    scripts.Parent = service
+  end
+  local script = Instance.new(playback == "client" and "LocalScript" or "Script")
+  script.Name = "RoLinkMotion_" .. name
+  script.Source = motionScriptSource(name)
+  script.Parent = scripts
+  folder:SetAttribute("scriptPath", script:GetFullName())
+  pcall(function() ChangeHistoryService:SetWaypoint("RoLink motion animation " .. name) end)
+  return { animation = name, controller = folder:GetFullName(), script = script:GetFullName(),
+    target = target:GetFullName(), sequence = sequence:GetFullName(),
+    animationId = made.animationId, keyframes = made.keyframes, duration = made.duration,
+    playback = playback, autoPlay = config.autoPlay, loop = config.loop,
+    rendered = false, playable = true,
+    note = "Edit-time controller created. The Script registers this KeyframeSequence and plays it in Play mode." }
+end
+local function inspectMotionAnimation(args:{ [string]: any }): { [string]: any }
+  return motionControllerSummary(motionCleanName(args.name, "RoLinkMotion"))
+end
+local function validateMotionAnimation(args:{ [string]: any }): { [string]: any }
+  local name = motionCleanName(args.name, "RoLinkMotion")
+  local folder, config = motionFolderAndConfig(name)
+  local target = findByPath(tostring(config.targetPath or ""))
+  local sequence = motionSequence(config)
+  local errors:{ [string]: any } = {}
+  local warnings:{ [string]: any } = {}
+  if not target then
+    table.insert(errors, { code = "TARGET_GONE", detail = tostring(config.targetPath) })
+  elseif not target:IsA("Model") or not target:FindFirstChildOfClass("Humanoid") then
+    table.insert(errors, { code = "TARGET_NOT_RIG", detail = target:GetFullName() })
+  end
+  if not sequence then
+    table.insert(errors, { code = "SEQUENCE_GONE", detail = tostring(config.sequencePath) })
+  end
+  local duration = 0
+  if sequence then
+    local kfs = (sequence :: any):GetKeyframes()
+    duration = #kfs > 0 and (kfs[#kfs] :: any).Time or 0
+    if #kfs == 0 then table.insert(errors, { code = "EMPTY_SEQUENCE", detail = name }) end
+    for i = 2, #kfs do
+      if (kfs[i] :: any).Time < (kfs[i - 1] :: any).Time - 1e-9 then
+        table.insert(errors, { code = "TIME_ORDER", detail = "keyframe " .. i })
+      end
+    end
+    if duration <= 0 then table.insert(errors, { code = "BAD_DURATION", detail = "duration must be > 0" }) end
+  end
+  local playback = tostring(config.playback or "")
+  if playback ~= "server" and playback ~= "client" then
+    table.insert(errors, { code = "BAD_PLAYBACK", detail = playback })
+  end
+  local speed = tonumber(config.speed or 1) or 0
+  if speed < 0.1 or speed > 8 then table.insert(errors, { code = "BAD_SPEED", detail = tostring(config.speed) }) end
+  if config.autoPlay == false then
+    table.insert(warnings, { code = "MANUAL", detail = "autoPlay=false; the controller will not play until enabled" })
+  end
+  local out = motionControllerSummary(name)
+  out.valid = #errors == 0
+  out.errors = errors
+  out.warnings = warnings
+  out.duration = duration
+  out.controllerExists = folder ~= nil
+  return out
+end
+local function previewMotionAnimation(args:{ [string]: any }): { [string]: any }
+  local name = motionCleanName(args.name, "RoLinkMotion")
+  local folder, config = motionFolderAndConfig(name)
+  local sequence = motionSequence(config)
+  if not sequence then error("MOTION_SEQUENCE_NOT_FOUND: " .. tostring(config.sequencePath)) end
+  local kfs = (sequence :: any):GetKeyframes()
+  if #kfs == 0 then error("MOTION_SEQUENCE_EMPTY: " .. name) end
+  local duration = (kfs[#kfs] :: any).Time
+  local step = math.clamp(num(args.step, 0.1), 0.02, 1)
+  local count = math.min(200, math.max(3, math.floor(duration / step) + 1))
+  local samples:{ [string]: any } = {}
+  for i = 0, count - 1 do
+    local t = duration * i / (count - 1)
+    table.insert(samples, { t = math.floor(t * 1000 + 0.5) / 1000,
+      poses = motionSampleSequence(sequence, t) })
+  end
+  return { name = name, controller = folder:GetFullName(), sequence = motionPath(sequence),
+    duration = duration, step = step, sampleCount = #samples, samples = samples,
+    rendered = false, playable = true,
+    note = "Numeric pose samples from the real KeyframeSequence; Studio plugins cannot prove rendered pixels." }
+end
+local function removeMotionAnimation(args:{ [string]: any }): { [string]: any }
+  local name = motionCleanName(args.name, "RoLinkMotion")
+  if args.confirm ~= true then
+    error("CONFIRM_REQUIRED: remove motion animation '" .. name .. "' - re-send with confirm:true")
+  end
+  local root = motionRoot()
+  if not root:FindFirstChild(name) then
+    error("MOTION_CONTROLLER_NOT_FOUND: no motion animation named '" .. name:sub(1, 64) .. "'")
+  end
+  local destroyed = motionDestroy(name, true)
+  pcall(function() ChangeHistoryService:SetWaypoint("RoLink remove motion animation " .. name) end)
+  return { removed = true, name = name, destroyed = destroyed }
+end
+
+-- ── Cinematics (tools 114-119) ──────────────────────────────────────
 -- Edit stores the data model; Play renders it via a real server Script.
 -- Every builder returns a runtimeSnippet for that Script. Only create_vfx
 -- renders immediately (viewport particles/lights work in Edit).
@@ -771,17 +1549,328 @@ local function createDialogue(args:{ [string]: any }): { [string]: any }
   return { lines = #lines, path = mod:GetFullName(), prompt = prompt:GetFullName(), runtimeSnippet = snippet }
 end
 local MOTION_EFFECTS = { tween = true, shake = true, fov = true, pulse = true }
+local MOTION_EFFECT_ROOT = "RoLinkMotionEffects"
+local MOTION_EFFECT_ALLOWED = {
+  tween = { Position = true, CFrame = true, Size = true, Transparency = true,
+    Color = true, Brightness = true },
+  pulse = { scale = true, Transparency = true },
+  shake = { amplitude = true, frequency = true, seed = true },
+  fov = { FieldOfView = true, value = true },
+}
+local function motionEffectRoot(): Instance
+  local rs = game:GetService("ReplicatedStorage")
+  local root = rs:FindFirstChild(MOTION_EFFECT_ROOT)
+  if not root then
+    root = Instance.new("Folder")
+    root.Name = MOTION_EFFECT_ROOT
+    root.Parent = rs
+  end
+  return root
+end
+local function motionEffectFinite(v:any, label:string): number
+  local n = tonumber(v)
+  if n == nil or n ~= n or n == math.huge or n == -math.huge then
+    error("MOTION_PROPERTY_INVALID: " .. label .. " must be a finite number")
+  end
+  return n
+end
+local function motionEffectProperties(effect:string, raw:any): { [string]: any }
+  if raw == nil then return {} end
+  if type(raw) ~= "table" then error("MOTION_PROPERTY_INVALID: properties must be an object") end
+  local allowed = MOTION_EFFECT_ALLOWED[effect] or {}
+  local out:{ [string]: any } = {}
+  for k, v in pairs(raw) do
+    local key = tostring(k)
+    if not allowed[key] then
+      error("MOTION_PROPERTY_INVALID: property '" .. key:sub(1, 48) .. "' is not allowed for " .. effect)
+    end
+    if type(v) == "number" or type(v) == "string" or type(v) == "boolean" then
+      if type(v) == "number" then motionEffectFinite(v, key) end
+      out[key] = v
+    elseif type(v) == "table" then
+      out[key] = motionPlain(v)
+    else
+      error("MOTION_PROPERTY_INVALID: property '" .. key:sub(1, 48) .. "' must be JSON data")
+    end
+  end
+  if effect == "pulse" then
+    local scale = tonumber(out.scale or 1.15)
+    if not scale or scale < 0.05 or scale > 10 then
+      error("MOTION_PROPERTY_INVALID: pulse scale must be 0.05-10")
+    end
+    out.scale = scale
+  elseif effect == "shake" then
+    out.amplitude = math.clamp(tonumber(out.amplitude or 1) or 1, 0, 100)
+    out.frequency = math.clamp(tonumber(out.frequency or 18) or 18, 0.1, 60)
+    out.seed = math.floor(tonumber(out.seed or 1) or 1)
+  elseif effect == "fov" then
+    local fov = tonumber(out.FieldOfView or out.value or 90)
+    if not fov or fov < 1 or fov > 179 then error("MOTION_PROPERTY_INVALID: FOV must be 1-179") end
+    out.FieldOfView = fov
+    out.value = nil
+  end
+  return out
+end
+local function motionEffectScriptSource(name:string): string
+  return "local CONFIG_FOLDER = " .. string.format("%q", name) .. "\n" .. [==[
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local root = ReplicatedStorage:WaitForChild("RoLinkMotionEffects")
+local folder = root:WaitForChild(CONFIG_FOLDER)
+local value = folder:WaitForChild("Config")
+local ok, config = pcall(function() return HttpService:JSONDecode(value.Value) end)
+if not ok or type(config) ~= "table" then
+  warn("[RoLink] invalid motion effect config")
+  return
+end
+local function resolve(path)
+  if path == "camera" or path == "Camera" or path == "workspace.CurrentCamera" then
+    return Workspace.CurrentCamera
+  end
+  local current = game
+  for part in string.gmatch(path or "", "[^/]+") do
+    if part == "Workspace" then current = Workspace
+    elseif part == "ReplicatedStorage" or part == "ServerStorage"
+      or part == "ServerScriptService" or part == "StarterPlayer" then
+      current = game:GetService(part)
+    elseif current then current = current:FindFirstChild(part, true) end
+    if not current then return nil end
+  end
+  return current
+end
+local target = resolve(config.targetPath)
+if not target then
+  warn("[RoLink] motion effect target is missing: " .. tostring(config.targetPath))
+  return
+end
+folder:SetAttribute("RoLinkRuntimeState", "running")
+local duration = math.clamp(tonumber(config.duration or 1) or 1, 0.1, 30)
+local loop = config.loop == true
+local function alive() return folder.Parent ~= nil end
+local function finish(state)
+  if alive() then folder:SetAttribute("RoLinkRuntimeState", state) end
+end
+local effect = config.effect
+if effect == "fov" then
+  if not target:IsA("Camera") then warn("[RoLink] FOV effect needs a Camera") return end
+  local original = target.FieldOfView
+  local goal = tonumber(config.properties and config.properties.FieldOfView) or 90
+  local info = TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+  repeat
+    if not alive() then return end
+    TweenService:Create(target, info, {FieldOfView = goal}):Play()
+    task.wait(duration)
+    if not alive() then return end
+    if not loop then break end
+    TweenService:Create(target, info, {FieldOfView = original}):Play()
+    task.wait(duration)
+  until not alive()
+  if alive() then TweenService:Create(target, info, {FieldOfView = original}):Play() end
+  finish("finished")
+  return
+end
+if effect == "tween" then
+  if not target:IsA("BasePart") and not target:IsA("Model") then
+    warn("[RoLink] tween effect needs a BasePart or Model")
+    return
+  end
+  local goals = {}
+  local p = config.properties or {}
+  if p.Position then
+    goals.Position = Vector3.new(p.Position.x or 0, p.Position.y or 0, p.Position.z or 0)
+  end
+  if p.Size then
+    if target:IsA("BasePart") then
+      goals.Size = Vector3.new(p.Size.x or target.Size.X, p.Size.y or target.Size.Y, p.Size.z or target.Size.Z)
+    end
+  end
+  if p.Transparency ~= nil then goals.Transparency = tonumber(p.Transparency) or 0 end
+  if p.Brightness ~= nil then goals.Brightness = tonumber(p.Brightness) or 0 end
+  if p.Color then
+    goals.Color = Color3.new(p.Color.r or 1, p.Color.g or 1, p.Color.b or 1)
+  end
+  if p.CFrame and target:IsA("BasePart") then
+    local q = p.CFrame.position or {}
+    local r = p.CFrame.rotation or {}
+    goals.CFrame = CFrame.new(q.x or 0, q.y or 0, q.z or 0) * CFrame.Angles(
+      math.rad(r.x or 0), math.rad(r.y or 0), math.rad(r.z or 0))
+  end
+  if next(goals) == nil then warn("[RoLink] tween effect has no supported properties") return end
+  repeat
+    if not alive() then return end
+    TweenService:Create(target, TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), goals):Play()
+    task.wait(duration)
+  until not loop or not alive()
+  finish("finished")
+  return
+end
+if effect == "pulse" then
+  if not target:IsA("BasePart") then warn("[RoLink] pulse effect needs a BasePart") return end
+  local original = target.Size
+  local scale = tonumber(config.properties and config.properties.scale) or 1.15
+  local peak = original * scale
+  local trans = config.properties and config.properties.Transparency
+  repeat
+    if not alive() then return end
+    local t1 = TweenService:Create(target, TweenInfo.new(duration / 2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = peak})
+    t1:Play()
+    if trans ~= nil then target.Transparency = tonumber(trans) or target.Transparency end
+    task.wait(duration / 2)
+    if not alive() then return end
+    local t2 = TweenService:Create(target, TweenInfo.new(duration / 2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Size = original})
+    t2:Play()
+    task.wait(duration / 2)
+  until not loop or not alive()
+  if alive() then target.Size = original end
+  finish("finished")
+  return
+end
+if effect == "shake" then
+  local amplitude = tonumber(config.properties and config.properties.amplitude) or 1
+  local frequency = tonumber(config.properties and config.properties.frequency) or 18
+  local random = Random.new(tonumber(config.properties and config.properties.seed) or 1)
+  local originalCFrame = target:IsA("BasePart") and target.CFrame or nil
+  local originalOffset = target:IsA("Camera") and target.CFrame or nil
+  local elapsed = 0
+  local connection
+  connection = RunService.Heartbeat:Connect(function(dt)
+    if not alive() or not target.Parent then
+      if connection then connection:Disconnect() end
+      return
+    end
+    elapsed += dt
+    local falloff = math.max(0, 1 - elapsed / duration)
+    local x = (random:NextNumber(-1, 1) * amplitude * falloff)
+    local y = (random:NextNumber(-1, 1) * amplitude * falloff)
+    local z = (random:NextNumber(-1, 1) * amplitude * falloff)
+    if target:IsA("BasePart") and originalCFrame then
+      target.CFrame = originalCFrame * CFrame.new(x, y, z)
+    elseif target:IsA("Camera") and originalOffset then
+      target.CFrame = originalOffset * CFrame.new(x, y, z)
+    end
+    if elapsed >= duration and not loop then
+      connection:Disconnect()
+      if target:IsA("BasePart") and originalCFrame then target.CFrame = originalCFrame end
+      if target:IsA("Camera") and originalOffset then target.CFrame = originalOffset end
+      finish("finished")
+    elseif elapsed >= duration then
+      elapsed = 0
+      if target:IsA("BasePart") and originalCFrame then originalCFrame = target.CFrame end
+      if target:IsA("Camera") and originalOffset then originalOffset = target.CFrame end
+    end
+  end)
+  return
+end
+warn("[RoLink] unknown motion effect")
+]==]
+end
+local function motionEffectConfig(name:string): (Instance, { [string]: any })
+  local folder = motionEffectRoot():FindFirstChild(name)
+  if not folder then error("MOTION_EFFECT_NOT_FOUND: no motion effect named '" .. name:sub(1, 64) .. "'") end
+  local value = folder:FindFirstChild("Config")
+  if not value or not value:IsA("StringValue") then error("MOTION_EFFECT_CORRUPT: Config is missing") end
+  local ok, cfg = pcall(function() return HttpService:JSONDecode((value :: StringValue).Value) end)
+  if not ok or type(cfg) ~= "table" then error("MOTION_EFFECT_CORRUPT: Config is invalid JSON") end
+  return folder, cfg
+end
 local function createMotionEffect(args:{ [string]: any }): { [string]: any }
-  local target = findByPath(tostring(args.path or ""))
-  if not target then error("not found " .. tostring(args.path or "") .. siblingHint(args.path or "")) end
   local effect = tostring(args.effect or "tween")
   if not MOTION_EFFECTS[effect] then error("unknown effect '" .. effect:sub(1, 32) .. "' (tween|shake|fov|pulse)") end
+  local requestedPath = tostring(args.path or "")
+  if requestedPath == "" then error("path is required") end
+  local target = findByPath(requestedPath)
+  local isCamera = requestedPath == "camera" or requestedPath == "Camera"
+    or requestedPath:lower():find("currentcamera", 1, true) ~= nil
+  if not target and not isCamera then error("not found " .. requestedPath .. siblingHint(requestedPath)) end
+  if effect == "fov" and not isCamera and (not target or not target:IsA("Camera")) then
+    error("MOTION_EFFECT_TARGET_INVALID: fov needs path='camera' or a Camera path")
+  end
+  if (effect == "tween" or effect == "pulse") and (not target or not (target:IsA("BasePart") or target:IsA("Model"))) then
+    error("MOTION_EFFECT_TARGET_INVALID: " .. effect .. " needs a BasePart or Model path")
+  end
+  if effect == "shake" and not target and not isCamera then
+    error("MOTION_EFFECT_TARGET_INVALID: shake needs a part or camera path")
+  end
+  local name = motionCleanName(args.name or (effect .. "_" .. (target and target.Name or "camera")), "RoLinkMotionEffect")
+  local root = motionEffectRoot()
+  if root:FindFirstChild(name) and args.confirm ~= true then
+    error("CONFIRM_REQUIRED: motion effect '" .. name .. "' exists - re-send with confirm:true to replace it")
+  end
+  if root:FindFirstChild(name) then
+    local old = root:FindFirstChild(name)
+    old:Destroy()
+  end
+  local properties = motionEffectProperties(effect, args.properties)
   local dur = math.clamp(num(args.duration, 1), 0.1, 30)
-  local snippet = "local target = game.Workspace:FindFirstChild(\"" .. target.Name:gsub('"', "'")
-    .. "\", true) -- effect=" .. effect .. " duration=" .. tostring(dur)
-    .. " — drive with TweenService (tween/pulse) or CameraOffset/Random (shake) or Camera.FieldOfView (fov) in a server Script"
-  pcall(function() ChangeHistoryService:SetWaypoint("RoLink motion " .. effect) end)
-  return { effect = effect, path = target:GetFullName(), duration = dur, runtimeSnippet = snippet }
+  local playback = tostring(args.playback or "auto")
+  if playback == "auto" then playback = (effect == "fov" or isCamera) and "client" or "server" end
+  if playback ~= "server" and playback ~= "client" then error("playback must be auto, server, or client") end
+  if effect == "fov" then playback = "client" end
+  local config = { schemaVersion = 1, name = name, effect = effect,
+    targetPath = isCamera and "camera" or motionPath(target), duration = dur,
+    loop = args.loop == true, playback = playback, autoPlay = args.autoPlay ~= false,
+    properties = properties, originalTransparency = target and target:IsA("BasePart") and target.Transparency or nil }
+  local folder = Instance.new("Folder")
+  folder.Name = name
+  folder:SetAttribute("RoLinkMotionEffect", true)
+  folder:SetAttribute("effect", effect)
+  folder:SetAttribute("targetPath", config.targetPath)
+  folder:SetAttribute("duration", dur)
+  folder:SetAttribute("loop", config.loop)
+  folder:SetAttribute("playback", playback)
+  local value = Instance.new("StringValue")
+  value.Name = "Config"
+  value.Value = motionJson(config)
+  value.Parent = folder
+  folder.Parent = root
+  local service = game:GetService(playback == "client" and "StarterPlayer" or "ServerScriptService")
+  local scripts = service:FindFirstChild("RoLinkMotionEffectScripts")
+  if not scripts then
+    scripts = Instance.new("Folder")
+    scripts.Name = "RoLinkMotionEffectScripts"
+    scripts.Parent = service
+  end
+  local script = Instance.new(playback == "client" and "LocalScript" or "Script")
+  script.Name = "RoLinkMotionEffect_" .. name
+  script.Source = motionEffectScriptSource(name)
+  script.Parent = scripts
+  folder:SetAttribute("scriptPath", script:GetFullName())
+  pcall(function() ChangeHistoryService:SetWaypoint("RoLink motion effect " .. name) end)
+  return { created = true, effect = effect, name = name, controller = folder:GetFullName(),
+    config = value:GetFullName(), script = script:GetFullName(), target = config.targetPath,
+    duration = dur, loop = config.loop, playback = playback, autoPlay = config.autoPlay,
+    rendered = false, playable = config.autoPlay,
+    note = config.autoPlay and "Edit-time controller created; it executes when Play starts."
+      or "Edit-time controller created with autoPlay=false; no runtime effect was started." }
+end
+local function inspectMotionEffect(args:{ [string]: any }): { [string]: any }
+  local name = motionCleanName(args.name, "RoLinkMotionEffect")
+  local folder, cfg = motionEffectConfig(name)
+  return { name = name, controller = folder:GetFullName(), config = folder:FindFirstChild("Config"):GetFullName(),
+    effect = tostring(cfg.effect or ""), targetPath = tostring(cfg.targetPath or ""),
+    targetResolved = findByPath(tostring(cfg.targetPath or "")) ~= nil or tostring(cfg.targetPath) == "camera",
+    duration = num(cfg.duration, 1), loop = cfg.loop == true, playback = tostring(cfg.playback or "server"),
+    autoPlay = cfg.autoPlay ~= false, runtimeState = folder:GetAttribute("RoLinkRuntimeState") }
+end
+local function removeMotionEffect(args:{ [string]: any }): { [string]: any }
+  local name = motionCleanName(args.name, "RoLinkMotionEffect")
+  if args.confirm ~= true then error("CONFIRM_REQUIRED: remove motion effect '" .. name .. "' - re-send with confirm:true") end
+  local folder = motionEffectRoot():FindFirstChild(name)
+  if not folder then error("MOTION_EFFECT_NOT_FOUND: no motion effect named '" .. name:sub(1, 64) .. "'") end
+  local path = folder:GetFullName()
+  folder:Destroy()
+  for _, service in ipairs({game:GetService("ServerScriptService"), game:GetService("StarterPlayer")}) do
+    local scripts = service:FindFirstChild("RoLinkMotionEffectScripts")
+    if scripts then
+      local script = scripts:FindFirstChild("RoLinkMotionEffect_" .. name)
+      if script then script:Destroy() end
+    end
+  end
+  pcall(function() ChangeHistoryService:SetWaypoint("RoLink remove motion effect " .. name) end)
+  return { removed = true, name = name, controller = path }
 end
 local VFX_CLASSES: { [string]: string } = {
   particles = "ParticleEmitter", fire = "Fire", smoke = "Smoke",
@@ -830,29 +1919,6 @@ local function resolveSourceSequence(args:{ [string]: any }): Instance
   end
   error("trackPath or animationId required (e.g. trackPath=Workspace/RoLinkAnimations/HelloWave)")
   return nil :: any
-end
-local function clipCurvesSummary(clip: Instance): { [string]: any }
-  local curves:{ [string]: any } = {}
-  pcall(function()
-    for _, child in ipairs(clip:GetChildren()) do
-      if child:IsA("StringValue") and child.Name:find("Curve_") == 1 then
-        local okDec, data = pcall(function()
-          return game:GetService("HttpService"):JSONDecode((child::any).Value or "[]")
-        end)
-        table.insert(curves, { part = child.Name:sub(7), keys = (okDec and type(data) == "table") and #data or 0 })
-      end
-    end
-  end)
-  return curves
-end
-local function findClipTwin(seq: Instance): Instance?
-  local twin: Instance? = nil
-  pcall(function()
-    local parent = seq.Parent
-    if parent then twin = parent:FindFirstChild(seq.Name .. "Clip") end
-    if twin and not twin:IsA("AnimationClip") then twin = nil end
-  end)
-  return twin
 end
 local function exportAnimationClip(args:{ [string]: any }): { [string]: any }
   local seq = resolveSourceSequence(args)
@@ -948,7 +2014,7 @@ end
 local function rlAnimRead(name: string): (Instance, { [string]: any }, { [string]: any }, { [string]: any })
   local folder = rlAnimFolder(name)
   if not folder then
-    error("MODEL_ANIM_NOT_FOUND: no model animation named '" .. name:sub(1, 64) .. "' - create it with create_model_animation first")
+    error("MODEL_ANIM_NOT_FOUND: no model animation named '" .. name:sub(1, 64) .. "' under ReplicatedStorage/RoLinkModelAnims - create it with create_model_animation first. For KeyframeSequence tracks (Workspace/RoLinkAnimations/...) use get_animation_info{path} or inspect_keyframe_track{path} instead.")
   end
   local function get(child: string): any
     local sv = folder:FindFirstChild(child)
@@ -1091,6 +2157,23 @@ local function rlPoseNum(v: any): { [string]: any }
   end
   return p
 end
+-- Lock helpers live here, ahead of first use: Luau locals are visible only
+-- AFTER their declaration, and rlModelSetKey/rlModelSetEase below call
+-- rlAnimGetLocked. Defining it further down resolved to a nil global at
+-- runtime ("attempt to call a nil value" on every set key/easing call).
+local function rlAnimGetLocked(folder: Instance): { [string]: boolean }
+  local set: { [string]: boolean } = {}
+  pcall(function()
+    local sv = folder:FindFirstChild("locked")
+    if sv and sv:IsA("StringValue") then
+      local v = HttpService:JSONDecode((sv :: StringValue).Value)
+      if type(v) == "table" then
+        for _, n in ipairs(v) do set[tostring(n)] = true end
+      end
+    end
+  end)
+  return set
+end
 local function rlModelSetKey(args: { [string]: any }): { [string]: any }
   local anim = tostring(args.anim or "")
   local folder, tracks, markers, events = rlAnimRead(anim)
@@ -1190,19 +2273,6 @@ local function rlModelAddMarker(args: { [string]: any }): { [string]: any }
   return { animation = anim, markers = markers }
 end
 
-local function rlAnimGetLocked(folder: Instance): { [string]: boolean }
-  local set: { [string]: boolean } = {}
-  pcall(function()
-    local sv = folder:FindFirstChild("locked")
-    if sv and sv:IsA("StringValue") then
-      local v = HttpService:JSONDecode((sv :: StringValue).Value)
-      if type(v) == "table" then
-        for _, n in ipairs(v) do set[tostring(n)] = true end
-      end
-    end
-  end)
-  return set
-end
 local function rlAnimSetLocked(folder: Instance, set: { [string]: boolean })
   local arr: { string } = {}
   for n in pairs(set) do table.insert(arr, tostring(n)) end
@@ -2554,14 +3624,14 @@ local function probeStudio(_args:{ [string]: any }): { [string]: any }
   return { playState = playState, selection = sel, pluginVersion = PLUGIN_VERSION }
 end
 
-local function outputHistory(limit:number): { [string]: any }
+local function outputHistory(limit:number, errorsOnly:boolean?): { [string]: any }
   local out:{ [string]: any } = {}
   pcall(function()
     local hist = game:GetService("LogService"):GetLogHistory()
     for i = #hist, 1, -1 do
       local e = hist[i]
       local t = tostring(e.messageType or "")
-      if t:find("Error") or t:find("Warning") then
+      if errorsOnly == false or t:find("Error") or t:find("Warning") then
         table.insert(out, { type = t:match("Message(%w+)") or t, message = tostring(e.message or ""):sub(1, 300) })
         if #out >= limit then break end
       end
@@ -2667,7 +3737,11 @@ local function playtestObserve(args:{ [string]: any }): { [string]: any }
   pcall(function()
     if game:GetService("RunService"):IsRunning() then playState = "play" end
   end)
-  local entries = outputHistory(40)
+  local entries = outputHistory(40, false)
+  local errCount = 0
+  for _, e in ipairs(entries) do if (e.type or ""):find("Error") then errCount += 1 end end
+  local lines:{string} = {}
+  for _, e in ipairs(entries) do table.insert(lines, tostring(e.message or "")) end
   local hits:{ [string]: any } = {}
   if watch ~= "" then
     for _, e in ipairs(entries) do
@@ -2675,10 +3749,380 @@ local function playtestObserve(args:{ [string]: any }): { [string]: any }
     end
   end
   return { simulated = true, seconds = secs, playState = playState,
-    errorCount = #entries, output = entries, watch = watch, watchHits = hits,
-    note = "Edit-mode observation window (Heartbeat ticks + Output). Starting Play itself needs a human click - the AI verifies logic here, you press Play to see it." }
+    errorCount = errCount, output = entries, lines = lines, watch = watch, watchHits = hits,
+    note = "Edit-mode observation window (Heartbeat ticks + full Output incl. prints). Starting Play itself needs a human click - the AI verifies logic here, you press Play to see it." }
 end
 
+-- Property coercion: JSON has no Vector3/Color3/CFrame, so the model sends
+-- tables ([11,3,4], {x=..,y=..,z=..}) or "r,g,b" strings. Assigning those raw
+-- throws, which the old pcall-everything branches swallowed into fake
+-- success ("created" a default grey block at the origin). coerceProp reads
+-- the LIVE property type and converts; applyProps applies a whole map and
+-- reports per-key applied/failed so a silent no-op is impossible.
+local function num3(v:any): (number?, number?, number?)
+  if type(v) == "table" then
+    local x = (v :: any).x or (v :: any)[1]
+    local y = (v :: any).y or (v :: any)[2]
+    local z = (v :: any).z or (v :: any)[3]
+    if tonumber(x) and tonumber(y) and tonumber(z) then
+      return tonumber(x) :: number, tonumber(y) :: number, tonumber(z) :: number
+    end
+  elseif type(v) == "string" then
+    local a, b, c = v:match("^%s*([^,]+)%s*,%s*([^,]+)%s*,%s*([^,]+)%s*$")
+    if tonumber(a) and tonumber(b) and tonumber(c) then
+      return tonumber(a) :: number, tonumber(b) :: number, tonumber(c) :: number
+    end
+  end
+  return nil, nil, nil
+end
+local function coerceProp(inst:Instance, key:string, value:any): (boolean, any)
+  local cur: any = nil
+  local gotCur = pcall(function() cur = (inst :: any)[key] end)
+  if not gotCur then
+    return false, "unknown property '" .. key .. "' (" .. inst.ClassName .. " has no readable " .. key .. ")"
+  end
+  local t = typeof(cur)
+  if t == "Vector3" then
+    local x, y, z = num3(value)
+    if x ~= nil and y ~= nil and z ~= nil then return true, Vector3.new(x, y, z) end
+    return false, "property '" .. key .. "' needs Vector3 as [x,y,z], {x,y,z} or \"x,y,z\" - got " .. tostring(value):sub(1, 80)
+  elseif t == "Color3" then
+    local x, y, z = num3(value)
+    if x ~= nil and y ~= nil and z ~= nil then
+      if x > 1 or y > 1 or z > 1 then
+        return true, Color3.fromRGB(math.clamp(math.floor(x), 0, 255), math.clamp(math.floor(y), 0, 255), math.clamp(math.floor(z), 0, 255))
+      end
+      return true, Color3.new(x, y, z)
+    end
+    return false, "property '" .. key .. "' needs Color3 as [r,g,b] 0-255, {r,g,b} 0-1 or \"r,g,b\" - got " .. tostring(value):sub(1, 80)
+  elseif t == "CFrame" then
+    if type(value) == "table" then
+      local pos = (value :: any).position or (value :: any).pos or (value :: any).p or value
+      local rot = (value :: any).rotation or (value :: any).rot or { 0, 0, 0 }
+      local px, py, pz = num3(pos)
+      if px ~= nil and py ~= nil and pz ~= nil then
+        local rx, ry, rz = num3(rot)
+        rx, ry, rz = rx or 0, ry or 0, rz or 0
+        local okCf, cf = pcall(function()
+          return CFrame.new(px, py, pz) * CFrame.Angles(math.rad(rx), math.rad(ry), math.rad(rz))
+        end)
+        if okCf then return true, cf end
+      end
+    else
+      local x, y, z = num3(value)
+      if x ~= nil and y ~= nil and z ~= nil then
+        local okCf, cf = pcall(function() return CFrame.new(x, y, z) end)
+        if okCf then return true, cf end
+      end
+    end
+    return false, "property '" .. key .. "' needs CFrame position [x,y,z] or {position, rotation(deg)} - got " .. tostring(value):sub(1, 80)
+  elseif t == "UDim2" then
+    if type(value) == "table" then
+      local a = { (value :: any)[1], (value :: any)[2], (value :: any)[3], (value :: any)[4] }
+      if tonumber(a[1]) and tonumber(a[2]) and tonumber(a[3]) and tonumber(a[4]) then
+        return true, UDim2.new(tonumber(a[1]) :: number, tonumber(a[2]) :: number, tonumber(a[3]) :: number, tonumber(a[4]) :: number)
+      end
+    end
+    return false, "property '" .. key .. "' needs UDim2 as [xScale,xOffset,yScale,yOffset] - got " .. tostring(value):sub(1, 80)
+  elseif t == "UDim" then
+    if type(value) == "table" then
+      local a, b = (value :: any)[1] or (value :: any).Scale, (value :: any)[2] or (value :: any).Offset
+      if tonumber(a) and tonumber(b) then return true, UDim.new(tonumber(a) :: number, tonumber(b) :: number) end
+    end
+    return false, "property '" .. key .. "' needs UDim as [scale,offset] - got " .. tostring(value):sub(1, 80)
+  elseif t == "EnumItem" then
+    if type(value) == "string" then
+      local et = ""
+      pcall(function() et = tostring(cur.EnumType) end)
+      if et ~= "" then
+        local okE, item = pcall(function() return (Enum :: any)[et][value] end)
+        if okE and item ~= nil then return true, item end
+        return false, "property '" .. key .. "' needs a " .. et .. " name - '" .. tostring(value):sub(1, 32) .. "' is not one"
+      end
+    end
+    return true, value
+  elseif t == "boolean" then
+    if type(value) == "boolean" then return true, value end
+    if value == "true" or value == 1 then return true, true end
+    if value == "false" or value == 0 then return true, false end
+    return false, "property '" .. key .. "' needs a boolean - got " .. tostring(value):sub(1, 40)
+  elseif t == "number" then
+    local n = tonumber(value)
+    if n ~= nil then return true, n end
+    return false, "property '" .. key .. "' needs a number - got " .. tostring(value):sub(1, 40)
+  else
+    return true, value
+  end
+end
+local function applyProps(inst:Instance, props:any): ({ [string]: boolean }, { [string]: string })
+  local applied:{ [string]: boolean } = {}
+  local failed:{ [string]: string } = {}
+  if type(props) ~= "table" then return applied, failed end
+  for k, v in pairs(props :: any) do
+    local key = tostring(k)
+    local okC, coerced = coerceProp(inst, key, v)
+    if not okC then failed[key] = tostring(coerced); continue end
+    local okW, werr = pcall(function() (inst :: any)[key] = coerced end)
+    if okW then applied[key] = true else failed[key] = tostring(werr):sub(1, 160) end
+  end
+  return applied, failed
+end
+local function propsFailedSummary(failed:{ [string]: string }): string
+  local msgs:{ string } = {}
+  for k, e in pairs(failed) do table.insert(msgs, k .. ": " .. e) end
+  table.sort(msgs)
+  return table.concat(msgs, "; "):sub(1, 300)
+end
+
+-- Studio's Luau parser loses track of a block when a single physical line
+-- runs past ~1KB (it silently drops tokens, then reports a bogus
+-- "Expected 'end' (to close 'else' at line N), got 'elseif'" on the NEXT
+-- branch). Every dispatcher branch therefore lives in its own short,
+-- multi-line function - never as a 1,000+ char one-liner. scripts/
+-- check_line_length.ps1 and tests/test_plugin_execution.py enforce the cap.
+local function enumMaterial(name:any): any
+  local n = tostring(name or "")
+  local ok, m = pcall(function() return (Enum :: any).Material[n] end)
+  if not ok or m == nil then
+    error("validation_error: unknown terrain material '" .. n:sub(1, 32) ..
+      "' (e.g. Grass, Rock, Sand, WoodPlanks, Air to clear)")
+  end
+  return m
+end
+
+local function buildTerrain(args:{ [string]: any }): { [string]: any }
+  local size = math.clamp(math.floor(num(args.size, 512)), 64, 2048)
+  local seed = math.floor(num(args.seed, 12345))
+  local matName = tostring(args.material or "Grass")
+  local mat = enumMaterial(matName)
+  local terr = workspace.Terrain
+  local slabY = -size / 16 - 8
+  terr:FillBlock(CFrame.new(0, slabY, 0), Vector3.new(size, 16, size), mat)
+  local rng = Random.new(seed)
+  local hills = math.clamp(math.floor(size / 128), 2, 8)
+  local half = size / 2
+  for i = 1, hills do
+    local hx = rng:NextNumber(-half, half)
+    local hz = rng:NextNumber(-half, half)
+    local lo = math.max(2, math.floor(size / 32))
+    local hr = rng:NextInteger(lo, math.max(lo, math.floor(size / 12)))
+    terr:FillBall(Vector3.new(hx, -4, hz), hr, mat)
+    if i % 4 == 0 then task.wait() end
+  end
+  return {terrain = true, size = size, seed = seed, material = matName, hills = hills}
+end
+
+local function fillTerrainRegion(args:{ [string]: any }): { [string]: any }
+  local mix, miy, miz = num3(args.min)
+  local mxx, mxy, mxz = num3(args.max)
+  if mix == nil or miy == nil or miz == nil
+      or mxx == nil or mxy == nil or mxz == nil then
+    error("validation_error: min* and max* are required as [x,y,z]" ..
+      ' (e.g. min [0,0,0], max [64,16,64])')
+  end
+  if mix >= mxx or miy >= mxy or miz >= mxz then
+    error("validation_error: min must be below max on every axis")
+  end
+  local sx, sy, sz = mxx - mix, mxy - miy, mxz - miz
+  if sx > 2048 or sy > 1024 or sz > 2048 then
+    error("validation_error: region too large (max 2048x1024x2048)" ..
+      " - split into smaller fills")
+  end
+  local matName = tostring(args.material or "Grass")
+  local mat = enumMaterial(matName)
+  local cframe = CFrame.new((mix + mxx) / 2, (miy + mxy) / 2, (miz + mxz) / 2)
+  workspace.Terrain:FillBlock(cframe, Vector3.new(sx, sy, sz), mat)
+  return {filled = true, min = {mix, miy, miz}, max = {mxx, mxy, mxz}, material = matName}
+end
+
+local function placePatternParts(args:{ [string]: any }): { [string]: any }
+  local pattern = tostring(args.pattern or "grid")
+  local valid = {grid = true, circle = true, line = true}
+  if not valid[pattern] then
+    error("validation_error: pattern must be grid|circle|line - got '" ..
+      pattern:sub(1, 24) .. "'")
+  end
+  local count = math.clamp(math.floor(num(args.count, 5)), 1, 50)
+  local parent = findByPath(args.parent or "workspace") or workspace
+  local spacing = num(args.spacing, 6)
+  if spacing <= 0 or spacing > 512 then
+    error("validation_error: spacing must be 0-512 studs")
+  end
+  local sx, sy, sz = num3(args.size)
+  local matName = tostring(args.material or "")
+  local made = 0
+  local partFailed:{ [string]: string } = {}
+  for i = 1, count do
+    local px, pz = 0, 0
+    if pattern == "line" then
+      px = (i - 1) * spacing
+    elseif pattern == "circle" then
+      local r = math.max(spacing, count * spacing / 6.2832)
+      local a = (i - 1) / count * 6.2832
+      px = math.cos(a) * r
+      pz = math.sin(a) * r
+    else
+      local cols = math.max(1, math.ceil(math.sqrt(count)))
+      px = ((i - 1) % cols) * spacing
+      pz = math.floor((i - 1) / cols) * spacing
+    end
+    local p = Instance.new("Part")
+    p.Anchored = true
+    local props:{ [string]: any } = {Position = {px, 5, pz}}
+    if sx ~= nil then (props :: any).Size = {sx, sy, sz} end
+    if matName ~= "" then (props :: any).Material = matName end
+    local ap, fl = applyProps(p, props)
+    if next(ap) == nil then
+      p:Destroy()
+      for k, e in pairs(fl) do (partFailed :: any)["part" .. i .. "." .. k] = e end
+    else
+      p.Parent = parent
+      made += 1
+    end
+  end
+  if made == 0 then
+    error("properties_failed: no parts placed (" .. propsFailedSummary(partFailed) .. ")")
+  end
+  return {placed = made, of = count, pattern = pattern,
+    parent = parent:GetFullName(), spacing = spacing, failed = partFailed}
+end
+
+local function paintMaterial(args:{ [string]: any }): { [string]: any }
+  local targetArg = tostring(args.path or args.region or "")
+  if targetArg == "" then
+    error("validation_error: path or region is required (a part, model," ..
+      " or folder path - never omit to mean the whole place)")
+  end
+  local target = findByPath(targetArg)
+  if not target then error("not found " .. targetArg .. siblingHint(targetArg)) end
+  local matName = tostring(args.material or "")
+  if matName == "" then
+    error("validation_error: material is required (e.g. Wood, Metal, Grass)")
+  end
+  local parts:{ Instance } = {}
+  local all = 0
+  if target:IsA("BasePart") then
+    parts = {target}
+    all = 1
+  else
+    for _, d in ipairs(target:GetDescendants()) do
+      if d:IsA("BasePart") then
+        all += 1
+        if #parts < 200 then table.insert(parts, d) end
+      end
+    end
+  end
+  if all == 0 then
+    error("nothing to paint: " .. target:GetFullName() .. " is a " ..
+      target.ClassName .. " with no BasePart inside")
+  end
+  local painted = 0
+  local paintFailed:{ [string]: string } = {}
+  for _, bt in ipairs(parts) do
+    local ap, fl = applyProps(bt, {Material = matName})
+    if next(ap) ~= nil then
+      painted += 1
+    else
+      for k, e in pairs(fl) do
+        (paintFailed :: any)[bt:GetFullName() .. "." .. k] = e
+      end
+    end
+  end
+  if painted == 0 then
+    error("material_failed: '" .. matName .. "' applied to 0 of " .. all ..
+      " parts (" .. propsFailedSummary(paintFailed) .. ")")
+  end
+  return {matchedPath = target:GetFullName(), material = matName, painted = painted,
+    of = all, truncated = all > #parts, failed = paintFailed}
+end
+
+-- Import a real Creator Store asset.  The old branch echoed a success table
+-- without touching the place, which made a real search result look imported.
+-- Keep the ID as digits (rather than interpolating an arbitrary model-supplied
+-- string into Luau), resolve the parent explicitly, and only report success
+-- after the returned Instance is actually parented.
+local function importCreatorAsset(args)
+  local raw = tostring(args.assetId or "")
+  local digits = raw:match("^rbxassetid://(%d+)$") or raw:match("^(%d+)$")
+  if not digits then
+    error("validation_error: assetId must be a positive numeric Creator Store ID (never invent one)")
+  end
+  local id = tonumber(digits)
+  if not id or id <= 0 or id % 1 ~= 0 then
+    error("validation_error: assetId must be a positive integer (never invent one)")
+  end
+  local parentPath = tostring(args.parent or "workspace")
+  local parent = findByPath(parentPath)
+  if not parent then error("not found parent " .. parentPath .. siblingHint(parentPath)) end
+
+  local loaded = nil
+  local loadedFromLoadAsset = false
+  local _assetType = tostring(args.assetType or ""):lower()
+  local preferLoadAsset = _assetType == "audio" or _assetType == "sound"
+  if not preferLoadAsset then
+    local got, objects = pcall(function()
+      return game:GetObjects("rbxassetid://" .. digits)
+    end)
+    if got and type(objects) == "table" and objects[1] then loaded = objects[1] end
+  end
+  if args.__rlCancelled == true then
+    error("import_asset cancelled after tool timeout")
+  end
+  if not loaded then
+    local okLoad, loadErr = pcall(function()
+      return game:GetService("InsertService"):LoadAsset(id)
+    end)
+    if not okLoad then
+      error("import_asset failed for " .. digits .. ": " .. tostring(loadErr):sub(1, 180))
+    end
+    loaded = loadErr
+    loadedFromLoadAsset = true
+  end
+  if args.__rlCancelled == true then
+    pcall(function() if loaded and loaded:IsA("Instance") then loaded:Destroy() end end)
+    error("import_asset cancelled after tool timeout")
+  end
+  if not loaded or not loaded:IsA("Instance") then
+    error("import_asset returned no Instance for " .. digits .. " - verify the real Creator Store ID")
+  end
+  -- Never parent untrusted executable source. Match StudioMCP's native
+  -- insert_asset policy: remove scripts/package links before the tree becomes
+  -- live, and report exactly how many sources were stripped.
+  local removedScripts = 0
+  local toStrip = {}
+  if loaded:IsA("LuaSourceContainer") or loaded:IsA("PackageLink") then
+    table.insert(toStrip, loaded)
+  end
+  for _, descendant in ipairs(loaded:GetDescendants()) do
+    if descendant:IsA("LuaSourceContainer") or descendant:IsA("PackageLink") then
+      table.insert(toStrip, descendant)
+    end
+  end
+  for _, source in ipairs(toStrip) do
+    if source.Parent then source:Destroy(); removedScripts += 1 end
+  end
+  if loaded:IsA("LuaSourceContainer") or loaded:IsA("PackageLink") then
+    error("import_asset contained an executable root and was not inserted")
+  end
+
+  -- InsertService historically wraps the inserted asset in a one-child Model
+  -- named "Model"; unwrap only that known wrapper, never a user model.
+  local imported = loaded
+  if loadedFromLoadAsset and loaded:IsA("Model") and loaded.Name == "Model" and #loaded:GetChildren() == 1 then
+    imported = loaded:GetChildren()[1]
+  end
+  local requestedName = tostring(args.assetName or "")
+  if requestedName ~= "" then imported.Name = requestedName end
+  local okParent, parentErr = pcall(function() imported.Parent = parent end)
+  if not okParent then
+    error("import_asset could not parent " .. imported:GetFullName() .. " to " ..
+      parent:GetFullName() .. ": " .. tostring(parentErr):sub(1, 180))
+  end
+  return {imported = true, assetId = id, id = id, path = imported:GetFullName(),
+    className = imported.ClassName, assetType = string.sub(tostring(args.assetType or imported.ClassName), 1, 40),
+    parent = parent:GetFullName(), scriptsStripped = removedScripts > 0,
+    removedScripts = removedScripts}
+end
 
 local function executeCommand(cmd:any): (any, string?)
   local tool=cmd.tool; local args=cmd.args or {}; local result:any=nil; local err:string?=nil
@@ -2687,11 +4131,11 @@ local function executeCommand(cmd:any): (any, string?)
   local ok, ret=pcall(function()
     -- 1-7 Core
     if tool=="get_instances" then
-      local p=findByPath(args.path or "workspace") or workspace; local t={}; for _,c in ipairs(p:GetChildren()) do table.insert(t, {name=c.Name, class=c.ClassName, path=c:GetFullName()}) end; result={instances=t}
+      local reqPath = tostring(args.path or "workspace"); local p=findByPath(reqPath); if not p then error("not found " .. reqPath .. siblingHint(reqPath)) end; local t={}; for _,c in ipairs(p:GetChildren()) do table.insert(t, {name=c.Name, class=c.ClassName, path=c:GetFullName()}) end; result={matchedPath=p:GetFullName(), path=reqPath, count=#t, instances=t}
     elseif tool=="create_instance" then
-      local cl=args.className or "Part"; local parent=findByPath(args.parent or "workspace") or workspace; local inst=Instance.new(cl); inst.Name=args.name or cl; if args.properties then for k,v in pairs(args.properties::any) do pcall(function() (inst::any)[k]=v end) end end; inst.Parent=parent; result={created=inst:GetFullName(), className=cl}
+      local cl=args.className or "Part"; local parent=findByPath(args.parent or "workspace") or workspace; local inst=Instance.new(cl); inst.Name=args.name or cl; local applied, failed = applyProps(inst, args.properties); local hasProps = type(args.properties) == "table" and next(args.properties :: any) ~= nil; if hasProps and next(applied) == nil then local why = propsFailedSummary(failed); inst:Destroy(); error("properties_failed: none of the properties applied (" .. why .. ") - instance removed, fix the values and retry") end; inst.Parent=parent; result={created=inst:GetFullName(), className=cl, matchedPath=parent:GetFullName(), applied=applied, failed=failed}
     elseif tool=="set_properties" or tool=="set_property" then
-      local inst=findByPath(args.path or ""); if not inst then error("not found "..tostring(args.path)) end; local props=args.properties or {[args.property]=args.value}; for k,v in pairs(props) do pcall(function() (inst::any)[k]=v end) end; result={set=args.path}
+      local inst=findByPath(args.path or ""); if not inst then error("not found "..tostring(args.path)) end; local props=args.properties or {[args.property]=args.value}; if type(props) ~= "table" then error("validation_error: properties must be an object map (e.g. {Size: [11,3,4]})") end; local applied, failed = applyProps(inst, props); local hasProps = next(props :: any) ~= nil; if hasProps and next(applied) == nil then error("properties_failed: none of the properties applied (" .. propsFailedSummary(failed) .. ")") end; result={set=args.path, matchedPath=inst:GetFullName(), applied=applied, failed=failed}
     elseif tool=="delete_instance" then
       local inst=findByPath(args.path or ""); if inst then inst:Destroy(); result={deleted=args.path} else error("not found") end
     elseif tool=="clone_instance" then
@@ -2699,19 +4143,19 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="move_instance" then
       local inst=findByPath(args.path or ""); local np=findByPath(args.newParent or "workspace") or workspace; if not inst then error("not found") end; inst.Parent=np; result={moved=args.path.."->"..np:GetFullName()}
     elseif tool=="find_instance" then
-      local q=args.query or ""; local st=args.searchType or "name"; local res={}; for _,v in ipairs(game:GetDescendants()) do if st=="name" and v.Name:lower():find(q:lower()) then table.insert(res, v:GetFullName()) elseif st=="class" and v.ClassName==q then table.insert(res, v:GetFullName()) end; if #res>100 then break end end; result={found=res}
+      local q=args.query or ""; local st=args.searchType or "name"; local res={}; local truncated=false; for _,v in ipairs(game:GetDescendants()) do if st=="name" and v.Name:lower():find(q:lower()) then table.insert(res, v:GetFullName()) elseif st=="class" and v.ClassName==q then table.insert(res, v:GetFullName()) end; if #res>=100 then truncated=true; break end end; result={found=res, count=#res, truncated=truncated}
     -- 8-15 Scripting
     elseif tool=="execute_luau" or tool=="run_code" then
-      local code:string=cmd.command; local ok2, ret2=sandboxRun(code); if not ok2 then error(ret2) end; result={returned=ret2, preview=code:sub(1,200)}
+      local code:string=cmd.command; if type(code) ~= "string" or code == "" then code = tostring(args.code or "") end; if code == "" or code == tool then error("validation_error: code is required for execute_luau (send Luau source as params.code or the queue command payload)") end; local ok2, ret2, out2, loader2=sandboxRun(code); if not ok2 then error(ret2) end; result={executed=true, loader=loader2 or "unknown", returned=ret2, hasReturn=ret2 ~= nil, output=out2 or "", preview=code:sub(1,200), previewNote="input echo only - the executed result is in returned/output"}
       local dm=tostring(args.datamodel_type or args.datamodel or "")
       if dm ~= "" and dm:lower() ~= "edit" then result.note="Queue path runs in the Edit plugin DataModel; Server/Client targeting is not executed here. For Play-server checks, put the code in a Server Script instead." end
       if dm:lower() == "client" or code:find("LocalPlayer", 1, true) then
         result.note=(result.note and result.note.." " or "").."LocalPlayer is nil in the plugin context; verify Client visuals with a real LocalScript, not queue execute_luau."
       end
     elseif tool=="get_script_content" then
-      local inst=findByPath(args.path or ""); if not inst then error("not found "..tostring(args.path or "")..siblingHint(args.path or "")) end
+      local reqPath = tostring(args.path or ""); local inst=findByPath(reqPath); if not inst then local clean = reqPath:gsub("sabuiltin_[^%.]*%.", ""); error("not found (file not found): " .. clean .. siblingHint(reqPath)) end
       local src=""; pcall(function() src=(inst::any).Source or "" end)
-      result={content=src, bytes=#src, rev=tostring(os.clock())}
+      result={matchedPath=inst:GetFullName(), content=src, bytes=#src, rev=tostring(os.clock())}
     elseif tool=="script_search" or tool=="search_scripts" or tool=="script_grep" then
       -- native content search: pattern (or query/keyword/text) across script sources
       local pat=tostring(args.pattern or args.query or args.keyword or args.text or "")
@@ -2745,10 +4189,10 @@ local function executeCommand(cmd:any): (any, string?)
       local q=tostring(args.query or args.pattern or args.name or "")
       if q=="" then error("query is required") end
       local mode=tostring(args.searchType or args.mode or "name")
-      local out={}
+      local out={}; local truncated=false
       pcall(function()
         for _,v in ipairs(game:GetDescendants()) do
-          if #out>=50 then break end
+          if #out>=50 then truncated=true; break end
           local hit=false
           if mode=="class" then hit=(v.ClassName==q)
           elseif mode=="attribute" then hit=(v:GetAttribute(q)~=nil)
@@ -2756,39 +4200,40 @@ local function executeCommand(cmd:any): (any, string?)
           if hit then table.insert(out,v:GetFullName().." ("..v.ClassName..")") end
         end
       end)
-      result={query=q,found=out}
+      result={query=q,found=out,count=#out,truncated=truncated}
     elseif tool=="set_script_content" then
-      local inst=findByPath(args.path or ""); if not inst then error("not found "..tostring(args.path or "")..siblingHint(args.path or "")) end
+      local reqPath = tostring(args.path or ""); local inst=findByPath(reqPath); if not inst then local clean = reqPath:gsub("sabuiltin_[^%.]*%.", ""); error("not found (file not found): "..clean..siblingHint(reqPath)) end
       local content, stripped = stripMarkers(tostring(args.content or ""))
       if #content > 100000 then error("validation_error: content too large ("..#content.." chars, max 100000) - split into smaller writes") end
-      ;(inst::any).Source=content; result={set=true, bytes=#content, rev=tostring(os.clock())}
-      if stripped then result.note="Transport markers (###LUA###) stripped before write; file holds clean Luau." end
+      ;(inst::any).Source=content; result={matchedPath=inst:GetFullName(), set=true, bytes=#content, rev=tostring(os.clock())}
+      if stripped then result.note="Transport markers (###LUA###/###RAW###) stripped before write; file holds clean Luau. Do NOT include ###RAW### markers inside content." end
     elseif tool=="create_module" then
       local parent=findByPath(args.path:match("(.+)/[^/]+$") or "ReplicatedStorage") or game.ReplicatedStorage; local name=args.path:match("[^/]+$") or "Module"; local m=Instance.new("ModuleScript"); m.Name=name; local ex, es=stripMarkers(tostring(args.exports or "return {}")); m.Source=ex or "return {}"; m.Parent=parent; result={created=m:GetFullName()}
       if es then result.note="Transport markers stripped before write." end
     elseif tool=="run_function" then
       local inst=findByPath(args.path or ""); if not inst then error("not found") end; local mod=require(inst::any); local fn=mod[args.functionName]; if not fn then error("fn not found") end; result={returned=fn(table.unpack(args.args or {}))}
     elseif tool=="add_event_handler" then
-      local inst=findByPath(args.path or ""); if not inst then error("not found") end; local sig=(inst::any)[args.event]; if sig and sig.Connect then local hc, _=stripMarkers(tostring(args.handlerCode or "")); sig:Connect(function(...) local f, _=loadstring(hc); if f then applyEnv(f); pcall(f, ...) end end); result={attached=true} end
+      local inst=findByPath(args.path or ""); if not inst then error("not found "..tostring(args.path or "")..siblingHint(args.path or "")) end; local sig=(inst::any)[args.event]; if sig and sig.Connect then local hc, _=stripMarkers(tostring(args.handlerCode or "")); sig:Connect(function(...) local cok, f = compileChunk("RoLinkHandler", hc); if cok and type(f) == "function" then applyEnv(f); pcall(f, ...) end end); result={matchedPath=inst:GetFullName(), attached=true} end
     elseif tool=="remove_event_handler" then result={detached=true}
     elseif tool=="get_global_variables" then result={globals={"game","workspace","Instance","Enum","math","string","table"}}
     -- 16-18 Snapshot
     elseif tool=="take_snapshot" or tool=="get_snapshot" then result={snapshot=captureSnapshot(args.maxDepth or 3, args.filter)}
     elseif tool=="rollback" or tool=="undo" then for _=1, (args.steps or args.undo or 1) do pcall(function() ChangeHistoryService:Undo() end) end; result={undone=true}
-    elseif tool=="diff_snapshots" then result={diff="mock diff"}
+    elseif tool=="diff_snapshots" then error("unsupported: diff_snapshots needs two stored restorable snapshots - take_snapshot returns a text tree for reasoning, not restorable state; compare get_instances listings before/after instead")
     -- 19-22 Sandbox
-    elseif tool=="run_in_sandbox" or tool=="run_sandbox_tests" then local ok2, r2=sandboxRun(cmd.command); if not ok2 then error(r2) end; result={sandbox=true, returned=r2}
+    elseif tool=="run_in_sandbox" or tool=="run_sandbox_tests" then local scmd = (type(cmd.command) == "string" and cmd.command ~= "" and cmd.command ~= tool) and cmd.command or tostring(args.code or ""); if scmd == "" then error("validation_error: code is required for run_in_sandbox") end; local ok2, r2, o2, l2=sandboxRun(scmd); if not ok2 then error(r2) end; result={sandbox=true, executed=true, loader=l2 or "unknown", returned=r2, hasReturn=r2 ~= nil, output=o2 or ""}
     elseif tool=="confirm_sandbox_apply" then result={applied=args.sandboxId}
     elseif tool=="discard_sandbox" then result={discarded=args.sandboxId}
     elseif tool=="simulate_ticks" then local secs=math.clamp(num(args.seconds, 1), 0.1, 10); for i=1, math.floor(secs*10) do RunService.Heartbeat:Wait() end; result={simulated=true, seconds=secs}
     -- 23-28 Context
     elseif tool=="get_context_summary" or tool=="get_context" then result={context=captureSnapshot(2)}
     elseif tool=="get_function_signatures" then result={signatures={"init()","update(dt)"}}
-    elseif tool=="get_property_value" or tool=="get_property" then local inst=findByPath(args.path or ""); result={value= inst and (inst::any)[args.property] or nil}
+    elseif tool=="get_property_value" or tool=="get_property" then local reqPath = tostring(args.path or ""); local inst=findByPath(reqPath); if not inst then error("not found " .. reqPath .. siblingHint(reqPath)) end; result={matchedPath=inst:GetFullName(), value=(inst::any)[args.property]}
     elseif tool=="get_all_properties" then
-      local inst=findByPath(args.path or "")
-      if not inst then error("not found "..tostring(args.path or "")..siblingHint(args.path or "")) end
-      result={properties=safeProps(inst)}  -- never iterate an Instance directly: throws invalid argument #1
+      local reqPath = tostring(args.path or "")
+      local inst=findByPath(reqPath)
+      if not inst then error("not found "..reqPath..siblingHint(reqPath)) end
+      local props = safeProps(inst); props.matchedPath = inst:GetFullName(); result={matchedPath=inst:GetFullName(), properties=props}  -- never iterate an Instance directly: throws invalid argument #1
     elseif tool=="search_by_attribute" then local r={}; for _,v in ipairs(game:GetDescendants()) do if v:GetAttribute(args.attribute)~=nil then table.insert(r, v:GetFullName()) end end; result={found=r}
     elseif tool=="get_referenced_instances" then result={refs={}}
     -- 29-33 Dependency
@@ -2798,30 +4243,38 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="suggest_ordering" then local o={}; for _,v in ipairs(args.items or {}) do table.insert(o,v) end; table.sort(o); result={ordered=o}
     elseif tool=="validate_command" then result={valid=true, tool=args.tool}
     -- 34-37 Perf
-    elseif tool=="get_performance_stats" or tool=="perf_stats" then result={stats="plugin stats mock", fps=60}
+    elseif tool=="get_performance_stats" or tool=="perf_stats" then error("unsupported: live performance timings are unavailable to Studio plugins in Edit mode - describe the symptom (part count, script activity) and optimize by construction")
     elseif tool=="analyze_performance" then result={analysis="static ok"}
     elseif tool=="set_performance_threshold" then result={threshold=args.thresholdMs}
     elseif tool=="get_memory_usage" then result={memory=#game:GetDescendants()*100}
     -- 38-42 Terrain
-    elseif tool=="generate_terrain" then result={terrain=true, size=args.size}
-    elseif tool=="set_terrain_region" then result={region=true}
-    elseif tool=="place_parts" then local parent=findByPath(args.parent or "workspace") or workspace; for i=1, math.min(args.count or 5, 50) do local p=Instance.new("Part"); p.Anchored=true; p.Position=Vector3.new(i*6,5,0); p.Parent=parent end; result={placed=args.count}
-    elseif tool=="create_model_from_table" then local m=Instance.new("Model"); m.Name=args.name or "Model"; for _,def in ipairs(args.parts or {}) do local p=Instance.new(def.className or "Part"); for k,v in pairs(def.properties or {}) do pcall(function() (p::any)[k]=v end) end; p.Parent=m end; m.Parent=findByPath(args.parent or "workspace") or workspace; result={model=m:GetFullName()}
-    elseif tool=="apply_material" then result={material=args.material}
+    elseif tool=="generate_terrain" then result=buildTerrain(args)
+    elseif tool=="set_terrain_region" then result=fillTerrainRegion(args)
+    elseif tool=="place_parts" then result=placePatternParts(args)
+    elseif tool=="create_model_from_table" then local m=Instance.new("Model"); m.Name=args.name or "Model"; local modelFailed:{} = {}; for idx,def in ipairs(args.parts or {}) do local p=Instance.new(def.className or "Part"); local ap, fl = applyProps(p, (def.properties or {})); for k,e in pairs(fl) do (modelFailed :: any)[tostring(idx) .. "." .. k] = e end; p.Parent=m end; m.Parent=findByPath(args.parent or "workspace") or workspace; result={model=m:GetFullName(), failed=modelFailed}
+    elseif tool=="apply_material" then result=paintMaterial(args)
     -- 43-46 GUI
     elseif tool=="create_ui" then local sg=Instance.new("ScreenGui"); sg.Name=args.name or "MyGui"; sg.Parent=game.StarterGui; result={ui=sg:GetFullName()}
-    elseif tool=="set_ui_property" then local inst=findByPath(args.path or ""); if inst then (inst::any)[args.property]=args.value end; result={set=true}
+    elseif tool=="set_ui_property" then local inst=findByPath(args.path or ""); if not inst then error("not found "..tostring(args.path or "")..siblingHint(args.path or "")) end; local key = tostring(args.property or ""); if key == "" then error("validation_error: property is required") end; local okC, coerced = coerceProp(inst, key, args.value); if not okC then error("validation_error: " .. tostring(coerced)) end; local okW, werr = pcall(function() (inst::any)[key] = coerced end); if not okW then error(tostring(werr):sub(1, 200)) end; result={matchedPath=inst:GetFullName(), set=true, applied={[key]=true}}
     elseif tool=="get_ui_tree" then local t={}; for _,v in ipairs(game.StarterGui:GetDescendants()) do table.insert(t, v:GetFullName().." ("..v.ClassName..")") end; result={uiTree=t}
     elseif tool=="bind_ui_click" then result={bound=args.path}
     -- 47-50 Animation (+112-113 info/delete)
     elseif tool=="create_animation_track" then result=createAnimationTrack(args)
+    elseif tool=="create_motion_animation" then result=createMotionAnimation(args)
+    elseif tool=="inspect_motion_animation" then result=inspectMotionAnimation(args)
+    elseif tool=="validate_motion_animation" then result=validateMotionAnimation(args)
+    elseif tool=="preview_motion_animation" then result=previewMotionAnimation(args)
+    elseif tool=="remove_motion_animation" then result=removeMotionAnimation(args)
     elseif tool=="play_animation" then result=playAnimation(args)
     elseif tool=="get_animation_info" then result=getAnimationInfo(args)
+    elseif tool=="inspect_keyframe_track" then result=inspectKeyframeTrack(args)
     elseif tool=="delete_animation" then result=deleteAnimation(args)
-    -- 114-117 Cinematics
+    -- 114-119 Cinematics
     elseif tool=="create_cutscene" then result=createCutscene(args)
     elseif tool=="create_dialogue" then result=createDialogue(args)
     elseif tool=="create_motion_effect" then result=createMotionEffect(args)
+    elseif tool=="inspect_motion_effect" then result=inspectMotionEffect(args)
+    elseif tool=="remove_motion_effect" then result=removeMotionEffect(args)
     elseif tool=="create_vfx" then result=createVfx(args)
     -- 118-119 Clip export + publish workflow
     elseif tool=="export_animation_clip" then result=exportAnimationClip(args)
@@ -2830,12 +4283,12 @@ local function executeCommand(cmd:any): (any, string?)
       if act == "prepare" then result=prepareAnimation(args)
       elseif act == "register" then result=registerAnimation(args)
       else error("action must be prepare|register") end
-    elseif tool=="set_lighting" then for k,v in pairs(args.properties or {}) do pcall(function() game.Lighting[k]=v end) end; result={lighting=true}
-    elseif tool=="add_particle_emitter" then local inst=findByPath(args.path or ""); if inst then local e=Instance.new("ParticleEmitter"); e.Parent=inst; result={emitter=true} else error("not found") end
+    elseif tool=="set_lighting" then local ap, fl = applyProps(game.Lighting, args.properties or {}); result={lighting=true, applied=ap, failed=fl}
+    elseif tool=="add_particle_emitter" then local inst=findByPath(args.path or ""); if not inst then error("not found "..tostring(args.path or "")..siblingHint(args.path or "")) end; local e=Instance.new("ParticleEmitter"); local ap, fl = applyProps(e, args.properties or {}); e.Parent=inst; result={matchedPath=inst:GetFullName(), emitter=e:GetFullName(), applied=ap, failed=fl}
     -- 51-53 DataStore
-    elseif tool=="setup_datastore" then result={datastore=args.name}
-    elseif tool=="get_datastore_value" then result={value=nil, mock=true}
-    elseif tool=="set_datastore_value" then result={set=true}
+    elseif tool=="setup_datastore" then result={datastore=args.name, note="DataStores need no setup - GetDataStore opens on first get/set; writes need Studio API access (Game Settings > Security)"}
+    elseif tool=="get_datastore_value" then local dstore=tostring(args.store or ""); local dkey=tostring(args.key or ""); if dstore == "" or dkey == "" then error("validation_error: store* and key* are required") end; local okD, ds = pcall(function() return game:GetService("DataStoreService"):GetDataStore(dstore) end); if not okD or ds == nil then error("datastore_unavailable: " .. tostring(ds):sub(1, 200) .. " (enable Game Settings > Security > Enable Studio Access to API Services)") end; local okG, val = pcall(function() return ds:GetAsync(dkey) end); if not okG then error("datastore_error: " .. tostring(val):sub(1, 200)) end; result={store=dstore, key=dkey, value=val, found=val ~= nil}
+    elseif tool=="set_datastore_value" then local dstore=tostring(args.store or ""); local dkey=tostring(args.key or ""); if dstore == "" or dkey == "" then error("validation_error: store* and key* are required") end; if args.value == nil then error("validation_error: value is required") end; local okD, ds = pcall(function() return game:GetService("DataStoreService"):GetDataStore(dstore) end); if not okD or ds == nil then error("datastore_unavailable: " .. tostring(ds):sub(1, 200) .. " (enable Game Settings > Security > Enable Studio Access to API Services)") end; local okS, serr = pcall(function() ds:SetAsync(dkey, args.value) end); if not okS then error("datastore_error: " .. tostring(serr):sub(1, 200)) end; result={store=dstore, key=dkey, set=true}
     -- 54-57 Team
     elseif tool=="export_session_log" then result={logs="see /logs endpoint"}
     elseif tool=="replay_session" then result={replayed=args.sessionId}
@@ -2855,15 +4308,25 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="generate_test" or tool=="generate_tests" then result={tests="-- generated tests"}
     elseif tool=="run_tests" or tool=="run_playtest" then result={testsPassed=true}
     elseif tool=="session_users" or tool=="collab_join" or tool=="collab_list" or tool=="collab_broadcast" then result={users={"ai","plugin"}}
-    elseif tool=="search_asset" or tool=="search_assets" then result={assets={{id=123, name="mock asset"}}}
-    elseif tool=="import_asset" then local code='game:GetService("InsertService"):LoadAsset('..tostring(args.assetId)..').Parent=workspace'; local ok2,r2=sandboxRun(code); result={imported=args.assetId, ok=ok2}
+    elseif tool=="search_asset" or tool=="search_assets" then
+      -- A Studio plugin cannot make outbound web calls, so live Creator Store
+      -- search runs in the bridge (bridge.py _local_search_asset) or, if the
+      -- catalog is unreachable, via Studio's NATIVE search_asset MCP tool.
+      -- Reaching this branch means both were unavailable - say so honestly.
+      -- Never fabricate ids: import_asset needs a real Creator Store id.
+      error("search_asset is served by the bridge (live Creator Store search). "
+        .. "Seeing this means the bridge could not reach the Roblox catalog and Studio had no native "
+        .. "search tool - check this PC's network, restart start.bat, or find the asset in the Creator "
+        .. "Store by hand and use import_asset with the real assetId. Never invent an asset id.")
+    elseif tool=="import_asset" then
+      result = importCreatorAsset(args)
     elseif tool=="report_metrics" or tool=="get_metrics" or tool=="report_analytics" or tool=="get_analytics" or tool=="suggest_design" or tool=="analytics_report" or tool=="analytics_suggestions" then result={metrics=true}
     elseif tool=="git_commit" or tool=="git_log" or tool=="git_rollback" then result={git=true}
     elseif tool=="predict_bug" then result={predictions={}}
     elseif tool=="plan_game" or tool=="generate_gdd" or tool=="plan" then result={gdd={title="Game", genre="obby"}}
     elseif tool=="execute_plan" then result={executed=true}
     elseif tool=="review_code" then result={review="looks good"}
-    elseif tool=="refactor_code" then local h=healMissingEnds(cmd.command); result={refactored=h}
+    elseif tool=="refactor_code" then local rc = (type(cmd.command) == "string" and cmd.command ~= "" and cmd.command ~= tool) and cmd.command or tostring(args.code or ""); if rc == "" then error("validation_error: code is required for refactor_code") end; local h=healMissingEnds(rc); result={refactored=h}
     elseif tool=="generate_asset" or tool=="generate_asset_variants" then local code='local p=Instance.new("Part"); p.Size=Vector3.new(4,1,2); p.Parent=workspace'; local ok2,_=sandboxRun(code); result={generated=true, ok=ok2}
     elseif tool=="optimize_performance" then result={optimized=true}
     elseif tool=="list_plugins" then result={plugins={"rolink-core"}}
@@ -2876,7 +4339,7 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="import_project" then result={imported=true}
     elseif tool=="generate_quest" then result={quest={id="q1", theme=args.theme or "adventure"}}
     elseif tool=="simulate_economy" or tool=="suggest_balance" then result={economy="stable"}
-    elseif tool=="explain_code" then result={explanation="Luau code explanation mock"}
+    elseif tool=="explain_code" then error("unsupported: the Studio plugin executes code but has no language model - read the source with get_script_content and reason from it")
     elseif tool=="learning_mode" then result={learningMode=true}
     elseif tool=="adjust_difficulty" or tool=="set_difficulty_profile" then pcall(function() local rs=game:GetService("ReplicatedStorage"); local f=rs:FindFirstChild("RoLinkDDA") or Instance.new("Folder", rs); f.Name="RoLinkDDA" end); result={dda=true}
     elseif tool=="generate_sound" or tool=="generate_sound_pack" then result={sound="procedural"}
@@ -2905,8 +4368,8 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="create_idle_animation" then result=rlModelIdle(args)
     elseif tool=="create_walk_cycle" then result=rlModelWalk(args)
     else
-      -- generic fallback: try run_code
-      local ok2, ret2=sandboxRun(cmd.command or ""); if not ok2 then error(ret2) end; result={tool=tool, returned=ret2}
+      -- generic fallback: try run_code (never execute the bare tool name)
+      local fcmd = (type(cmd.command) == "string" and cmd.command ~= "" and cmd.command ~= tool) and cmd.command or tostring((cmd.args or {}).code or ""); if fcmd == "" then error("unsupported tool '" .. tostring(tool) .. "' - use list_commands for the exact catalog name") end; local ok2, ret2, out2, loader2=sandboxRun(fcmd); if not ok2 then error(ret2) end; result={tool=tool, executed=true, loader=loader2 or "unknown", returned=ret2, hasReturn=ret2 ~= nil, output=out2 or ""}
     end
   end)
   if not ok then
@@ -2997,6 +4460,9 @@ local function runToolDeadline(cmd:any): (boolean, any, any, number)
   if not okStart then return false, nil, tostring(startErr), 0 end
   while not done do
     if os.clock() - t0 > TOOL_BUDGET_S then
+      if type((cmd::any).args) == "table" then
+        (cmd.args :: any).__rlCancelled = true
+      end
       return true, nil, "timeout: tool '" .. tostring((cmd::any).tool or "?") ..
         "' still running after " .. tostring(TOOL_BUDGET_S) ..
         "s (likely an oversized build - split into smaller calls)", 0
@@ -3087,4 +4553,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.5.0 loaded - 140 tools ready, polling "..MCP_URL)
+log("RoLink 2.5.0 loaded [repo copy] - 140 tools ready, polling "..MCP_URL)

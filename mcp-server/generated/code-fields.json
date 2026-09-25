@@ -1,7 +1,7 @@
 {
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
-  "generatedAt": "2026-09-25T12:42:03.149Z",
+  "generatedAt": "2026-09-25T12:38:30.770Z",
   "toolCount": 140,
   "toolFields": {
     "get_instances": [

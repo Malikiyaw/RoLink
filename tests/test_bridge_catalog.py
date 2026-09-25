@@ -1,6 +1,6 @@
 # tests/test_bridge_catalog.py - every registry tool must resolve to a real path.
 #   python3 tests/test_bridge_catalog.py
-# With no Studio running and no MCP server started, each of the 140 tools must
+# With no Studio running and no MCP server started, each of the 147 tools must
 # return either ok (local handlers) or a precise offline kind (mcp_offline /
 # studio_offline / validation_error) - never "unknown tool". That proves the
 # full catalog is wired end to end (bridge routing), not just listed.
@@ -31,9 +31,9 @@ class CatalogTest(unittest.TestCase):
         cls.mgr.load_config()
         bridge.mgr = cls.mgr
 
-    def test_registry_has_124(self):
-        self.assertEqual(len(self.registry), 140, f"registry has {len(self.registry)} tools")
-        self.assertEqual(len(set(self.registry)), 140, "registry has duplicates")
+    def test_registry_has_147_unique_tools(self):
+        self.assertEqual(len(self.registry), 147, f"registry has {len(self.registry)} tools")
+        self.assertEqual(len(set(self.registry)), 147, "registry has duplicates")
 
     def test_unknown_names_fail_fast_with_suggestions(self):
         import time
@@ -71,9 +71,9 @@ class CatalogTest(unittest.TestCase):
         self.assertIn("plugin_version", body)
         self.assertIn("in_flight", body)
         self.assertIn("oldest_claim_age_s", body)
-        # Registry stays exactly 124: plugin_status/get_studio_state/get_memory/
+        # Registry stays exactly 147: plugin_status/get_studio_state/get_memory/
         # update_memory are built-ins, not registry tools.
-        self.assertEqual(len(self.registry), 140)
+        self.assertEqual(len(self.registry), 147)
         self.assertNotIn("plugin_status", self.registry)
         self.assertNotIn("get_studio_state", self.registry)
         self.assertNotIn("get_memory", self.registry)

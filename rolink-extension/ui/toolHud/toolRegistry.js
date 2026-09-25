@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// ui/toolHud/toolRegistry.js — P0 visual identity for all 119 tools.
+// ui/toolHud/toolRegistry.js — P0 visual identity for the full RoLink catalog.
 //
 // Category comes from config.js toolCategory() (extended in P0 to cover
 // the full registry). Colors/icons/preview-kinds are fixed per category
@@ -9,7 +9,7 @@
 (function (root) {
   "use strict";
 
-  // Full 119-tool catalogue (mirrors tests/__registry__.json).
+  // Full catalogue (kept in sync with tests/__registry__.json).
   var TOOL_NAMES = [
     "get_instances", "create_instance", "set_properties", "delete_instance",
     "clone_instance", "move_instance", "find_instance", "execute_luau",
@@ -42,10 +42,13 @@
     "explain_code", "learning_mode", "adjust_difficulty",
     "set_difficulty_profile", "generate_sound", "generate_sound_pack",
     "play_sound", "get_animation_info", "delete_animation",
-    "create_cutscene", "create_dialogue", "create_motion_effect", "create_vfx",
+    "create_cutscene", "create_dialogue", "create_motion_effect",
+    "inspect_motion_effect", "remove_motion_effect", "create_vfx",
     "export_animation_clip", "publish_animation",
     "scan_errors", "inspect_ui",
     "screenshot_studio", "playtest_scenario", "migrate_system",
+    "create_motion_animation", "inspect_motion_animation", "validate_motion_animation",
+    "preview_motion_animation", "remove_motion_animation",
     "analyze_animatable_model", "create_model_animation",
     "set_model_keyframe", "set_model_easing", "add_animation_marker",
     "preview_model_animation", "validate_model_animation",
@@ -69,7 +72,7 @@
   // P4 icon audit: per-tool glyph overrides where the category glyph
   // misleads (text-safe unicode only — no emoji-font dependency).
   // Everything else falls back to its category icon; iconFor() guarantees
-  // all 119 tools resolve a non-empty glyph (audited in tests/p4-polish).
+  // every catalog tool resolves a non-empty glyph.
   var ICON_OVERRIDES = {
     execute_luau: "➤", set_script_content: "✎", get_script_content: "⎙",
     create_module: "▦", run_function: "➤",
@@ -85,7 +88,10 @@
     search_asset: "⌕", import_asset: "⇩", apply_material: "⬣",
     git_commit: "⎘", git_log: "☰", git_rollback: "↻",
     batch_queue: "☰", cancel_command: "✖",
-    create_cutscene: "▷", create_dialogue: "❝", create_motion_effect: "〜", create_vfx: "✦",
+    create_cutscene: "▷", create_dialogue: "❝", create_motion_effect: "〜",
+    inspect_motion_effect: "⌕", remove_motion_effect: "×", create_motion_animation: "◆",
+    inspect_motion_animation: "⌕", validate_motion_animation: "✓", preview_motion_animation: "▷",
+    remove_motion_animation: "×", create_vfx: "✦",
     export_animation_clip: "◫", publish_animation: "⇪",
     get_time: "◷", train_model: "◍", plan_game: "⚑",
     compile_visual_graph: "◈", review_code: "»", explain_code: "?",

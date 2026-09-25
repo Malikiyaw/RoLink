@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-const SUPPORTED_HOSTS = [
-  "chat.deepseek.com", "deepseek.com", "chatgpt.com", "chat.openai.com",
-  "gemini.google.com", "www.kimi.ai", "kimi.ai",
-  "chat.z.ai", "chat.qwen.ai", "arena.ai", "www.meta.ai", "meta.ai",
-  "claude.ai", "huggingface.co", "dola.com",
-];
-const DEFAULT_AI_URL = "https://chat.deepseek.com/";
-
 document.getElementById("ver").textContent = `v${chrome.runtime.getManifest().version}`;
 
 function render(s) {
@@ -40,8 +32,17 @@ function render(s) {
     }
     tools.textContent += suffix;
   }
+  // A namespaced addon (blender/*) is labelled with its namespace so a dead
+  // "blender ○" is never confused with a Roblox command of the same name, and
+  // a launch failure (e.g. "uvx not on PATH") is shown instead of a bare "down"
+  // - the difference between an unactionable dot and an obvious fix.
   servers.textContent = s.connected
-    ? list.map((x) => `${x.alive ? "●" : "○"} ${x.id} (${x.alive ? x.tools + " tools" : "down"})`).join("\n")
+    ? list.map((x) => {
+        const ns = (x.meta && x.meta.namespace) || x.namespace;
+        const tag = ns ? ` ${ns}/*` : "";
+        const why = x.error ? ` - ${x.error}` : "";
+        return `${x.alive ? "●" : "○"} ${x.id}${tag} (${x.alive ? x.tools + " tools" : "down"})${why}`;
+      }).join("\n")
     : "";
 }
 
@@ -60,18 +61,16 @@ document.getElementById("restart").addEventListener("click", (e) => {
   });
 });
 document.getElementById("settings").addEventListener("click", () => {
-  // Tries the in-page panel on an already-open supported AI tab first, so
-  // opening it doesn't require a conversation to already be started there.
-  chrome.tabs.query({}, (tabs) => {
-    const active = tabs.find((t) => t.active && t.url && SUPPORTED_HOSTS.some((h) => t.url.includes(h)));
-    const anySupported = active || tabs.find((t) => t.url && SUPPORTED_HOSTS.some((h) => t.url.includes(h)));
-    if (anySupported) {
-      chrome.tabs.sendMessage(anySupported.id, { type: "rl-open-menu" });
-      chrome.tabs.update(anySupported.id, { active: true });
-    } else {
-      chrome.tabs.create({ url: DEFAULT_AI_URL });
-    }
-  });
+  // The settings page (endpoints, MCP servers, the Blender preset button, HUD
+  // categories) is the real destination for "Settings". It used to be
+  // unreachable: options.html was never declared in the manifest and nothing
+  // called openOptionsPage, so this button opened the in-page ⋯ panel instead
+  // and the whole page was dead code reachable only by typing the URL.
+  //
+  // openOptionsPage opens the extension's own tab (chrome-extension://...),
+  // which a content script's page could never do - that is why this lives here.
+  // The in-page panel stays one click away on the RoLink bar.
+  if (chrome.runtime.openOptionsPage) chrome.runtime.openOptionsPage();
 });
 
 chrome.runtime.onMessage.addListener((msg) => {

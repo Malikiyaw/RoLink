@@ -35,6 +35,20 @@ button.danger{background:#21262d;border-color:#da3633;color:var(--red)}
 .cat-dot{width:10px;height:10px;border-radius:50%;flex:none}
 .cat-row .cn{font-weight:600;font-size:13px}
 .cat-row .cd{margin-left:auto;font-size:11px;color:var(--muted)}
+.sub-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:18px 0 8px}
+.preset{padding:12px;background:#0d1117;border:1px solid var(--border);border-radius:8px;margin:8px 0}
+.preset.installed{border-color:#2ea04355}
+.preset-top{display:flex;align-items:center;gap:10px}
+.preset-name{font-weight:600;font-size:13px}
+.preset-badge{font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid var(--border);color:var(--muted)}
+.preset-badge.on{color:var(--green);border-color:#2ea04366}
+.preset-badge.off{color:var(--yellow);border-color:#d2992266}
+.preset-cmd{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--muted);margin:8px 0 0;word-break:break-all}
+.preset-note{font-size:11px;color:var(--muted);margin:6px 0 0}
+.preset-note.warn{color:var(--yellow)}
+.preset-actions{margin-top:10px;display:flex;align-items:center;gap:8px}
+.preset-actions button{padding:6px 14px;font-size:12px}
+.preset-actions .status{margin-left:auto}
 </style>
 <header>
   <div class="logo">R</div>
@@ -69,6 +83,11 @@ button.danger{background:#21262d;border-color:#da3633;color:var(--red)}
 <section>
   <h2><span class="ico">⚙</span> MCP servers (multi-server)</h2>
   <p class="desc">Add or remove MCP servers the bridge should spawn. The default <code>roblox</code> server is managed by the bridge itself and cannot be removed from here.</p>
+  <p class="desc"><strong>Blender setup:</strong> install <code>uv</code>, add the reviewed Blender preset below, then install/enable the MCP for Blender addon and start its server from Blender. The preset is safe-mode + telemetry-disabled and loopback-only (<code>localhost:9876</code>); it never changes a <code>.blend</code> file for you.</p>
+  <div class="sub-label">Ready-made servers</div>
+  <p class="desc">Reviewed setups pinned to the project's own documented command. Nothing is installed or launched until you click Add &mdash; RoLink never adds one of these by itself. Blender's commands are namespaced <code>blender/*</code>, so they can never collide with a Roblox command.</p>
+  <div id="mcpPresets"></div>
+  <div class="sub-label">Configured servers</div>
   <div id="mcpServerList"></div>
   <div class="row" style="margin-top:8px">
     <input id="newServerId" placeholder="server id (e.g. context7)" style="flex:1">
