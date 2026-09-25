@@ -238,6 +238,49 @@
     ],
     "projectId": "test"
   },
+  "create_motion_animation": {
+    "target": "workspace.Rig",
+    "name": "test",
+    "keyframes": [
+      {
+        "time": 0,
+        "poses": [
+          {
+            "part": "HumanoidRootPart",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            }
+          }
+        ]
+      },
+      {
+        "time": 1,
+        "poses": [
+          {
+            "part": "HumanoidRootPart",
+            "position": {
+              "x": 0,
+              "y": 4,
+              "z": 0
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            }
+          }
+        ]
+      }
+    ],
+    "projectId": "test"
+  },
   "play_animation": {
     "target": "test",
     "animationId": "test",
@@ -578,6 +621,15 @@
     "path": "test",
     "projectId": "test"
   },
+  "inspect_motion_effect": {
+    "name": "test",
+    "projectId": "test"
+  },
+  "remove_motion_effect": {
+    "name": "test",
+    "confirm": true,
+    "projectId": "test"
+  },
   "create_vfx": {
     "effect": "test",
     "parent": "test",
@@ -628,6 +680,24 @@
     "name": "test",
     "duration": 1,
     "fps": 30,
+    "projectId": "test"
+  },
+  "inspect_motion_animation": {
+    "name": "test",
+    "projectId": "test"
+  },
+  "validate_motion_animation": {
+    "name": "test",
+    "projectId": "test"
+  },
+  "preview_motion_animation": {
+    "name": "test",
+    "step": 0.1,
+    "projectId": "test"
+  },
+  "remove_motion_animation": {
+    "name": "test",
+    "confirm": true,
     "projectId": "test"
   },
   "set_model_keyframe": {

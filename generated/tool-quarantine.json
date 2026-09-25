@@ -1,18 +1,10 @@
 {
-  "verified": 137,
+  "verified": 144,
   "partial": [
     "diff_snapshots",
     "get_performance_stats",
     "explain_code"
   ],
-  "failing": [
-    "create_motion_animation",
-    "inspect_motion_animation",
-    "inspect_motion_effect",
-    "preview_motion_animation",
-    "remove_motion_animation",
-    "remove_motion_effect",
-    "validate_motion_animation"
-  ],
+  "failing": [],
   "note": "failing/partial tools stay listed but prompts should steer the model to verified alternatives until fixed"
 }

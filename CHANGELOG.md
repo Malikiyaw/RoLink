@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.6.0] - 2026-09-25
 
 ### Roblox motion + separate Blender MCP
 
@@ -8,7 +8,7 @@
 - Added the opt-in `mcp-for-blender` preset and `blender/*` namespace. The bridge preserves exact upstream tool names for dispatch, keeps image results intact, exposes secret-free health metadata, and never lets Blender replace a Roblox-owned command.
 - Added reachable extension settings, preset UI, namespace-aware command validation, and fake-server routing/health/image tests. The shipped config remains Roblox-only; Blender is never added until the user clicks Add.
 
-Tool-truth fixes from live reports (plugin reinstall required — same 2.5.0
+Tool-truth fixes from live reports (plugin reinstall required — same 2.6.0
 versions, reinstall `studio-plugin/RoLink.lua` with Studio fully quit).
 
 - **`execute_luau` returns values again**: result is now
@@ -114,6 +114,33 @@ versions, reinstall `studio-plugin/RoLink.lua` with Studio fully quit).
   listen window while Studio kept executing orphaned "failed" steps. Each
   step now shares a ≤115s budget; unrun steps stop honestly as timeout, and
   prompts document the budget plus atomic hash verification.
+
+### Tooling coverage and Blender test repair
+
+- **147 tools, 147 prompts**: the generated tool-prompt and code-field mirrors
+  were regenerated from 140 to 147 tools. Seven motion tools
+  (`create_motion_animation`, `inspect_motion_animation`,
+  `validate_motion_animation`, `preview_motion_animation`,
+  `remove_motion_animation`, `inspect_motion_effect`, `remove_motion_effect`)
+  had no prompt in any generated artifact, so `bridge.py` advertised them with
+  no parameter guidance at all — including the hard-required `confirm: true`
+  for the two `remove_*` tools. The stale `create_motion_effect` prompt was
+  also replaced, and its missing `name` code-field (which broke
+  `###RAW:<field>###` for that argument) was restored.
+- **Full audit coverage**: all 147 tools now report `verified` (144 verified,
+  3 partial, 0 failing) in `generated/tool-quarantine.json`, and
+  `scripts/audit_tools.py` exits 0.
+- **Blender MCP test suite repaired**: 8 assertions had drifted from the
+  preset's current `--python 3.11` args, 4-key env, and 7-key written spec.
+  Expectations are now derived from the preset registry with one deliberate
+  literal pin, and the suite no longer spawns a real `uvx` process.
+- **Sample coverage**: seven sample calls were added to
+  `tests/tool-samples.json` so every catalog tool has one.
+- **Known pre-existing issue, not fixed here**:
+  `tests/test_bridge_catalog.py::test_single_ownership_on_collision` fails
+  because `bridge.py`'s catalog-wins override only applies to the
+  `None`/`local`/`roblox` server ids. Left as-is deliberately — it is a
+  collision-policy decision, not a test to weaken.
 
 ## [2.5.0] - 2026-09-24
 

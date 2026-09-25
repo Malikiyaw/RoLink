@@ -10,8 +10,8 @@
 window.ROLINK_CODE_FIELDS = {
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
-  "generatedAt": "2026-09-25T12:42:03.149Z",
-  "toolCount": 140,
+  "generatedAt": "2026-09-25T18:34:12.905Z",
+  "toolCount": 147,
   "toolFields": {
     "get_instances": [
       "path",
@@ -211,6 +211,13 @@ window.ROLINK_CODE_FIELDS = {
       "keyframes[].poses[].part",
       "name",
       "projectId"
+    ],
+    "create_motion_animation": [
+      "keyframes[].easing",
+      "keyframes[].poses[].part",
+      "name",
+      "projectId",
+      "target"
     ],
     "play_animation": [
       "animationId",
@@ -465,7 +472,16 @@ window.ROLINK_CODE_FIELDS = {
       "projectId"
     ],
     "create_motion_effect": [
+      "name",
       "path",
+      "projectId"
+    ],
+    "inspect_motion_effect": [
+      "name",
+      "projectId"
+    ],
+    "remove_motion_effect": [
+      "name",
       "projectId"
     ],
     "create_vfx": [
@@ -513,6 +529,22 @@ window.ROLINK_CODE_FIELDS = {
       "name",
       "projectId",
       "target"
+    ],
+    "inspect_motion_animation": [
+      "name",
+      "projectId"
+    ],
+    "validate_motion_animation": [
+      "name",
+      "projectId"
+    ],
+    "preview_motion_animation": [
+      "name",
+      "projectId"
+    ],
+    "remove_motion_animation": [
+      "name",
+      "projectId"
     ],
     "set_model_keyframe": [
       "anim",

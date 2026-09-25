@@ -4,13 +4,22 @@
 #   python3 tests/test_blender_mcp.py
 #
 # Everything here runs against FAKES: no Blender, no uv, no stdio child, no
-# WebSocket, and - importantly - no write to the repo's config.json. The
+# WebSocket, and - importantly - no write to the repo's config.json. The two
+# paths that WOULD launch a real child (install_server, and the add_preset
+# message that calls it) run inside no_spawn(), which replaces
+# subprocess.Popen with a recorder that refuses the launch: the test still
+# proves the code reached Popen, and nothing is ever started. The
 # preset/config tests point bridge.CONFIG_PATH at a temp file and restore it.
 #
 # What is pinned, and why:
 #   1. The preset's spawn spec is EXACT. A typo in command/args/env does not
 #      fail loudly; it produces a server that starts, advertises nothing, and
-#      leaves the user staring at "blender offline".
+#      leaves the user staring at "blender offline". The concrete values are
+#      pinned in exactly ONE assertion block on purpose - that is the contract
+#      with upstream, and a silent edit to the registry has to fail there.
+#      Every other test that needs args/env derives it from
+#      bridge.MCP_SERVER_PRESETS instead of restating it, so one preset change
+#      is a one-line test edit rather than five simultaneous breakages.
 #   2. Opt-in means opt-in: importing the bridge, booting it, listing tools and
 #      listing servers must never add or touch blender.
 #   3. Every blender tool is advertised as "blender/<upstream name>" while the
@@ -33,8 +42,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
+from unittest import mock
 
 # Stub `websockets` so bridge.py can be imported without the dependency.
 if "websockets" not in sys.modules:
@@ -111,6 +122,50 @@ class FakeSocket:
 
 
 @contextlib.contextmanager
+def no_spawn():
+    """Refuse every subprocess launch for the duration of the body.
+
+    MCPClient.start really does Popen(["uvx", "--python", "3.11",
+    "mcp-for-blender"]), so the tests that exercise the in-place install path
+    (install_server, and the add_preset message that calls it) would otherwise
+    pull a real `uvx` - and the whole upstream package tree - onto whatever
+    machine runs the suite. Popen is replaced with a recorder that notes the
+    argv it was asked for and then raises FileNotFoundError, which is exactly
+    what MCPClient.start already handles as "the launcher is not installed":
+    the failure path under test is the real one, and the refusal is recorded
+    so a test can assert the code genuinely reached Popen.
+
+    Yields the list of recorded argvs (empty if nothing tried to launch)."""
+    attempts = []
+
+    def _refuse(argv=None, *a, **kw):
+        attempts.append(list(argv or kw.get("args") or []))
+        raise FileNotFoundError(2, "the test suite never spawns a real process")
+
+    real_popen = subprocess.Popen
+    try:
+        with mock.patch("bridge.subprocess.Popen", _refuse):
+            yield attempts
+    finally:
+        subprocess.Popen = real_popen
+
+
+def wait_for_spawn(attempts, timeout=5.0):
+    """Block until the background start thread has actually reached Popen.
+
+    install_server returns as soon as the client is registered and finishes its
+    handshake in a thread, so without this wait the patch could be lifted while
+    a real `uvx` was still about to be launched. Returns the recorded argv, or
+    None if nothing tried to start within `timeout`."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if attempts:
+            return attempts[0]
+        time.sleep(0.01)
+    return None
+
+
+@contextlib.contextmanager
 def with_config(payload):
     """Point bridge at a temp config.json, run the body, restore. Yields the
     path so a test can assert what was (or was not) written."""
@@ -143,23 +198,46 @@ class PresetDefinitionTest(unittest.TestCase):
         self.assertIsNotNone(p, "mcp-for-blender preset is missing")
         self.assertEqual(p["server_id"], "blender")
         self.assertEqual(p["command"], "uvx")
-        self.assertEqual(list(p["args"]), ["mcp-for-blender"])
+        # THE pin. This is the only place in the suite that hard-codes the spawn
+        # spec, deliberately: it is the contract with upstream's documented
+        # setup, so a silent edit to the registry must fail HERE rather than be
+        # silently adopted by every derived expectation below. `--python 3.11`
+        # is not decoration - upstream needs a 3.11 interpreter and uvx picks
+        # one silently otherwise.
+        self.assertEqual(list(p["args"]), ["--python", "3.11", "mcp-for-blender"])
         # Upstream defaults are localhost:9876; the preset pins the IPv4 literal
         # because the Blender addon binds IPv4 only and a ::1 resolution on
-        # Windows is a silent connect failure.
-        self.assertEqual(dict(p["env"]), {"BLENDER_HOST": "127.0.0.1", "BLENDER_PORT": "9876"})
+        # Windows is a silent connect failure. Safe mode and the telemetry
+        # opt-out are pinned for the same reason: the addon's socket has no
+        # authentication, so the upstream guard must be on by default instead
+        # of something a user has to know to ask for.
+        self.assertEqual(dict(p["env"]), {
+            "BLENDER_HOST": "127.0.0.1",
+            "BLENDER_PORT": "9876",
+            "BLENDER_MCP_SAFE_MODE": "1",
+            "DISABLE_TELEMETRY": "true",
+        })
         self.assertIn("uvx", p["requires"])
         self.assertTrue(p["homepage"].startswith("https://"))
 
     def test_preset_is_namespaced_and_public_form_is_copy(self):
         self.assertEqual(bridge.SERVER_NAMESPACES.get("blender"), "blender")
+        preset = bridge.MCP_SERVER_PRESETS["mcp-for-blender"]
+        # Snapshot the registry BEFORE the published copy is touched: after the
+        # mutations below, comparing the registry against itself would be
+        # vacuous, so the pre-mutation value is what the copy check compares to.
+        args_before, env_before = list(preset["args"]), dict(preset["env"])
         pub = bridge.public_preset("mcp-for-blender")
         self.assertEqual(pub["namespace"], "blender")
-        self.assertEqual(pub["args"], ["mcp-for-blender"])
+        # Derived, not re-hardcoded: public_preset must hand out the registry's
+        # spawn spec verbatim. The concrete values are pinned once, by
+        # test_preset_matches_upstream_documented_setup.
+        self.assertEqual(pub["args"], list(preset["args"]))
         # A caller mutating the published form must not corrupt the registry.
         pub["args"].append("--port")
         pub["env"]["BLENDER_PORT"] = "1"
-        self.assertEqual(bridge.MCP_SERVER_PRESETS["mcp-for-blender"]["args"], ["mcp-for-blender"])
+        self.assertEqual(bridge.MCP_SERVER_PRESETS["mcp-for-blender"]["args"], args_before)
+        self.assertEqual(bridge.MCP_SERVER_PRESETS["mcp-for-blender"]["env"], env_before)
         self.assertEqual(bridge.MCP_SERVER_PRESETS["mcp-for-blender"]["env"]["BLENDER_PORT"], "9876")
 
     def test_availability_reports_a_missing_launcher_instead_of_guessing(self):
@@ -207,14 +285,27 @@ class DefaultInstallUntouchedTest(unittest.TestCase):
             ok, err, info = bridge.config_add_preset("mcp-for-blender")
             self.assertTrue(ok, err)
             self.assertEqual(info["server_id"], "blender")
-            self.assertEqual(sorted(info["env_keys"]), ["BLENDER_HOST", "BLENDER_PORT"])
+            self.assertEqual(sorted(info["env_keys"]),
+                             ["BLENDER_HOST", "BLENDER_MCP_SAFE_MODE",
+                              "BLENDER_PORT", "DISABLE_TELEMETRY"])
             written = read_json(path)["mcpServers"]
             self.assertIn("roblox", written, "adding a preset must not drop the primary server")
+            # Exactly these 7 keys: no fewer (a dropped key silently changes how
+            # the server is launched) and no more (an unexpected key would be fed
+            # straight into the spawn spec). command/preset/namespace/safeMode/
+            # startupTimeoutMs stay literal - they are the bridge's own contract
+            # rather than upstream's, and drift there is a silent behaviour
+            # change. args/env are derived from the registry; their concrete
+            # values are pinned by test_preset_matches_upstream_documented_setup.
+            preset = bridge.MCP_SERVER_PRESETS["mcp-for-blender"]
             self.assertEqual(written["blender"], {
                 "command": "uvx",
-                "args": ["mcp-for-blender"],
+                "args": list(preset["args"]),
                 "preset": "mcp-for-blender",
-                "env": {"BLENDER_HOST": "127.0.0.1", "BLENDER_PORT": "9876"},
+                "namespace": "blender",
+                "safeMode": True,
+                "startupTimeoutMs": 90000,
+                "env": dict(preset["env"]),
             })
 
     def test_preset_cannot_take_over_the_primary_server(self):
@@ -244,7 +335,12 @@ class DefaultInstallUntouchedTest(unittest.TestCase):
             ok, err, info = bridge.config_add_preset("mcp-for-blender", env={"BLENDER_PORT": "9999", "SECRET_TOKEN": "s3cr3t"})
             self.assertTrue(ok, err)
             self.assertNotIn("s3cr3t", json.dumps(info), "preset info must not echo env values")
-            self.assertEqual(info["env_keys"], ["BLENDER_HOST", "BLENDER_PORT", "SECRET_TOKEN"])
+            # The caller's key joins the preset's own four; the override only
+            # changes a value, never the key set. info reports NAMES, sorted, so
+            # "BLENDER_PORT is not set" is diagnosable and s3cr3t never is.
+            self.assertEqual(info["env_keys"], ["BLENDER_HOST", "BLENDER_MCP_SAFE_MODE",
+                                                "BLENDER_PORT", "DISABLE_TELEMETRY",
+                                                "SECRET_TOKEN"])
             written = read_json(bridge.CONFIG_PATH)["mcpServers"]["blender"]["env"]
             self.assertEqual(written["BLENDER_PORT"], "9999")
             self.assertEqual(written["BLENDER_HOST"], "127.0.0.1")
@@ -361,10 +457,18 @@ class NamespaceRoutingTest(unittest.TestCase, _BlenderFixture):
         with with_config({"mcpServers": {"roblox": {"command": "x", "args": []},
                                         "blender": {"command": "uvx", "args": ["mcp-for-blender"]}}}):
             mgr = bridge.MCPManager()
-            ok, err = mgr.install_server("blender")
-            self.assertTrue(ok, err)
-            self.assertIn("blender", mgr.clients)
-            self.assertIsInstance(mgr.clients["blender"], bridge.MCPClient)
+            # install_server launches the configured command in a background
+            # thread, so Popen is refused for the duration (no_spawn): the code
+            # path is exercised for real, no `uvx` is ever started. The wait is
+            # what makes that safe - install_server returns before the thread
+            # runs, so without it the patch could be lifted mid-launch.
+            with no_spawn() as attempts:
+                ok, err = mgr.install_server("blender")
+                self.assertTrue(ok, err)
+                self.assertIn("blender", mgr.clients)
+                self.assertIsInstance(mgr.clients["blender"], bridge.MCPClient)
+                self.assertIsNotNone(wait_for_spawn(attempts),
+                                     "install_server never reached Popen")
             # A client for an id that is not in the config is a failure, not a
             # silent no-op the caller would report as success.
             self.assertEqual(mgr.install_server("ghost"), (False, "server 'ghost' is not in the config"))
@@ -454,10 +558,15 @@ class HealthMetadataTest(unittest.TestCase):
     SECRET = "sk-do-not-leak-1234"
 
     def setUp(self):
+        preset = bridge.MCP_SERVER_PRESETS["mcp-for-blender"]
         self.cfg = {
             "mcpServers": {
                 "roblox": {"command": "launch_studio_mcp.py", "args": []},
-                "blender": {"command": "uvx", "args": ["mcp-for-blender"],
+                # An installed blender entry: the preset's own spawn spec (args
+                # taken from the registry, so the broadcast below is checked
+                # against the spec that is really installed) plus a personal API
+                # key, because that is what these rows carry in practice.
+                "blender": {"command": preset["command"], "args": list(preset["args"]),
                             "preset": "mcp-for-blender",
                             "env": {"BLENDER_HOST": "127.0.0.1", "BLENDER_PORT": "9876",
                                     "SKETCHFAB_API_KEY": self.SECRET}},
@@ -484,7 +593,11 @@ class HealthMetadataTest(unittest.TestCase):
             meta = rows["blender"]["meta"]
             self.assertEqual(meta["namespace"], "blender")
             self.assertEqual(meta["command"], "uvx")
-            self.assertEqual(meta["args"], ["mcp-for-blender"])
+            # Derived: what must be broadcast is the args the config actually
+            # holds, which are the preset's - not a re-typed literal. The
+            # concrete values are pinned by
+            # test_preset_matches_upstream_documented_setup.
+            self.assertEqual(meta["args"], list(bridge.MCP_SERVER_PRESETS["mcp-for-blender"]["args"]))
             self.assertEqual(meta["env_keys"], ["BLENDER_HOST", "BLENDER_PORT", "SKETCHFAB_API_KEY"])
             self.assertEqual(meta["preset"], "mcp-for-blender")
             # The launch failure is surfaced: "blender ○" alone is unactionable.
@@ -564,7 +677,14 @@ class BridgeProtocolTest(unittest.TestCase):
 
     def test_add_preset_acks_without_a_process_restart(self):
         with with_config(self.cfg) as path:
-            ws = self._run([{"type": "add_preset", "preset": "mcp-for-blender", "id": 9}])
+            # add_preset writes the spec and loads it in place, which launches
+            # `uvx --python 3.11 mcp-for-blender` in a background thread. Popen
+            # is refused (no_spawn) so the ack below is proven with no real
+            # child, and the wait keeps the refusal in force until the launch
+            # has actually been attempted.
+            with no_spawn() as attempts:
+                ws = self._run([{"type": "add_preset", "preset": "mcp-for-blender", "id": 9}])
+                self.assertIsNotNone(wait_for_spawn(attempts), "add_preset never reached Popen")
             frame = ws.last("server_changed")
             self.assertIsNotNone(frame, ws.sent)
             self.assertTrue(frame["ok"], frame)
@@ -592,9 +712,11 @@ class BridgeProtocolTest(unittest.TestCase):
             original = self.mgr.install_server
             self.mgr.install_server = lambda sid: (False, "cannot hot-load")
             try:
-                ws = self._run([{"type": "add_preset", "preset": "mcp-for-blender", "id": 13}])
+                with no_spawn() as attempts:
+                    ws = self._run([{"type": "add_preset", "preset": "mcp-for-blender", "id": 13}])
             finally:
                 self.mgr.install_server = original
+            self.assertEqual(attempts, [], "the stubbed install must not launch anything")
             frame = ws.last("server_changed")
             self.assertTrue(frame["ok"])
             self.assertTrue(frame["restarting"])
