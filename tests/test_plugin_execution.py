@@ -323,8 +323,10 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertIn('>> line "', src)
         self.assertIn("attempt to call a nil value", src)
         # Both runtime-failure returns in sandboxRun attach the context, plus
-        # the wall-clock timeout path in runWithDeadline.
-        self.assertEqual(src.count("errLineCtx(code,"), 3)
+        # the wall-clock timeout path in runWithDeadline and both harness
+        # loader-failure returns (require_failed + loader_unavailable carry
+        # line context so a wrapped module error stays diagnosable).
+        self.assertEqual(src.count("errLineCtx(code,"), 6)
         with open(os.path.join(ROOT, "studio-plugin", "src", "plugin", "init.plugin.luau"),
                   encoding="utf-8") as f:
             mirror = f.read()
@@ -571,10 +573,10 @@ class PluginExecutionTest(unittest.TestCase):
     def test_plugin_build_tag_present(self):
         # The Output banner must identify a repo-fresh copy ("[repo copy]")
         # so a stale install is distinguishable from the release zip at a
-        # glance. The documented `RoLink 2.6.0 loaded` prefix must survive.
+        # glance. The documented `RoLink 2.7.0 loaded` prefix must survive.
         with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("RoLink 2.6.0 loaded [repo copy]", src)
+        self.assertIn("RoLink 2.7.0 loaded [repo copy]", src)
 
     def test_installed_plugin_state(self):
         import tempfile
@@ -624,7 +626,7 @@ class PluginExecutionTest(unittest.TestCase):
             bat = f.read()
         for pin in ("QUIT ROBLOX STUDIO FIRST", "exit /b 2", "INSTALL OK",
                     "matches source", "DUPCOUNT", "user_RoLink.lua",
-                    "RoLink 2.6.0 loaded [repo copy]"):
+                    "RoLink 2.7.0 loaded [repo copy]"):
             self.assertIn(pin, bat, "installer missing: " + pin)
 
     def test_toolbugfix_terrain_and_datastore_real(self):

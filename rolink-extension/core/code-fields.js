@@ -11,7 +11,7 @@ window.ROLINK_CODE_FIELDS = {
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
   "generatedAt": "2026-09-25T18:34:12.905Z",
-  "toolCount": 147,
+  "toolCount": 150,
   "toolFields": {
     "get_instances": [
       "path",
@@ -176,7 +176,9 @@ window.ROLINK_CODE_FIELDS = {
     ],
     "place_parts": [
       "material",
+      "origin",
       "parent",
+      "prefix",
       "projectId"
     ],
     "create_model_from_table": [
@@ -461,9 +463,11 @@ window.ROLINK_CODE_FIELDS = {
       "projectId"
     ],
     "create_cutscene": [
+      "audio[].soundId",
       "name",
       "projectId",
-      "shots[].easing"
+      "subtitles[].speaker",
+      "subtitles[].text"
     ],
     "create_dialogue": [
       "lines[].speaker",
@@ -616,6 +620,18 @@ window.ROLINK_CODE_FIELDS = {
       "anim",
       "projectId",
       "track"
+    ],
+    "preview_cutscene": [
+      "name",
+      "projectId"
+    ],
+    "validate_cutscene": [
+      "name",
+      "projectId"
+    ],
+    "remove_cutscene": [
+      "name",
+      "projectId"
     ]
   },
   "stringFields": [
@@ -659,10 +675,12 @@ window.ROLINK_CODE_FIELDS = {
     "newName",
     "newParent",
     "npcPath",
+    "origin",
     "overlay",
     "parent",
     "part",
     "path",
+    "prefix",
     "projectId",
     "prompt",
     "property",

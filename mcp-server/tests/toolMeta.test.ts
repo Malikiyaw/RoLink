@@ -8,8 +8,8 @@ const names: string[] = JSON.parse(
 const VALID = ["read", "edit", "inspect", "generate", "asset", "visual", "test", "tool"];
 
 describe("P3 queue tool meta", () => {
-  it("registry has 147 tools", () => {
-    expect(names.length).toBe(147);
+  it("registry has 150 tools", () => {
+    expect(names.length).toBe(150);
   });
 
   it("maps every tool to a valid HUD category", () => {

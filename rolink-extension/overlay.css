@@ -257,8 +257,8 @@ html.rl-light #rl-unstable {
 }
 #rl-stop[data-state="stopping"]:hover { background: #b45309; }
 
-/* bar controls: one neutral icon-button family (Discord, support, switch) */
-#rl-discord, #rl-support {
+/* bar controls: one neutral icon-button family (Discord, support, settings, switch) */
+#rl-discord, #rl-support, #rl-settings {
   flex: none; width: 28px; height: 28px; padding: 0;
   display: flex; align-items: center; justify-content: center;
   background: rgba(255, 255, 255, 0.06); color: #b8b8bf;
@@ -266,7 +266,9 @@ html.rl-light #rl-unstable {
   cursor: pointer; text-decoration: none;
   transition: background 0.14s ease, color 0.14s ease;
 }
-#rl-discord:hover, #rl-support:hover { background: rgba(255, 255, 255, 0.11); color: #ededf0; }
+#rl-discord:hover, #rl-support:hover, #rl-settings:hover { background: rgba(255, 255, 255, 0.11); color: #ededf0; }
+/* Settings pill carries a text label (parity: one-click Settings). */
+#rl-settings { width: auto; padding: 0 10px; font-size: 12px; font-weight: 600; gap: 5px; }
 
 /* model switcher: names the current AI and opens the panel at Switch AI */
 #rl-switch {
@@ -857,12 +859,14 @@ html.rl-light #rl-state.rl-state-warn { color: #b91c1c; }
 html.rl-light #rl-bar.tone-active #rl-state b { color: #059669; }
 html.rl-light #rl-discord,
 html.rl-light #rl-support,
+html.rl-light #rl-settings,
 html.rl-light #rl-switch {
   background: rgba(0, 0, 0, 0.05); color: #4b5563;
   border-color: rgba(0, 0, 0, 0.12);
 }
 html.rl-light #rl-discord:hover,
 html.rl-light #rl-support:hover,
+html.rl-light #rl-settings:hover,
 html.rl-light #rl-switch:hover { background: rgba(0, 0, 0, 0.09); color: #1f2430; }
 html.rl-light #rl-action:disabled {
   background: rgba(0, 0, 0, 0.05); color: rgba(0, 0, 0, 0.35); border-color: rgba(0, 0, 0, 0.08);

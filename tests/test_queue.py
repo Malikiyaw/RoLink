@@ -43,7 +43,7 @@ class QueueTest(unittest.TestCase):
         code, body = http("GET", "/health")
         self.assertEqual(code, 200)
         self.assertTrue(body["ok"])
-        self.assertEqual(body["tools"], 147)
+        self.assertEqual(body["tools"], 150)
 
     def test_plugin_status_live(self):
         import json as _json

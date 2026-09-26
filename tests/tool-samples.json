@@ -790,5 +790,18 @@
     "track": "test",
     "locked": true,
     "projectId": "test"
+  },
+  "preview_cutscene": {
+    "name": "test",
+    "projectId": "test"
+  },
+  "validate_cutscene": {
+    "name": "test",
+    "projectId": "test"
+  },
+  "remove_cutscene": {
+    "name": "test",
+    "confirm": true,
+    "projectId": "test"
   }
 }

@@ -76,7 +76,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.6.0"
+BRIDGE_VERSION = "2.7.0"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", "17613")))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -123,6 +123,7 @@ STUDIO_ROUTED_TOOLS = frozenset([
     "set_ui_property", "get_ui_tree", "bind_ui_click", "create_animation_track",
     "play_animation", "get_animation_info", "delete_animation",
     "create_cutscene", "create_dialogue", "create_motion_effect", "create_vfx",
+    "preview_cutscene", "validate_cutscene", "remove_cutscene",
     "create_motion_animation", "inspect_motion_effect", "remove_motion_effect",
     "inspect_motion_animation", "validate_motion_animation", "preview_motion_animation",
     "remove_motion_animation", "export_animation_clip", "publish_animation",
@@ -671,7 +672,7 @@ def _local_plugin_status(args):
         _names = [_c.get("name") for _c in _installed.get("copies", [])]
         if not _installed.get("exact_present"):
             _install_note = ("no RoLink.lua in %s (saw: %s) - quit Studio fully, run install-plugin.bat "
-                             "from THIS release folder, reopen; expect RoLink 2.6.0 loaded [repo copy]"
+                             "from THIS release folder, reopen; expect RoLink 2.7.0 loaded [repo copy]"
                              % (_installed.get("dir") or "?", _names or "nothing"))
         elif _installed.get("copy_count", 1) != 1:
             _install_note = ("duplicate plugin copies %s in %s - Studio loads ALL of them and they fight; "
@@ -679,7 +680,7 @@ def _local_plugin_status(args):
                              % (_names, _installed.get("dir") or "?"))
         else:
             _install_note = ("installed RoLink.lua differs from this folder (repo %s bytes) - reinstall from "
-                             "THIS folder with Studio fully closed; expect RoLink 2.6.0 loaded [repo copy]"
+                             "THIS folder with Studio fully closed; expect RoLink 2.7.0 loaded [repo copy]"
                              % (_installed.get("repo_size") or "?"))
     return {"ok": True, "text": json.dumps({
         "queue_up": bool(_queue_server_on[0]),
@@ -1248,6 +1249,43 @@ def _strip_luau_noise(code):
     return "".join(out)
 
 
+def _destroy_in_loop(clean):
+    """True when a :Destroy() call sits inside a for/while/repeat body.
+
+    Lets scan-then-delete-one-target through without confirmation (the
+    Destroy is outside any loop) while still gating real wipes like
+    `for _, d in ipairs(X:GetDescendants()) do d:Destroy() end`.
+    Runs on noise-stripped code so keywords inside strings/comments can
+    never fake a block. Fail-safe direction: confusion gates (confirm),
+    it never silently passes.
+    """
+    import re as _re
+    destroys = [m.start() for m in _re.finditer(r":destroy\s*\(", clean)]
+    if not destroys:
+        return False
+    toks = [(m.start(), m.group(1)) for m in
+            _re.finditer(r"\b(for|while|repeat|function|if|until|end)\b", clean)]
+    stack = []
+    di = 0
+    for pos, kw in toks:
+        while di < len(destroys) and destroys[di] < pos:
+            if "loop" in stack:
+                return True
+            di += 1
+        if kw in ("for", "while", "repeat"):
+            stack.append("loop")
+        elif kw in ("function", "if"):
+            stack.append("block")
+        elif kw in ("end", "until"):
+            if stack:
+                stack.pop()
+    while di < len(destroys):
+        if "loop" in stack:
+            return True
+        di += 1
+    return False
+
+
 def _luau_risk(code):
     """Preflight risk analysis for execute_luau-class tools (offline, heuristic).
 
@@ -1292,8 +1330,10 @@ def _luau_risk(code):
     # — Destruction —
     destroys = count(r":destroy\s*\(")
     clears = count(r"clearallchildren\s*\(")
-    broad = ("getdescendants" in low and destroys > 0) or clears > 0 or \
-            (destroys > 0 and any(k in low for k in ("workspace:destroy", "game:destroy", "game.workspace:destroy")))
+    scan = ("getdescendants" in low or "getchildren" in low)
+    broad = clears > 0 or \
+            (destroys > 0 and any(k in low for k in ("workspace:destroy", "game:destroy", "game.workspace:destroy"))) or \
+            (destroys > 0 and scan and _destroy_in_loop(clean))
     scope["destroyCalls"] = destroys
     if broad:
         dangers.append({"id": "broad-destroy", "severity": "HIGH",
@@ -2065,6 +2105,9 @@ MCP_SERVER_PRESETS = {
             # arbitrary Blender code.
             "BLENDER_MCP_SAFE_MODE": "1",
             "DISABLE_TELEMETRY": "true",
+            # Pin to uv-managed Python so conda/pyenv/asdf interpreters never
+            # hijack the install (upstream recommendation).
+            "UV_PYTHON_PREFERENCE": "only-managed",
         },
         "safeMode": True,
         "startupTimeoutMs": 90000,
@@ -3288,6 +3331,17 @@ def safe_call(name, arguments, timeout):
         # Bare ###LUA### blocks cannot carry the flag, hence the re-send.
         _risk = _luau_risk(arguments["code"])
         if _risk.get("requiresConfirm") and not (arguments.get("confirm") is True):
+            # File-only forensics: the terminal/log line for this rejection is
+            # truncated to 80 chars, which hides which danger actually fired.
+            # The model gets the full text via tool_result; this copy is for
+            # the human reading bridge_debug.log later.
+            try:
+                log("confirm_required: %s | %s | code: %s" % (
+                    name, _risk_summary(_risk),
+                    str(arguments.get("code") or "")[:400].replace("\n", " ")),
+                    "dim", terminal=False)
+            except Exception:
+                pass
             return {"ok": False, "tool": name, "executionId": "rl_rejected",
                     "status": "confirm_required", "durationMs": 0,
                     "kind": "confirm_required", "error_code": "CONFIRM_REQUIRED",
@@ -3308,6 +3362,10 @@ def safe_call(name, arguments, timeout):
             _v = re.sub(r"###\s*END[_\- ]?LUA\s*(?:###|---)", "", _v, flags=re.I)
             _v = re.sub(r"###\s*RAW(?:\s*:[^#\n]*)?\s*(?:###|---)", "", _v, flags=re.I)
             _v = re.sub(r"###\s*END[_\- ]?RAW\s*(?:###|---)", "", _v, flags=re.I)
+            # Bare leading opener with no closer ("###RAW:-- comment" as the
+            # first line): strip only the marker token, keep trailing code.
+            _v = re.sub(r"^\s*###\s*LUA\s*:\s*", "", _v, flags=re.I)
+            _v = re.sub(r"^\s*###\s*RAW\s*:\s*", "", _v, flags=re.I)
             arguments[_k] = _v
     # Large script writes hang the plugin recompile: fail fast offline too,
     # before any queue wait or MCP hop.
@@ -3389,6 +3447,12 @@ def safe_call(name, arguments, timeout):
     try:
         result = mgr.call(name, arguments, timeout)
         out = {"ok": True, "text": result["text"], "images": result["images"]}
+        # Native Studio paths leak internal package prefixes (sabuiltin_*).
+        # Scrub user-facing text the same way error paths already do.
+        try:
+            out["text"] = re.sub(r"sabuiltin_[^.\s]*\.", "", str(out.get("text") or ""))
+        except Exception:
+            pass
         # Provenance. For a namespaced addon the model asked for
         # "blender/get_scene_info" but upstream ran "get_scene_info"; carry the
         # EXACT upstream name plus the owning server so an image-carrying
@@ -3445,6 +3509,15 @@ async def run_tool_task(ws, name, args, timeout, rid):
     # the console; they still land in bridge_debug.log. A failed/slow call
     # DOES surface on the terminal - that's the signal a user should notice.
     log(f"<- {name} ({elapsed:.1f}s){slow}: {summary}", tag, terminal=not res.get("ok") or elapsed > 5)
+    if not res.get("ok"):
+        # Same truncation problem as the confirm gate above: keep the full
+        # error in the log file (capped) so a pasted terminal screenshot is
+        # never the only record of what actually failed.
+        try:
+            log(f"[{name}] full error: {(res.get('error') or '')[:2000]}",
+                "dim", terminal=False)
+        except Exception:
+            pass
     try:
         await ws.send(json.dumps({"type": "tool_result", "id": rid, **res}))
     except websockets.ConnectionClosed:

@@ -1,4 +1,4 @@
--- RoLink.lua — Studio Plugin (147 tools, production)
+-- RoLink.lua — Studio Plugin (150 tools, production)
 -- Place in Studio Plugins folder or Rojo. Polls MCP every 200ms, executes, snapshots, heals, reports.
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
@@ -7,10 +7,10 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.6.0"
+local PLUGIN_VERSION = "2.7.0"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
-local btn = toolbar:CreateButton("RoLink", "AI bridge (147 tools, poll 200ms)", "rbxassetid://0")
+local btn = toolbar:CreateButton("RoLink", "AI bridge (150 tools, poll 200ms)", "rbxassetid://0")
 btn.ClickableWhenViewportHidden = true
 local enabled = true
 
@@ -68,6 +68,11 @@ local function stripMarkers(s:string): (string, boolean)
   s = s:gsub("###%s*[Rr][Aa][Ww]%s*---", "")
   s = s:gsub("###%s*[Ee][Nn][Dd][_\- ]?[Rr][Aa][Ww]%s*###", "")
   s = s:gsub("###%s*[Ee][Nn][Dd][_\- ]?[Rr][Aa][Ww]%s*---", "")
+  -- Bare leading openers with no closer (model wrote "###RAW:-- comment" as
+  -- the first line). Strip only the marker token, keep the trailing code or
+  -- comment: "###RAW:-- RoLink" becomes "-- RoLink", never bare "RoLink".
+  s = s:gsub("^%s*###%s*[Ll][Uu][Aa]%s*:%s*", "")
+  s = s:gsub("^%s*###%s*[Rr][Aa][Ww]%s*:%s*", "")
   s = s:gsub("^%s*```%w*\n?", ""):gsub("\n?%s*```%s*$", "")
   s = s:gsub("^%s*[Cc]opy%s+[Cc]ode%s*\n?", "")
   return s, s ~= orig
@@ -292,14 +297,30 @@ local function sandboxRun(code:string): (boolean, any, string, string)
     local head2 = code:gsub("%s+", " "):sub(1, 120)
     local suffix = " [code: " .. head2 .. ( #code > 120 and "..." or "") .. "]"
     -- Two distinct prefixes: compiler errors vs loader errors. Never let a
-    -- plain syntax failure wear the require_failed label.
+    -- plain syntax failure wear the require_failed label. The inner match
+    -- uses [%s%S] so multi-line require errors survive, and a code-echo
+    -- guard stops a bare Luau head from being mislabeled when the regex
+    -- captures the wrong span.
     if raw:find("Requested module", 1, true) then
-      local inner = raw:match("Requested module experienced an error[^:]*:%s*(.+)$")
-        or raw:match("Requested module[^:]*:%s*(.+)$")
+      local inner = raw:match("Requested module experienced an error[^:]*:%s*([%s%S]+)$")
+        or raw:match("Requested module[^:]*:%s*([%s%S]+)$")
         or raw
-      return finish(false, "require_failed: " .. tostring(inner) .. suffix, "harness")
+      inner = tostring(inner)
+      local lowInner = inner:lower()
+      local looksLikeCode = inner:match("^%s*local%s+%w+")
+        and not (lowInner:find("attempt") or lowInner:find("expect")
+          or lowInner:find("error") or lowInner:find("not found")
+          or lowInner:find("nil") or lowInner:find("invalid")
+          or lowInner:find("missing") or lowInner:find("fail"))
+      if looksLikeCode then
+        return finish(false, "loader_unavailable: ModuleScript harness failed ("
+          .. harnessName .. "): " .. raw .. suffix
+          .. errLineCtx(code, raw), "none")
+      end
+      return finish(false, "require_failed: " .. inner .. suffix
+        .. errLineCtx(code, raw), "harness")
     end
-    return finish(false, "loader_unavailable: loadstring/load disabled and ModuleScript harness failed (" .. harnessName .. "): " .. raw .. suffix, "none")
+    return finish(false, "loader_unavailable: loadstring/load disabled and ModuleScript harness failed (" .. harnessName .. "): " .. raw .. suffix .. errLineCtx(code, raw), "none")
   end
 end
 
@@ -464,9 +485,11 @@ local function vec3(t:any): Vector3
   if type(t) ~= "table" then return Vector3.zero end
   return Vector3.new(num(t.x, 0), num(t.y, 0), num(t.z, 0))
 end
--- Easing curves for professional motion: an eased segment bakes 3
+-- Easing curves for professional motion: an eased segment bakes
 -- interpolated in-between keyframes so sparse input plays realistically
--- instead of robotically linear. Times must be non-decreasing.
+-- instead of robotically linear. Times must be non-decreasing. Per-pose
+-- easing overrides the keyframe easing; long eased segments subdivide more
+-- so fast moves keep their curve instead of chord-cutting it.
 local EASE_FNS: { [string]: (number) -> number } = {
   linear = function(t) return t end,
   quadIn = function(t) return t * t end,
@@ -478,18 +501,25 @@ local EASE_FNS: { [string]: (number) -> number } = {
   sineIn = function(t) return 1 - math.cos(t * math.pi / 2) end,
   sineOut = function(t) return math.sin(t * math.pi / 2) end,
   sineInOut = function(t) return -(math.cos(math.pi * t) - 1) / 2 end,
+  -- Overshoot/settle family for strikes, landings, UI pops. Clamped to
+  -- [-0.15,1.15] at bake time so one energetic segment cannot fling a limb.
+  bezierOut = function(t) local c1 = 1.2 local u = t - 1 return 1 + (c1 + 1) * u * u * u + c1 * u * u end,
+  springOut = function(t) return 1 - math.exp(-5 * t) * math.cos(9 * t) end,
 }
-local EASE_SUBDIV = 3
+-- Subdivision counts live at the use site (chunk locals are capped, so no
+-- one-per-constant registers here): 3 baked frames per segment, 5 on moves
+-- longer than 0.3s.
 -- Alias + typo tolerance: the model writes bare "quad" (or "Quad-In",
 -- "easeout") far more often than the exact enum. Normalize case, separators
 -- and bare family names instead of failing; only truly unknown names error,
 -- with a did-you-mean hint so the retry lands first try.
 local EASE_ALIASES: { [string]: string } = {
   quad = "quadInOut", cubic = "cubicInOut", sine = "sineInOut",
+  bezier = "bezierOut", spring = "springOut", back = "bezierOut",
   easein = "quadIn", easeout = "quadOut", easeinout = "quadInOut",
   ease_in = "quadIn", ease_out = "quadOut", ease_in_out = "quadInOut",
 }
-local EASE_LIST = "linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut"
+local EASE_LIST = "linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut|bezierOut|springOut"
 local function resolveEasing(name:string): (string?)
   if EASE_FNS[name] then return name end
   local norm = name:lower():gsub("[%s%-%_]", "")
@@ -520,21 +550,49 @@ local function bakeEased(kfData:{ [string]: any }): { [string]: any }
     local easeName = tostring((kfD::any).easing or "linear")
     local resolved = resolveEasing(easeName)
     if not resolved then error("unknown easing '" .. easeName:sub(1, 32) .. "' " .. easingHint(easeName) .. "(" .. EASE_LIST .. ")") end
-    local easeFn = EASE_FNS[resolved]
-    if i > 1 and resolved ~= "linear" then
+    if i > 1 then
       local prev = kfData[i - 1]
       local t0 = math.max(0, num((prev::any).time, 0))
+      local segDur = t - t0
+      -- Per-pose easing overrides the keyframe easing; the segment
+      -- subdivides deeper when anything on it is non-linear and long
+      -- enough that chord-cutting would show. All-linear segments bake
+      -- no in-betweens, exactly as before.
+      local segEases:{ [string]: string } = {}
+      local anyEase = resolved ~= "linear"
+      for _, pD in ipairs((kfD::any).poses or {}) do
+        local part = type(pD) == "table" and tostring((pD::any).part or "") or ""
+        local r = resolved
+        if type(pD) == "table" and (pD::any).easing then
+          r = resolveEasing(tostring((pD::any).easing))
+          if not r then error("unknown easing '" .. tostring((pD::any).easing):sub(1, 32) .. "' " .. easingHint(tostring((pD::any).easing)) .. "(" .. EASE_LIST .. ")") end
+        end
+        segEases[part] = r or "linear"
+        if r ~= "linear" then anyEase = true end
+      end
+      if anyEase then
+      -- 3 baked frames per segment, 5 on long eased moves (was EASE_SUBDIV).
+      local segSubdiv = 3
+      if segDur > 0.3 then segSubdiv = 5 end
       local prevPoses:{ [string]: any } = {}
       for _, pD in ipairs((prev::any).poses or {}) do
         if type(pD) == "table" then prevPoses[tostring((pD::any).part or "")] = pD end
       end
-      for s = 1, EASE_SUBDIV do
-        local f = easeFn(s / (EASE_SUBDIV + 1))
+      for s = 1, segSubdiv do
+        local frac = s / (segSubdiv + 1)
         local poses:{ [string]: any } = {}
         for _, pD in ipairs((kfD::any).poses or {}) do
           if type(pD) ~= "table" then continue end
           local part = tostring((pD::any).part or "Torso")
           local qD = prevPoses[part]
+          local pEase = segEases[part] or "linear"
+          local f = frac
+          if pEase ~= "linear" then
+            f = EASE_FNS[pEase](frac)
+            -- Overshoot families may leave [0,1]; clamp so one segment
+            -- cannot fling a limb across the map.
+            if f > 1.15 then f = 1.15 elseif f < -0.15 then f = -0.15 end
+          end
           local p1 = (pD::any).position or {}
           local r1 = (pD::any).rotation or {}
           local p0 = (qD and (qD::any).position) or p1
@@ -542,13 +600,25 @@ local function bakeEased(kfData:{ [string]: any }): { [string]: any }
           local function lp(a:any, b:any): number
             return num(a, 0) + (num(b, 0) - num(a, 0)) * f
           end
+          -- Arc lift: eased position moves bow outward mid-segment
+          -- (foot clearance on swings) instead of chord-cutting straight
+          -- through the body. Scales with distance, so tiny moves stay put.
+          local lift = 0
+          if pEase ~= "linear" then
+            local dx = num((p1::any).x, 0) - num((p0::any).x, 0)
+            local dy = num((p1::any).y, 0) - num((p0::any).y, 0)
+            local dz = num((p1::any).z, 0) - num((p0::any).z, 0)
+            local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+            lift = math.sin(math.pi * frac) * dist * 0.06
+          end
           table.insert(poses, {
             part = part,
-            position = { x = lp((p0::any).x, (p1::any).x), y = lp((p0::any).y, (p1::any).y), z = lp((p0::any).z, (p1::any).z) },
+            position = { x = lp((p0::any).x, (p1::any).x), y = lp((p0::any).y, (p1::any).y) + lift, z = lp((p0::any).z, (p1::any).z) },
             rotation = { x = lp((r0::any).x, (r1::any).x), y = lp((r0::any).y, (r1::any).y), z = lp((r0::any).z, (r1::any).z) },
           })
         end
-        table.insert(out, { time = t0 + (t - t0) * (s / (EASE_SUBDIV + 1)), poses = poses })
+        table.insert(out, { time = t0 + (t - t0) * frac, poses = poses })
+      end
       end
     end
     table.insert(out, kfD)
@@ -832,14 +902,21 @@ end
 -- DataModels: the generated script registers the sequence by its verified
 -- path when the game starts. This is the same Animation -> Animator chain
 -- required by Roblox, but it is wired automatically for the user.
-local MOTION_ROOT_NAME = "RoLinkMotionAnimations"
-local function motionCleanName(raw:any, fallback:string): string
+-- Motion helpers live on one table (not chunk locals): Studio caps a chunk
+-- at ~200 locals and this file is at that cliff (see scripts docs). One
+-- `local Motion` replaces ~20 registers; call sites use Motion.x.
+local Motion = {
+  rootName = "RoLinkMotionAnimations",
+  effects = { tween = true, shake = true, fov = true, pulse = true },
+  effectRoot = "RoLinkMotionEffects",
+}
+function Motion.motionCleanName(raw:any, fallback:string): string
   local n = tostring(raw or fallback):gsub("^%s+", ""):gsub("%s+$", "")
   n = n:gsub("[^%w_%-]", "_"):sub(1, 64)
   if n == "" then n = fallback end
   return n
 end
-local function motionPath(inst: Instance): string
+function Motion.motionPath(inst: Instance): string
   local parts:{string} = {}
   local cur: Instance? = inst
   while cur and cur ~= game do
@@ -848,17 +925,17 @@ local function motionPath(inst: Instance): string
   end
   return table.concat(parts, "/")
 end
-local function motionRoot(): Instance
+function Motion.motionRoot(): Instance
   local rs = game:GetService("ReplicatedStorage")
-  local root = rs:FindFirstChild(MOTION_ROOT_NAME)
+  local root = rs:FindFirstChild(Motion.rootName)
   if not root then
     root = Instance.new("Folder")
-    root.Name = MOTION_ROOT_NAME
+    root.Name = Motion.rootName
     root.Parent = rs
   end
   return root
 end
-local function motionPlain(v:any, depth:number?, seen:{ [any]: boolean }?): any
+function Motion.motionPlain(v:any, depth:number?, seen:{ [any]: boolean }?): any
   depth = depth or 0
   if depth > 8 then error("motion configuration is nested too deeply") end
   local t = typeof(v)
@@ -884,17 +961,17 @@ local function motionPlain(v:any, depth:number?, seen:{ [any]: boolean }?): any
     if type(k) ~= "string" and type(k) ~= "number" then
       error("motion property keys must be strings or numbers")
     end
-    out[tostring(k)] = motionPlain(value, depth + 1, seen)
+    out[tostring(k)] = Motion.motionPlain(value, depth + 1, seen)
   end
   seen[v] = nil
   return out
 end
-local function motionJson(value:any): string
-  local ok, encoded = pcall(function() return HttpService:JSONEncode(motionPlain(value)) end)
+function Motion.motionJson(value:any): string
+  local ok, encoded = pcall(function() return HttpService:JSONEncode(Motion.motionPlain(value)) end)
   if not ok then error("motion configuration is not JSON-safe: " .. tostring(encoded):sub(1, 180)) end
   return encoded
 end
-local function motionScriptSource(folderName:string): string
+function Motion.motionScriptSource(folderName:string): string
   return "local CONFIG_FOLDER = " .. string.format("%q", folderName) .. "\n" .. [==[
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
@@ -970,8 +1047,8 @@ folder:SetAttribute("RoLinkAnimationId", tostring(animationId))
 track:Play()
 ]==]
 end
-local function motionDestroy(name:string, includeSequence:boolean): { [string]: any }
-  local root = motionRoot()
+function Motion.motionDestroy(name:string, includeSequence:boolean): { [string]: any }
+  local root = Motion.motionRoot()
   local folder = root:FindFirstChild(name)
   local config:any = nil
   local configValue: Instance? = nil
@@ -1011,11 +1088,11 @@ local function motionDestroy(name:string, includeSequence:boolean): { [string]: 
   end
   return destroyed
 end
-local function motionFolderAndConfig(name:string): (Instance, { [string]: any })
-  local folder = motionRoot():FindFirstChild(name)
+function Motion.motionFolderAndConfig(name:string): (Instance, { [string]: any })
+  local folder = Motion.motionRoot():FindFirstChild(name)
   if not folder then
     error("MOTION_CONTROLLER_NOT_FOUND: no motion animation named '" .. name:sub(1, 64)
-      .. "' under ReplicatedStorage/" .. MOTION_ROOT_NAME)
+      .. "' under ReplicatedStorage/" .. Motion.rootName)
   end
   local value = folder:FindFirstChild("Config")
   if not value or not value:IsA("StringValue") then
@@ -1027,17 +1104,17 @@ local function motionFolderAndConfig(name:string): (Instance, { [string]: any })
   end
   return folder, config
 end
-local function motionSequence(config:any): Instance?
+function Motion.motionSequence(config:any): Instance?
   local path = type(config) == "table" and tostring(config.sequencePath or "") or ""
   if path == "" then return nil end
   local inst = findByPath(path)
   if inst and inst:IsA("KeyframeSequence") then return inst end
   return nil
 end
-local function motionControllerSummary(name:string): { [string]: any }
-  local folder, config = motionFolderAndConfig(name)
+function Motion.motionControllerSummary(name:string): { [string]: any }
+  local folder, config = Motion.motionFolderAndConfig(name)
   local target = findByPath(tostring(config.targetPath or ""))
-  local sequence = motionSequence(config)
+  local sequence = Motion.motionSequence(config)
   local out:{ [string]: any } = {
     name = name, controller = folder:GetFullName(),
     targetPath = tostring(config.targetPath or ""),
@@ -1061,7 +1138,7 @@ local function motionControllerSummary(name:string): { [string]: any }
   out.warnings = warnings
   return out
 end
-local function motionSampleSequence(seq: Instance, t:number): { [string]: any }
+function Motion.motionSampleSequence(seq: Instance, t:number): { [string]: any }
   local kfs = (seq :: any):GetKeyframes()
   table.sort(kfs, function(a, b) return (a :: any).Time < (b :: any).Time end)
   local before: any = nil
@@ -1105,7 +1182,7 @@ local function motionSampleSequence(seq: Instance, t:number): { [string]: any }
   end
   return out
 end
-local function motionFindRigPart(target: Instance, wanted:string): BasePart
+function Motion.motionFindRigPart(target: Instance, wanted:string): BasePart
   local found: BasePart? = nil
   local count = 0
   for _, d in ipairs(target:GetDescendants()) do
@@ -1124,7 +1201,7 @@ local function motionFindRigPart(target: Instance, wanted:string): BasePart
   end
   return found
 end
-local function motionRigInfo(target: Instance, trackNames:{ [string]: boolean }): (BasePart, { [string]: BasePart }, { [BasePart]: BasePart? })
+function Motion.motionRigInfo(target: Instance, trackNames:{ [string]: boolean }): (BasePart, { [string]: BasePart }, { [BasePart]: BasePart? })
   local root: BasePart? = target:FindFirstChild("HumanoidRootPart")
   if not root and target:IsA("Model") then
     pcall(function() root = (target :: Model).PrimaryPart end)
@@ -1181,7 +1258,7 @@ local function motionRigInfo(target: Instance, trackNames:{ [string]: boolean })
   end
   return root :: BasePart, parts, parent
 end
-local function motionPoseCFrame(data:any): CFrame
+function Motion.motionPoseCFrame(data:any): CFrame
   local p = (type(data) == "table" and (data :: any).position) or data
   local r = type(data) == "table" and (data :: any).rotation or nil
   return CFrame.new(vec3(p)) * CFrame.Angles(
@@ -1189,7 +1266,7 @@ local function motionPoseCFrame(data:any): CFrame
     math.rad(num(r and (r :: any).y, 0)),
     math.rad(num(r and (r :: any).z, 0)))
 end
-local function motionEasingParts(name:string): (string, string)
+function Motion.motionEasingParts(name:string): (string, string)
   local resolved = resolveEasing(name) or "linear"
   if resolved == "linear" then return "Linear", "InOut" end
   if resolved:find("InOut", 1, true) then
@@ -1204,7 +1281,7 @@ local function motionEasingParts(name:string): (string, string)
   if family == "sine" then return "Sine", direction end
   return "Quad", direction
 end
-local function createMotionSequence(args:{ [string]: any }, target: Model): { [string]: any }
+function Motion.createMotionSequence(args:{ [string]: any }, target: Model): { [string]: any }
   local kfData = args.keyframes
   if type(kfData) ~= "table" or #kfData == 0 then error("keyframes must be a non-empty array") end
   if #kfData > 200 then error("too many keyframes (max 200)") end
@@ -1241,7 +1318,7 @@ local function createMotionSequence(args:{ [string]: any }, target: Model): { [s
     end
   end
   if totalPoses > 1024 then error("too many animated poses (" .. totalPoses .. ", max 1024)") end
-  local root, parts, parent = motionRigInfo(target, trackNames)
+  local root, parts, parent = Motion.motionRigInfo(target, trackNames)
   local allParts:{ BasePart } = {root}
   local included:{ [BasePart]: boolean } = {[root] = true}
   local function includeAncestors(part:BasePart)
@@ -1252,7 +1329,7 @@ local function createMotionSequence(args:{ [string]: any }, target: Model): { [s
       cur = parent[cur]
     end
   end
-  for name in pairs(trackNames) do includeAncestors(motionFindRigPart(target, name)) end
+  for name in pairs(trackNames) do includeAncestors(Motion.motionFindRigPart(target, name)) end
   local children:{ [BasePart]: { BasePart } } = {}
   for _, part in ipairs(allParts) do
     local p = parent[part]
@@ -1277,8 +1354,8 @@ local function createMotionSequence(args:{ [string]: any }, target: Model): { [s
       local pose = Instance.new("Pose")
       pose.Name = part.Name
       local data = byName[part.Name]
-      pose.CFrame = data and motionPoseCFrame(data) or CFrame.new()
-      local style, direction = motionEasingParts(tostring((kfD :: any).easing or "linear"))
+      pose.CFrame = data and Motion.motionPoseCFrame(data) or CFrame.new()
+      local style, direction = Motion.motionEasingParts(tostring((kfD :: any).easing or "linear"))
       pcall(function() (pose :: any).EasingStyle = Enum.EasingStyle[style] end)
       pcall(function() (pose :: any).EasingDirection = Enum.EasingDirection[direction] end)
       if parentPose then
@@ -1320,19 +1397,19 @@ local function createMotionAnimation(args:{ [string]: any }): { [string]: any }
   if not target:FindFirstChildOfClass("Humanoid") then
     error("MOTION_TARGET_INVALID: model '" .. target:GetFullName() .. "' has no Humanoid")
   end
-  local name = motionCleanName(args.name, "RoLinkMotion")
-  local root = motionRoot()
+  local name = Motion.motionCleanName(args.name, "RoLinkMotion")
+  local root = Motion.motionRoot()
   local oldFolder = root:FindFirstChild(name)
   local animFolder = game.Workspace:FindFirstChild("RoLinkAnimations")
   local oldSequence = animFolder and animFolder:FindFirstChild(name) or nil
   if (oldFolder or oldSequence) and args.confirm ~= true then
     error("CONFIRM_REQUIRED: motion animation '" .. name .. "' already exists - re-send with confirm:true to replace it")
   end
-  if oldFolder or oldSequence then motionDestroy(name, true) end
+  if oldFolder or oldSequence then Motion.motionDestroy(name, true) end
   local animArgs:{ [string]: any } = {}
   for k, v in pairs(args) do animArgs[k] = v end
   animArgs.name = name
-  local made = createMotionSequence(animArgs, target)
+  local made = Motion.createMotionSequence(animArgs, target)
   local sequence = made.sequence
   local sequenceFolder = game.Workspace:FindFirstChild("RoLinkAnimations")
   if not sequenceFolder then
@@ -1358,8 +1435,8 @@ local function createMotionAnimation(args:{ [string]: any }): { [string]: any }
     error("playback must be server or client")
   end
   local config = {
-    name = name, targetPath = motionPath(target),
-    sequencePath = motionPath(sequence), animationId = tostring(made.animationId or ""),
+    name = name, targetPath = Motion.motionPath(target),
+    sequencePath = Motion.motionPath(sequence), animationId = tostring(made.animationId or ""),
     loop = args.loop == true, playback = playback,
     autoPlay = args.autoPlay ~= false, speed = num(args.speed, 1),
     startDelay = num(args.startDelay, 0),
@@ -1374,7 +1451,7 @@ local function createMotionAnimation(args:{ [string]: any }): { [string]: any }
   folder:SetAttribute("loop", config.loop)
   local value = Instance.new("StringValue")
   value.Name = "Config"
-  value.Value = motionJson(config)
+  value.Value = Motion.motionJson(config)
   value.Parent = folder
   folder.Parent = root
   local serviceName = playback == "client" and "StarterPlayer" or "ServerScriptService"
@@ -1387,7 +1464,7 @@ local function createMotionAnimation(args:{ [string]: any }): { [string]: any }
   end
   local script = Instance.new(playback == "client" and "LocalScript" or "Script")
   script.Name = "RoLinkMotion_" .. name
-  script.Source = motionScriptSource(name)
+  script.Source = Motion.motionScriptSource(name)
   script.Parent = scripts
   folder:SetAttribute("scriptPath", script:GetFullName())
   pcall(function() ChangeHistoryService:SetWaypoint("RoLink motion animation " .. name) end)
@@ -1399,13 +1476,13 @@ local function createMotionAnimation(args:{ [string]: any }): { [string]: any }
     note = "Edit-time controller created. The Script registers this KeyframeSequence and plays it in Play mode." }
 end
 local function inspectMotionAnimation(args:{ [string]: any }): { [string]: any }
-  return motionControllerSummary(motionCleanName(args.name, "RoLinkMotion"))
+  return Motion.motionControllerSummary(Motion.motionCleanName(args.name, "RoLinkMotion"))
 end
 local function validateMotionAnimation(args:{ [string]: any }): { [string]: any }
-  local name = motionCleanName(args.name, "RoLinkMotion")
-  local folder, config = motionFolderAndConfig(name)
+  local name = Motion.motionCleanName(args.name, "RoLinkMotion")
+  local folder, config = Motion.motionFolderAndConfig(name)
   local target = findByPath(tostring(config.targetPath or ""))
-  local sequence = motionSequence(config)
+  local sequence = Motion.motionSequence(config)
   local errors:{ [string]: any } = {}
   local warnings:{ [string]: any } = {}
   if not target then
@@ -1437,7 +1514,34 @@ local function validateMotionAnimation(args:{ [string]: any }): { [string]: any 
   if config.autoPlay == false then
     table.insert(warnings, { code = "MANUAL", detail = "autoPlay=false; the controller will not play until enabled" })
   end
-  local out = motionControllerSummary(name)
+  -- Loop-seam audit: a looped controller whose first and last poses drift
+  -- reads as a visible pop every cycle. Sampled numerically (never pixels).
+  if config.loop == true and sequence then
+    local okS, firstP = pcall(function() return Motion.motionSampleSequence(sequence, 0) end)
+    if okS and type(firstP) == "table" then
+      local kfs = (sequence :: any):GetKeyframes()
+      local dur = #kfs > 0 and (kfs[#kfs] :: any).Time or 0
+      local okL, lastP = pcall(function() return Motion.motionSampleSequence(sequence, dur) end)
+      if okL and type(lastP) == "table" then
+        local worst, wpart = 0, ""
+        for pname, fp in pairs(firstP) do
+          local lp = lastP[pname]
+          if type(fp) == "table" and type(lp) == "table" then
+            local fpp, lpp = fp.position or {}, lp.position or {}
+            local dp = math.sqrt((num((lpp::any).x, 0) - num((fpp::any).x, 0)) ^ 2
+              + (num((lpp::any).y, 0) - num((fpp::any).y, 0)) ^ 2
+              + (num((lpp::any).z, 0) - num((fpp::any).z, 0)) ^ 2)
+            if dp > worst then worst, wpart = dp, pname end
+          end
+        end
+        if worst > 0.5 then
+          table.insert(warnings, { code = "LOOP_SEAM",
+            detail = string.format("looped controller drifts %.2f studs on '%s' (first vs last pose) - close the loop or it pops every cycle", worst, wpart) })
+        end
+      end
+    end
+  end
+  local out = Motion.motionControllerSummary(name)
   out.valid = #errors == 0
   out.errors = errors
   out.warnings = warnings
@@ -1446,9 +1550,9 @@ local function validateMotionAnimation(args:{ [string]: any }): { [string]: any 
   return out
 end
 local function previewMotionAnimation(args:{ [string]: any }): { [string]: any }
-  local name = motionCleanName(args.name, "RoLinkMotion")
-  local folder, config = motionFolderAndConfig(name)
-  local sequence = motionSequence(config)
+  local name = Motion.motionCleanName(args.name, "RoLinkMotion")
+  local folder, config = Motion.motionFolderAndConfig(name)
+  local sequence = Motion.motionSequence(config)
   if not sequence then error("MOTION_SEQUENCE_NOT_FOUND: " .. tostring(config.sequencePath)) end
   local kfs = (sequence :: any):GetKeyframes()
   if #kfs == 0 then error("MOTION_SEQUENCE_EMPTY: " .. name) end
@@ -1459,23 +1563,78 @@ local function previewMotionAnimation(args:{ [string]: any }): { [string]: any }
   for i = 0, count - 1 do
     local t = duration * i / (count - 1)
     table.insert(samples, { t = math.floor(t * 1000 + 0.5) / 1000,
-      poses = motionSampleSequence(sequence, t) })
+      poses = Motion.motionSampleSequence(sequence, t) })
   end
-  return { name = name, controller = folder:GetFullName(), sequence = motionPath(sequence),
+  -- Motion metrics: per-part peak linear/angular velocity across the
+  -- samples plus the loop-seam gap (first vs last sample). Numbers only;
+  -- a big seam on a looped controller reads as a visible pop.
+  local peakVel:{ [string]: any } = {}
+  local seam:{ [string]: any } = {}
+  local seamWorst, seamPart = 0, ""
+  if #samples >= 2 then
+    local first, last = samples[1], samples[#samples]
+    local fP, lP = first.poses or {}, last.poses or {}
+    for pname, fp in pairs(fP) do
+      local lp = lP[pname]
+      if type(fp) == "table" and type(lp) == "table" then
+        local fpp, lpp = fp.position or {}, lp.position or {}
+        local fpr, lpr = fp.rotation or {}, lp.rotation or {}
+        local dp = math.sqrt((num((lpp::any).x, 0) - num((fpp::any).x, 0)) ^ 2
+          + (num((lpp::any).y, 0) - num((fpp::any).y, 0)) ^ 2
+          + (num((lpp::any).z, 0) - num((fpp::any).z, 0)) ^ 2)
+        local dr = math.abs(num((lpr::any).x, 0) - num((fpr::any).x, 0))
+          + math.abs(num((lpr::any).y, 0) - num((fpr::any).y, 0))
+          + math.abs(num((lpr::any).z, 0) - num((fpr::any).z, 0))
+        seam[pname] = { posStuds = math.floor(dp * 1000 + 0.5) / 1000,
+          rotDeg = math.floor(dr * 100 + 0.5) / 100 }
+        if dp > seamWorst then seamWorst, seamPart = dp, pname end
+      end
+    end
+    for idx = 2, #samples do
+      local dt = samples[idx].t - samples[idx - 1].t
+      if dt > 1e-9 then
+        local pa, pb = samples[idx - 1].poses or {}, samples[idx].poses or {}
+        for pname, a in pairs(pa) do
+          local c = pb[pname]
+          if type(a) == "table" and type(c) == "table" then
+            local ap, cp = a.position or {}, c.position or {}
+            local ar, cr = a.rotation or {}, c.rotation or {}
+            local dp = math.sqrt((num((cp::any).x, 0) - num((ap::any).x, 0)) ^ 2
+              + (num((cp::any).y, 0) - num((ap::any).y, 0)) ^ 2
+              + (num((cp::any).z, 0) - num((ap::any).z, 0)) ^ 2) / dt
+            local dr = (math.abs(num((cr::any).x, 0) - num((ar::any).x, 0))
+              + math.abs(num((cr::any).y, 0) - num((ar::any).y, 0))
+              + math.abs(num((cr::any).z, 0) - num((ar::any).z, 0))) / dt
+            local cur = peakVel[pname]
+            if not cur or dp > cur.posPerSec then
+              peakVel[pname] = { posPerSec = math.floor(dp * 100 + 0.5) / 100,
+                rotPerSec = math.floor(dr * 100 + 0.5) / 100 }
+            elseif dr > cur.rotPerSec then
+              cur.rotPerSec = math.floor(dr * 100 + 0.5) / 100
+            end
+          end
+        end
+      end
+    end
+  end
+  return { name = name, controller = folder:GetFullName(), sequence = Motion.motionPath(sequence),
     duration = duration, step = step, sampleCount = #samples, samples = samples,
+    peakVelocity = peakVel, loopSeam = seam,
+    loopSeamWorst = { part = seamPart,
+      posStuds = math.floor(seamWorst * 1000 + 0.5) / 1000 },
     rendered = false, playable = true,
-    note = "Numeric pose samples from the real KeyframeSequence; Studio plugins cannot prove rendered pixels." }
+    note = "Numeric pose samples from the real KeyframeSequence; Studio plugins cannot prove rendered pixels. peakVelocity is studs/sec + deg/sec per part; loopSeam is first-vs-last-sample drift (a big seam on a looped controller pops)." }
 end
 local function removeMotionAnimation(args:{ [string]: any }): { [string]: any }
-  local name = motionCleanName(args.name, "RoLinkMotion")
+  local name = Motion.motionCleanName(args.name, "RoLinkMotion")
   if args.confirm ~= true then
     error("CONFIRM_REQUIRED: remove motion animation '" .. name .. "' - re-send with confirm:true")
   end
-  local root = motionRoot()
+  local root = Motion.motionRoot()
   if not root:FindFirstChild(name) then
     error("MOTION_CONTROLLER_NOT_FOUND: no motion animation named '" .. name:sub(1, 64) .. "'")
   end
-  local destroyed = motionDestroy(name, true)
+  local destroyed = Motion.motionDestroy(name, true)
   pcall(function() ChangeHistoryService:SetWaypoint("RoLink remove motion animation " .. name) end)
   return { removed = true, name = name, destroyed = destroyed }
 end
@@ -1484,37 +1643,441 @@ end
 -- Edit stores the data model; Play renders it via a real server Script.
 -- Every builder returns a runtimeSnippet for that Script. Only create_vfx
 -- renders immediately (viewport particles/lights work in Edit).
+-- Cutscene helpers live on one table (not chunk locals): Studio caps a chunk
+-- at ~200 locals and this file sits at that cliff (see scripts docs). One
+-- `local Cutscene` replaces 11 registers; call sites use Cutscene.x.
+local Cutscene = {
+  folder = "RoLinkCutscenes",
+  scripts = "RoLinkCutsceneScripts",
+  totalMax = 120,
+}
+function Cutscene.cutsceneNum3(t:any, what:string, shot:number): Vector3
+  if type(t) ~= "table" then error("shot " .. shot .. " " .. what .. " must be {x,y,z}") end
+  return Vector3.new(num((t::any).x, 0), num((t::any).y, 0), num((t::any).z, 0))
+end
+function Cutscene.cutsceneCheckShot(sD:any, i:number): { [string]: any }
+  if type(sD) ~= "table" then error("shot " .. i .. " must be an object") end
+  local cam = (sD::any).camera
+  if type(cam) ~= "table" then error("shot " .. i .. " needs camera{position, lookAt}") end
+  local pos = Cutscene.cutsceneNum3((cam::any).position, "camera.position", i)
+  local look = Cutscene.cutsceneNum3((cam::any).lookAt, "camera.lookAt", i)
+  local dur = num((sD::any).duration, 0)
+  if dur < 0.1 or dur > 30 then error("shot " .. i .. " duration must be 0.1-30s") end
+  local easeName = tostring((sD::any).easing or "linear")
+  local resolved = resolveEasing(easeName)
+  if not resolved then error("shot " .. i .. " unknown easing '"
+    .. easeName:sub(1, 24) .. "' " .. easingHint(easeName) .. "(" .. EASE_LIST .. ")") end
+  local trans = tostring((sD::any).transition or "cut"):lower()
+  if trans ~= "cut" and trans ~= "fade" then error("shot " .. i .. " transition must be cut|fade") end
+  local out:{ [string]: any } = {
+    camera = { position = { x = pos.X, y = pos.Y, z = pos.Z },
+      lookAt = { x = look.X, y = look.Y, z = look.Z } },
+    duration = dur, easing = resolved, transition = trans,
+    hold = (sD::any).hold == true,
+  }
+  if (sD::any).fov ~= nil then
+    local fov = num((sD::any).fov, 0)
+    if fov < 1 or fov > 179 then error("shot " .. i .. " fov must be 1-179") end
+    out.fov = fov
+  end
+  if (sD::any).shake ~= nil then
+    local sh = (sD::any).shake
+    if type(sh) ~= "table" then error("shot " .. i .. " shake must be {amplitude, frequency}") end
+    local amp = num((sh::any).amplitude, 0.5)
+    local freq = num((sh::any).frequency, 8)
+    if amp < 0 or amp > 10 then error("shot " .. i .. " shake.amplitude must be 0-10") end
+    if freq < 0.1 or freq > 30 then error("shot " .. i .. " shake.frequency must be 0.1-30") end
+    out.shake = { amplitude = amp, frequency = freq }
+  end
+  return out
+end
+function Cutscene.cutsceneScriptSource(cutName:string): string
+  local L:{string} = {}
+  local function w(s:string) table.insert(L, s) end
+  w('local Players = game:GetService("Players")')
+  w('local RunService = game:GetService("RunService")')
+  w('local TweenService = game:GetService("TweenService")')
+  w('local UserInputService = game:GetService("UserInputService")')
+  w('local player = Players.LocalPlayer')
+  w('if not player then return end')
+  w('local folder = game.Workspace:WaitForChild("RoLinkCutscenes", 10)')
+  w('if not folder then return end')
+  w('local mod = folder:WaitForChild(' .. string.format("%q", cutName) .. ', 10)')
+  w('if not mod then return end')
+  w('local okD, data = pcall(require, mod)')
+  w('if not okD or type(data) ~= "table" then return end')
+  w('local shots = data.shots or {}')
+  w('if #shots == 0 then return end')
+  w('local cam = workspace.CurrentCamera')
+  w('if not cam then return end')
+  w('local pgui = player:WaitForChild("PlayerGui", 10)')
+  w('if not pgui then return end')
+  w('if _G.RoLinkCutscenePlaying then return end')
+  w('_G.RoLinkCutscenePlaying = true')
+  w('pcall(function()')
+  w('local old = pgui:FindFirstChild("RoLinkCutsceneGui")')
+  w('if old then old:Destroy() end')
+  w('end)')
+  w('local gui = Instance.new("ScreenGui")')
+  w('gui.Name = "RoLinkCutsceneGui"')
+  w('gui.ResetOnSpawn = false')
+  w('gui.IgnoreGuiInset = true')
+  w('gui.Parent = pgui')
+  w('local function bar(top)')
+  w('local f = Instance.new("Frame")')
+  w('f.AnchorPoint = Vector2.new(0, top)')
+  w('if top == 0 then f.Position = UDim2.new(0, 0, 0, 0)')
+  w('else f.Position = UDim2.new(0, 0, 1, 0) end')
+  w('f.Size = UDim2.new(1, 0, 0.12, 0)')
+  w('f.BackgroundColor3 = Color3.new(0, 0, 0)')
+  w('f.BorderSizePixel = 0')
+  w('f.ZIndex = 5')
+  w('f.Parent = gui')
+  w('return f')
+  w('end')
+  w('bar(0)')
+  w('bar(1)')
+  w('local fade = Instance.new("Frame")')
+  w('fade.Size = UDim2.new(1, 0, 1, 0)')
+  w('fade.BackgroundColor3 = Color3.new(0, 0, 0)')
+  w('fade.BackgroundTransparency = 1')
+  w('fade.BorderSizePixel = 0')
+  w('fade.ZIndex = 7')
+  w('fade.Parent = gui')
+  w('local sub = Instance.new("TextLabel")')
+  w('sub.AnchorPoint = Vector2.new(0.5, 1)')
+  w('sub.Position = UDim2.new(0.5, 0, 1, -100)')
+  w('sub.Size = UDim2.new(0.8, 0, 0, 64)')
+  w('sub.BackgroundTransparency = 1')
+  w('sub.Font = Enum.Font.GothamBold')
+  w('sub.TextSize = 20')
+  w('sub.TextColor3 = Color3.new(1, 1, 1)')
+  w('sub.TextWrapped = true')
+  w('sub.Visible = false')
+  w('sub.ZIndex = 6')
+  w('sub.Parent = gui')
+  w('local stroke = Instance.new("UIStroke")')
+  w('stroke.Thickness = 2')
+  w('stroke.Color = Color3.new(0, 0, 0)')
+  w('stroke.Parent = sub')
+  w('local skipped = false')
+  w('local jumpConn = nil')
+  w('if data.skippable ~= false then')
+  w('local skipBtn = Instance.new("TextButton")')
+  w('skipBtn.AnchorPoint = Vector2.new(1, 0)')
+  w('skipBtn.Position = UDim2.new(1, -16, 0, 16)')
+  w('skipBtn.Size = UDim2.new(0, 110, 0, 34)')
+  w('skipBtn.Text = "Skip >>"')
+  w('skipBtn.Font = Enum.Font.Gotham')
+  w('skipBtn.TextSize = 16')
+  w('skipBtn.BackgroundTransparency = 0.3')
+  w('skipBtn.ZIndex = 6')
+  w('skipBtn.Parent = gui')
+  w('skipBtn.MouseButton1Click:Connect(function() skipped = true end)')
+  w('jumpConn = UserInputService.JumpRequest:Connect(function() skipped = true end)')
+  w('end')
+  w('local function easeFn(name, t)')
+  w('local n = string.lower(tostring(name or "linear"))')
+  w('if n == "linear" then return t end')
+  w('if n == "quadin" then return t * t end')
+  w('if n == "quadout" then return 1 - (1 - t) * (1 - t) end')
+  w('if n == "quadinout" then if t < 0.5 then return 2 * t * t end return 1 - (-2 * t + 2) * (-2 * t + 2) / 2 end')
+  w('if n == "cubicin" then return t * t * t end')
+  w('if n == "cubicout" then return 1 - (1 - t) * (1 - t) * (1 - t) end')
+  w('if n == "cubicinout" then if t < 0.5 then return 4 * t * t * t end return 1 - (-2 * t + 2) * (-2 * t + 2) * (-2 * t + 2) / 2 end')
+  w('if n == "sinein" then return 1 - math.cos(t * math.pi / 2) end')
+  w('if n == "sineout" then return math.sin(t * math.pi / 2) end')
+  w('if n == "sineinout" then return -(math.cos(math.pi * t) - 1) / 2 end')
+  w('if n == "bezierout" then local u = t - 1 return 1 + 2.2 * u * u * u + 1.2 * u * u end')
+  w('if n == "springout" then return 1 - math.exp(-5 * t) * math.cos(9 * t) end')
+  w('return t')
+  w('end')
+  w('local function v3(d) return Vector3.new(d.x or 0, d.y or 0, d.z or 0) end')
+  w('cam.CameraType = Enum.CameraType.Scriptable')
+  w('local curP = cam.CFrame.Position')
+  w('local curL = cam.CFrame.Position + cam.CFrame.LookVector * 10')
+  w('local tG, subI, audI, subTok = 0, 1, 1, 0')
+  w('local subs = data.subtitles or {}')
+  w('local auds = data.audio or {}')
+  w('local function fireDue()')
+  w('while subI <= #subs and subs[subI].t <= tG do')
+  w('local s = subs[subI]')
+  w('sub.Text = tostring(s.speaker or "") .. ": " .. tostring(s.text or "")')
+  w('sub.Visible = true')
+  w('subTok = subTok + 1')
+  w('local my, dur = subTok, tonumber(s.dur) or 2.5')
+  w('task.delay(dur, function() if my == subTok then sub.Visible = false end end)')
+  w('subI = subI + 1')
+  w('end')
+  w('while audI <= #auds and auds[audI].t <= tG do')
+  w('local a = auds[audI]')
+  w('if not skipped then pcall(function()')
+  w('local snd = Instance.new("Sound")')
+  w('snd.SoundId = tostring(a.soundId or "")')
+  w('snd.Parent = gui')
+  w('snd:Play()')
+  w('end) end')
+  w('audI = audI + 1')
+  w('end')
+  w('end')
+  w('local prevP, prevL = curP, curL')
+  w('repeat')
+  w('for _, s in ipairs(shots) do')
+  w('if skipped then break end')
+  w('local dur = tonumber(s.duration) or 2')
+  w('local tgtP, tgtL = v3(s.camera.position), v3(s.camera.lookAt)')
+  w('local fovTo = tonumber(s.fov)')
+  w('local fovFrom = cam.FieldOfView')
+  w('local amp = s.shake and tonumber(s.shake.amplitude) or 0')
+  w('local freq = s.shake and tonumber(s.shake.frequency) or 8')
+  w('local useFade = tostring(s.transition or "cut") == "fade" and not s.hold')
+  w('if s.hold then prevP, prevL = tgtP, tgtL end')
+  w('if useFade then fade.BackgroundTransparency = 0 end')
+  w('local tS = 0')
+  w('local conn')
+  w('conn = RunService.RenderStepped:Connect(function(dt)')
+  w('tS = tS + dt')
+  w('tG = tG + dt')
+  w('local f = 1')
+  w('if tS < dur then f = easeFn(s.easing, tS / dur) end')
+  w('if f > 1.15 then f = 1.15 elseif f < -0.15 then f = -0.15 end')
+  w('local cf = CFrame.new(prevP:Lerp(tgtP, f), prevL:Lerp(tgtL, f))')
+  w('if amp > 0 then')
+  w('local ph = tG * freq * math.pi * 2')
+  w('cf = cf * CFrame.new(math.sin(ph) * amp, math.cos(ph * 1.3) * amp * 0.6, 0)')
+  w('end')
+  w('cam.CFrame = cf')
+  w('if fovTo then cam.FieldOfView = fovFrom + (fovTo - fovFrom) * f end')
+  w('if useFade then')
+  w('local edge = math.min(0.2, dur / 2)')
+  w('local a = 1 - math.min(tS, dur - tS) / edge')
+  w('if a < 0 then a = 0 end')
+  w('fade.BackgroundTransparency = a')
+  w('end')
+  w('fireDue()')
+  w('end)')
+  w('while tS < dur and not skipped do RunService.Heartbeat:Wait() end')
+  w('conn:Disconnect()')
+  w('fade.BackgroundTransparency = 1')
+  w('prevP, prevL = tgtP, tgtL')
+  w('fireDue()')
+  w('end')
+  w('until (not data.loop) or skipped')
+  w('sub.Visible = false')
+  w('fade.BackgroundTransparency = 1')
+  w('cam.CameraType = Enum.CameraType.Custom')
+  w('pcall(function()')
+  w('local ch = player.Character or player.CharacterAdded:Wait()')
+  w('local hum = ch:FindFirstChildOfClass("Humanoid")')
+  w('if hum then cam.CameraSubject = hum end')
+  w('end)')
+  w('gui:Destroy()')
+  w('if jumpConn then jumpConn:Disconnect() end')
+  w('_G.RoLinkCutscenePlaying = false')
+  return table.concat(L, "\n")
+end
+function Cutscene.cutsceneData(name:string): (Instance, { [string]: any })
+  local folder = game.Workspace:FindFirstChild(Cutscene.folder)
+  local inst = folder and folder:FindFirstChild(name) or nil
+  if not inst or not inst:IsA("ModuleScript") then
+    error("CUTSCENE_NOT_FOUND: no cutscene named '" .. name:sub(1, 64)
+      .. "' under Workspace/" .. Cutscene.folder)
+  end
+  local src = ""
+  pcall(function() src = (inst::any).Source or "" end)
+  local payload = src:match("%[%[=(.-)=%]%]")
+  if not payload then error("CUTSCENE_CORRUPT: '" .. name:sub(1, 64) .. "' has no data payload") end
+  local ok, data = pcall(function() return HttpService:JSONDecode(payload) end)
+  if not ok or type(data) ~= "table" then
+    error("CUTSCENE_CORRUPT: '" .. name:sub(1, 64) .. "' data is not valid JSON")
+  end
+  return inst, data
+end
+function Cutscene.cutsceneTimeline(data:any): { [string]: any }
+  local shots = type(data) == "table" and data.shots or {}
+  local out:{ [string]: any } = {}
+  local t = 0
+  local prev:any = nil
+  for i, s in ipairs(shots) do
+    local dur = num(s.duration, 0)
+    local here = { position = s.camera and s.camera.position or nil,
+      lookAt = s.camera and s.camera.lookAt or nil }
+    table.insert(out, { index = i, start = math.floor(t * 1000 + 0.5) / 1000,
+      duration = dur, from = prev, to = here,
+      transition = s.transition or "cut", easing = s.easing or "linear",
+      fov = s.fov, shake = s.shake, hold = s.hold == true })
+    t += dur
+    prev = here
+  end
+  return { shots = out, total = math.floor(t * 1000 + 0.5) / 1000 }
+end
 local function createCutscene(args:{ [string]: any }): { [string]: any }
   local name = tostring(args.name or "RoLinkCutscene"):sub(1, 64)
   local shots = args.shots
   if type(shots) ~= "table" or #shots == 0 then error("shots must be a non-empty array") end
   if #shots > 32 then error("too many shots (max 32)") end
-  local folder = game.Workspace:FindFirstChild("RoLinkCutscenes")
-  if not folder then folder = Instance.new("Folder"); folder.Name = "RoLinkCutscenes"; folder.Parent = game.Workspace end
-  local total = 0
-  local data:{ [string]: any } = {}
-  for i, sD in ipairs(shots) do
-    if type(sD) ~= "table" then error("shot " .. i .. " must be an object") end
-    local cam = (sD::any).camera
-    if type(cam) ~= "table" then error("shot " .. i .. " needs camera{position, lookAt}") end
-    local dur = num((sD::any).duration, 0)
-    if dur < 0.1 or dur > 30 then error("shot " .. i .. " duration must be 0.1-30s") end
-    total += dur
-    table.insert(data, { camera = cam, duration = dur, easing = tostring((sD::any).easing or "linear") })
+  local folder = game.Workspace:FindFirstChild(Cutscene.folder)
+  if not folder then folder = Instance.new("Folder"); folder.Name = Cutscene.folder; folder.Parent = game.Workspace end
+  if folder:FindFirstChild(name) and args.confirm ~= true then
+    error("CONFIRM_REQUIRED: cutscene '" .. name .. "' already exists - re-send with confirm:true to replace it")
   end
+  local data:{ [string]: any } = {}
+  local total = 0
+  for i, sD in ipairs(shots) do
+    local shot = Cutscene.cutsceneCheckShot(sD, i)
+    total += shot.duration
+    table.insert(data, shot)
+  end
+  if total > Cutscene.totalMax then
+    error("cutscene too long (" .. math.floor(total * 10 + 0.5) / 10 .. "s, max "
+      .. Cutscene.totalMax .. "s) - split into chapters across calls")
+  end
+  local subs:{ [string]: any } = {}
+  for i, lD in ipairs(args.subtitles or {}) do
+    if type(lD) ~= "table" then error("subtitle " .. i .. " must be an object") end
+    local st = num((lD::any).t, -1)
+    if st < 0 or st > total then error("subtitle " .. i .. " t must sit inside 0-" .. total .. "s") end
+    if tostring((lD::any).speaker or "") == "" then error("subtitle " .. i .. " needs speaker") end
+    if tostring((lD::any).text or "") == "" then error("subtitle " .. i .. " needs text") end
+    table.insert(subs, { t = st, speaker = tostring((lD::any).speaker):sub(1, 64),
+      text = tostring((lD::any).text):sub(1, 280), dur = num((lD::any).dur, 2.5) })
+  end
+  table.sort(subs, function(a, b) return (a::any).t < (b::any).t end)
+  for i, s in ipairs(subs) do
+    local nxt = subs[i + 1]
+    local d = nxt and math.min(3, math.max(0.5, nxt.t - s.t - 0.1)) or math.min(3, math.max(0.5, (s::any).dur))
+    s.dur = math.floor(d * 100 + 0.5) / 100
+  end
+  local auds:{ [string]: any } = {}
+  for i, aD in ipairs(args.audio or {}) do
+    if type(aD) ~= "table" then error("audio " .. i .. " must be an object") end
+    local at = num((aD::any).t, -1)
+    if at < 0 or at > total then error("audio " .. i .. " t must sit inside 0-" .. total .. "s") end
+    local sid = tostring((aD::any).soundId or "")
+    if not sid:match("^rbxassetid://%d+$") then error("audio " .. i .. " soundId must look like rbxassetid://123") end
+    table.insert(auds, { t = at, soundId = sid })
+  end
+  table.sort(auds, function(a, b) return (a::any).t < (b::any).t end)
+  local old = folder:FindFirstChild(name)
+  if old then old:Destroy() end
+  local doc = { name = name, shots = data, subtitles = subs, audio = auds,
+    loop = args.loop == true, skippable = args.skippable ~= false }
   local mod = Instance.new("ModuleScript")
   mod.Name = name
-  local okEnc, json = pcall(function() return game:GetService("HttpService"):JSONEncode(data) end)
+  local okEnc, json = pcall(function() return HttpService:JSONEncode(doc) end)
   local decoded = "{}"
   if okEnc then decoded = "game:GetService(\"HttpService\"):JSONDecode([=[" .. tostring(json) .. "]=])" end
   mod.Source = "-- RoLink cutscene data (" .. #data .. " shots)\nreturn " .. decoded
   mod.Parent = folder
+  local scripts = game:GetService("StarterPlayer"):FindFirstChild("StarterPlayerScripts")
+  local store = scripts and scripts:FindFirstChild(Cutscene.scripts) or nil
+  if not store then
+    store = Instance.new("Folder")
+    store.Name = Cutscene.scripts
+    store.Parent = scripts or game:GetService("StarterPlayer")
+  end
+  local oldScript = store:FindFirstChild("RoLinkCutscene_" .. name)
+  if oldScript then oldScript:Destroy() end
+  local script = Instance.new("LocalScript")
+  script.Name = "RoLinkCutscene_" .. name
+  script.Source = Cutscene.cutsceneScriptSource(name)
+  script.Parent = store
+  script:SetAttribute("RoLinkCutscene", name)
   pcall(function() ChangeHistoryService:SetWaypoint("RoLink cutscene " .. name) end)
-  local snippet = "local shots = require(game.Workspace.RoLinkCutscenes:FindFirstChild(\""
-    .. name:gsub('"', "'")
-    .. "\")) local cam = game.Workspace.CurrentCamera cam.CameraType = Enum.CameraType.Scriptable"
-    .. " for _, s in ipairs(shots) do cam.CFrame = CFrame.new(Vector3.new(s.camera.position.x, s.camera.position.y, s.camera.position.z), Vector3.new(s.camera.lookAt.x, s.camera.lookAt.y, s.camera.lookAt.z)) task.wait(s.duration) end"
-  return { name = name, shots = #data, duration = total, path = mod:GetFullName(), runtimeSnippet = snippet }
+  return { name = name, shots = #data, duration = total, total = total,
+    path = mod:GetFullName(), script = script:GetFullName(),
+    subtitles = #subs, audio = #auds, loop = doc.loop, skippable = doc.skippable,
+    rendered = false, playable = true,
+    note = "Edit stores data + a Play-time LocalScript (auto-plays on spawn, skippable). Preview/validate before Play; Edit never renders camera." }
+end
+function Cutscene.previewCutscene(args:{ [string]: any }): { [string]: any }
+  local name = tostring(args.name or "RoLinkCutscene"):sub(1, 64)
+  local inst, data = Cutscene.cutsceneData(name)
+  local tl = Cutscene.cutsceneTimeline(data)
+  local subs = data.subtitles or {}
+  local auds = data.audio or {}
+  return { name = name, path = inst:GetFullName(), total = tl.total,
+    shots = tl.shots, subtitles = subs, audio = auds,
+    loop = data.loop == true, skippable = data.skippable ~= false,
+    rendered = false, playable = true,
+    note = "Numeric camera timeline from stored data; Studio plugins cannot prove rendered pixels." }
+end
+function Cutscene.validateCutscene(args:{ [string]: any }): { [string]: any }
+  local name = tostring(args.name or "RoLinkCutscene"):sub(1, 64)
+  local inst, data = Cutscene.cutsceneData(name)
+  local errors:{ [string]: any } = {}
+  local warnings:{ [string]: any } = {}
+  local shots = type(data.shots) == "table" and data.shots or {}
+  if #shots == 0 then table.insert(errors, { code = "NO_SHOTS", detail = name }) end
+  local total = 0
+  for i, s in ipairs(shots) do
+    local dur = num(s.duration, 0)
+    if dur < 0.1 or dur > 30 then
+      table.insert(errors, { code = "BAD_DURATION", detail = "shot " .. i })
+    end
+    total += dur
+    if not resolveEasing(tostring(s.easing or "linear")) then
+      table.insert(errors, { code = "BAD_EASING", detail = "shot " .. i })
+    end
+    local trans = tostring(s.transition or "cut")
+    if trans ~= "cut" and trans ~= "fade" then
+      table.insert(errors, { code = "BAD_TRANSITION", detail = "shot " .. i })
+    end
+    if s.fov ~= nil then
+      local fv = tonumber(s.fov) or 0
+      if fv < 1 or fv > 179 then
+        table.insert(errors, { code = "BAD_FOV", detail = "shot " .. i })
+      end
+    end
+  end
+  if total > Cutscene.totalMax then
+    table.insert(warnings, { code = "LONG_TOTAL",
+      detail = "total " .. total .. "s over " .. Cutscene.totalMax .. "s - split into chapters" })
+  end
+  if data.loop == true and #shots >= 2 then
+    local first, last = shots[1], shots[#shots]
+    local fp = first.camera and first.camera.position or {}
+    local lp = last.camera and last.camera.position or {}
+    local dp = math.sqrt((num(lp.x, 0) - num(fp.x, 0)) ^ 2
+      + (num(lp.y, 0) - num(fp.y, 0)) ^ 2
+      + (num(lp.z, 0) - num(fp.z, 0)) ^ 2)
+    if dp > 2 then
+      table.insert(warnings, { code = "LOOP_SEAM",
+        detail = string.format("looped cutscene drifts %.1f studs (first vs last camera) - it will jump every cycle", dp) })
+    end
+  end
+  for i, lD in ipairs(type(data.subtitles) == "table" and data.subtitles or {}) do
+    if num(lD.t, -1) < 0 or num(lD.t, -1) > total then
+      table.insert(errors, { code = "SUBTITLE_TIME", detail = "subtitle " .. i })
+    end
+  end
+  for i, aD in ipairs(type(data.audio) == "table" and data.audio or {}) do
+    if not tostring(aD.soundId or ""):match("^rbxassetid://%d+$") then
+      table.insert(errors, { code = "AUDIO_ID", detail = "audio " .. i })
+    end
+  end
+  return { name = name, path = inst:GetFullName(), valid = #errors == 0,
+    errors = errors, warnings = warnings, total = total, shots = #shots }
+end
+function Cutscene.removeCutscene(args:{ [string]: any }): { [string]: any }
+  local name = tostring(args.name or "RoLinkCutscene"):sub(1, 64)
+  if args.confirm ~= true then
+    error("CONFIRM_REQUIRED: remove cutscene '" .. name .. "' - re-send with confirm:true")
+  end
+  local folder = game.Workspace:FindFirstChild(Cutscene.folder)
+  local inst = folder and folder:FindFirstChild(name) or nil
+  if not inst then
+    error("CUTSCENE_NOT_FOUND: no cutscene named '" .. name .. "'")
+  end
+  local destroyed:{ [string]: any } = {}
+  destroyed.data = inst:GetFullName()
+  inst:Destroy()
+  local scripts = game:GetService("StarterPlayer"):FindFirstChild("StarterPlayerScripts")
+  local store = scripts and scripts:FindFirstChild(Cutscene.scripts) or nil
+  local script = store and store:FindFirstChild("RoLinkCutscene_" .. name) or nil
+  if script then destroyed.script = script:GetFullName() script:Destroy() end
+  pcall(function() ChangeHistoryService:SetWaypoint("RoLink remove cutscene " .. name) end)
+  return { removed = true, name = name, destroyed = destroyed }
 end
 local function createDialogue(args:{ [string]: any }): { [string]: any }
   local npc = findByPath(tostring(args.npcPath or ""))
@@ -1548,36 +2111,34 @@ local function createDialogue(args:{ [string]: any }): { [string]: any }
     .. "\")) -- show lines[i].speaker .. \": \" .. lines[i].text in your dialogue UI on ProximityPrompt.Triggered"
   return { lines = #lines, path = mod:GetFullName(), prompt = prompt:GetFullName(), runtimeSnippet = snippet }
 end
-local MOTION_EFFECTS = { tween = true, shake = true, fov = true, pulse = true }
-local MOTION_EFFECT_ROOT = "RoLinkMotionEffects"
-local MOTION_EFFECT_ALLOWED = {
+Motion.effectAllowed = {
   tween = { Position = true, CFrame = true, Size = true, Transparency = true,
     Color = true, Brightness = true },
   pulse = { scale = true, Transparency = true },
   shake = { amplitude = true, frequency = true, seed = true },
   fov = { FieldOfView = true, value = true },
 }
-local function motionEffectRoot(): Instance
+function Motion.motionEffectRoot(): Instance
   local rs = game:GetService("ReplicatedStorage")
-  local root = rs:FindFirstChild(MOTION_EFFECT_ROOT)
+  local root = rs:FindFirstChild(Motion.effectRoot)
   if not root then
     root = Instance.new("Folder")
-    root.Name = MOTION_EFFECT_ROOT
+    root.Name = Motion.effectRoot
     root.Parent = rs
   end
   return root
 end
-local function motionEffectFinite(v:any, label:string): number
+function Motion.motionEffectFinite(v:any, label:string): number
   local n = tonumber(v)
   if n == nil or n ~= n or n == math.huge or n == -math.huge then
     error("MOTION_PROPERTY_INVALID: " .. label .. " must be a finite number")
   end
   return n
 end
-local function motionEffectProperties(effect:string, raw:any): { [string]: any }
+function Motion.motionEffectProperties(effect:string, raw:any): { [string]: any }
   if raw == nil then return {} end
   if type(raw) ~= "table" then error("MOTION_PROPERTY_INVALID: properties must be an object") end
-  local allowed = MOTION_EFFECT_ALLOWED[effect] or {}
+  local allowed = Motion.effectAllowed[effect] or {}
   local out:{ [string]: any } = {}
   for k, v in pairs(raw) do
     local key = tostring(k)
@@ -1585,10 +2146,10 @@ local function motionEffectProperties(effect:string, raw:any): { [string]: any }
       error("MOTION_PROPERTY_INVALID: property '" .. key:sub(1, 48) .. "' is not allowed for " .. effect)
     end
     if type(v) == "number" or type(v) == "string" or type(v) == "boolean" then
-      if type(v) == "number" then motionEffectFinite(v, key) end
+      if type(v) == "number" then Motion.motionEffectFinite(v, key) end
       out[key] = v
     elseif type(v) == "table" then
-      out[key] = motionPlain(v)
+      out[key] = Motion.motionPlain(v)
     else
       error("MOTION_PROPERTY_INVALID: property '" .. key:sub(1, 48) .. "' must be JSON data")
     end
@@ -1611,7 +2172,7 @@ local function motionEffectProperties(effect:string, raw:any): { [string]: any }
   end
   return out
 end
-local function motionEffectScriptSource(name:string): string
+function Motion.motionEffectScriptSource(name:string): string
   return "local CONFIG_FOLDER = " .. string.format("%q", name) .. "\n" .. [==[
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
@@ -1767,8 +2328,8 @@ end
 warn("[RoLink] unknown motion effect")
 ]==]
 end
-local function motionEffectConfig(name:string): (Instance, { [string]: any })
-  local folder = motionEffectRoot():FindFirstChild(name)
+function Motion.motionEffectConfig(name:string): (Instance, { [string]: any })
+  local folder = Motion.motionEffectRoot():FindFirstChild(name)
   if not folder then error("MOTION_EFFECT_NOT_FOUND: no motion effect named '" .. name:sub(1, 64) .. "'") end
   local value = folder:FindFirstChild("Config")
   if not value or not value:IsA("StringValue") then error("MOTION_EFFECT_CORRUPT: Config is missing") end
@@ -1778,7 +2339,7 @@ local function motionEffectConfig(name:string): (Instance, { [string]: any })
 end
 local function createMotionEffect(args:{ [string]: any }): { [string]: any }
   local effect = tostring(args.effect or "tween")
-  if not MOTION_EFFECTS[effect] then error("unknown effect '" .. effect:sub(1, 32) .. "' (tween|shake|fov|pulse)") end
+  if not Motion.effects[effect] then error("unknown effect '" .. effect:sub(1, 32) .. "' (tween|shake|fov|pulse)") end
   local requestedPath = tostring(args.path or "")
   if requestedPath == "" then error("path is required") end
   local target = findByPath(requestedPath)
@@ -1794,8 +2355,8 @@ local function createMotionEffect(args:{ [string]: any }): { [string]: any }
   if effect == "shake" and not target and not isCamera then
     error("MOTION_EFFECT_TARGET_INVALID: shake needs a part or camera path")
   end
-  local name = motionCleanName(args.name or (effect .. "_" .. (target and target.Name or "camera")), "RoLinkMotionEffect")
-  local root = motionEffectRoot()
+  local name = Motion.motionCleanName(args.name or (effect .. "_" .. (target and target.Name or "camera")), "RoLinkMotionEffect")
+  local root = Motion.motionEffectRoot()
   if root:FindFirstChild(name) and args.confirm ~= true then
     error("CONFIRM_REQUIRED: motion effect '" .. name .. "' exists - re-send with confirm:true to replace it")
   end
@@ -1803,14 +2364,14 @@ local function createMotionEffect(args:{ [string]: any }): { [string]: any }
     local old = root:FindFirstChild(name)
     old:Destroy()
   end
-  local properties = motionEffectProperties(effect, args.properties)
+  local properties = Motion.motionEffectProperties(effect, args.properties)
   local dur = math.clamp(num(args.duration, 1), 0.1, 30)
   local playback = tostring(args.playback or "auto")
   if playback == "auto" then playback = (effect == "fov" or isCamera) and "client" or "server" end
   if playback ~= "server" and playback ~= "client" then error("playback must be auto, server, or client") end
   if effect == "fov" then playback = "client" end
   local config = { schemaVersion = 1, name = name, effect = effect,
-    targetPath = isCamera and "camera" or motionPath(target), duration = dur,
+    targetPath = isCamera and "camera" or Motion.motionPath(target), duration = dur,
     loop = args.loop == true, playback = playback, autoPlay = args.autoPlay ~= false,
     properties = properties, originalTransparency = target and target:IsA("BasePart") and target.Transparency or nil }
   local folder = Instance.new("Folder")
@@ -1823,7 +2384,7 @@ local function createMotionEffect(args:{ [string]: any }): { [string]: any }
   folder:SetAttribute("playback", playback)
   local value = Instance.new("StringValue")
   value.Name = "Config"
-  value.Value = motionJson(config)
+  value.Value = Motion.motionJson(config)
   value.Parent = folder
   folder.Parent = root
   local service = game:GetService(playback == "client" and "StarterPlayer" or "ServerScriptService")
@@ -1835,7 +2396,7 @@ local function createMotionEffect(args:{ [string]: any }): { [string]: any }
   end
   local script = Instance.new(playback == "client" and "LocalScript" or "Script")
   script.Name = "RoLinkMotionEffect_" .. name
-  script.Source = motionEffectScriptSource(name)
+  script.Source = Motion.motionEffectScriptSource(name)
   script.Parent = scripts
   folder:SetAttribute("scriptPath", script:GetFullName())
   pcall(function() ChangeHistoryService:SetWaypoint("RoLink motion effect " .. name) end)
@@ -1847,8 +2408,8 @@ local function createMotionEffect(args:{ [string]: any }): { [string]: any }
       or "Edit-time controller created with autoPlay=false; no runtime effect was started." }
 end
 local function inspectMotionEffect(args:{ [string]: any }): { [string]: any }
-  local name = motionCleanName(args.name, "RoLinkMotionEffect")
-  local folder, cfg = motionEffectConfig(name)
+  local name = Motion.motionCleanName(args.name, "RoLinkMotionEffect")
+  local folder, cfg = Motion.motionEffectConfig(name)
   return { name = name, controller = folder:GetFullName(), config = folder:FindFirstChild("Config"):GetFullName(),
     effect = tostring(cfg.effect or ""), targetPath = tostring(cfg.targetPath or ""),
     targetResolved = findByPath(tostring(cfg.targetPath or "")) ~= nil or tostring(cfg.targetPath) == "camera",
@@ -1856,9 +2417,9 @@ local function inspectMotionEffect(args:{ [string]: any }): { [string]: any }
     autoPlay = cfg.autoPlay ~= false, runtimeState = folder:GetAttribute("RoLinkRuntimeState") }
 end
 local function removeMotionEffect(args:{ [string]: any }): { [string]: any }
-  local name = motionCleanName(args.name, "RoLinkMotionEffect")
+  local name = Motion.motionCleanName(args.name, "RoLinkMotionEffect")
   if args.confirm ~= true then error("CONFIRM_REQUIRED: remove motion effect '" .. name .. "' - re-send with confirm:true") end
-  local folder = motionEffectRoot():FindFirstChild(name)
+  local folder = Motion.motionEffectRoot():FindFirstChild(name)
   if not folder then error("MOTION_EFFECT_NOT_FOUND: no motion effect named '" .. name:sub(1, 64) .. "'") end
   local path = folder:GetFullName()
   folder:Destroy()
@@ -3182,8 +3743,10 @@ pcall(function()
     end
   end)
 end)
--- Build identity + type probe: if Studio runs a stale/different copy, the
--- Output below names exactly what is missing instead of a bare nil-call.
+-- Build identity + type probe in its own block: chunk-level temps would
+-- otherwise hold registers to end-of-file (Studio caps a chunk at ~200
+-- locals). Same below for the heartbeat cursor.
+do
 log("anim build 6 - builder=" .. type(rlBuildAnimWidget) .. " engine=" .. type(rlModelAnalyze) .. " ui=" .. type(rlAnimUI))
 local okBuild, buildErr = false, nil
 if type(rlBuildAnimWidget) == "function" then
@@ -3195,6 +3758,7 @@ if not okBuild then
   warn("[RoLink] animation editor build failed: " .. tostring(buildErr):sub(1, 300))
 else
   log("animation editor built - click Anim to open")
+end
 end
 
 
@@ -3555,12 +4119,19 @@ local function rlModelAttack(args: { [string]: any }): { [string]: any }
   local srz = num(st and (st :: any).rz, 0)
   local tracks: { [string]: any } = {}
   rlNeutralKeys(tracks, names)
+  -- Overshoot settle: one key past impact at 108% strike with springOut,
+  -- then the neutral recovery. Reads as snap-follow-through, not a freeze.
+  local over = math.min(0.12, math.max(0.04, (duration - impact) / 3))
+  local hasOver = over < duration - impact - 0.03
   for _, tn in ipairs(names) do
     local s = tostring(tn)
     rlKeyAt(tracks, s, 0, 0, 0, 0, "linear")
     rlKeyAt(tracks, s, ant, -srx * 0.5, -sry * 0.5, -srz * 0.5, "quadInOut")
-    rlKeyAt(tracks, s, impact, srx, sry, srz, "quadOut")
-    rlKeyAt(tracks, s, duration, 0, 0, 0, "quadInOut")
+    rlKeyAt(tracks, s, impact, srx, sry, srz, "bezierOut")
+    if hasOver then
+      rlKeyAt(tracks, s, impact + over, srx * 1.08, sry * 1.08, srz * 1.08, "springOut")
+    end
+    rlKeyAt(tracks, s, duration, 0, 0, 0, "sineInOut")
   end
   local res = rlModelWriteFresh(args, tracks, { { t = impact, name = "IMPACT" } })
   res.impactT = impact
@@ -3578,8 +4149,8 @@ local function rlModelIdle(args: { [string]: any }): { [string]: any }
   for _, tn in ipairs(names) do
     local s = tostring(tn)
     rlKeyAt(tracks, s, 0, 0, 0, 0, "linear")
-    rlKeyAt(tracks, s, duration / 2, 0, sway, 0, "quadInOut")
-    rlKeyAt(tracks, s, duration, 0, 0, 0, "quadInOut")
+    rlKeyAt(tracks, s, duration / 2, 0, sway, 0, "sineInOut")
+    rlKeyAt(tracks, s, duration, 0, 0, 0, "sineInOut")
   end
   return rlModelWriteFresh(args, tracks, {})
 end
@@ -3597,10 +4168,10 @@ local function rlModelWalk(args: { [string]: any }): { [string]: any }
     local sign = 1
     if i % 2 == 0 then sign = -1 end
     rlKeyAt(tracks, s, 0, 0, 0, 0, "linear")
-    rlKeyAt(tracks, s, duration * 0.25, sign * stride, 0, 0, "quadInOut")
-    rlKeyAt(tracks, s, duration * 0.5, 0, 0, 0, "quadInOut")
-    rlKeyAt(tracks, s, duration * 0.75, -sign * stride, 0, 0, "quadInOut")
-    rlKeyAt(tracks, s, duration, 0, 0, 0, "quadInOut")
+    rlKeyAt(tracks, s, duration * 0.25, sign * stride, 0, 0, "sineInOut")
+    rlKeyAt(tracks, s, duration * 0.5, 0, 0, 0, "sineInOut")
+    rlKeyAt(tracks, s, duration * 0.75, -sign * stride, 0, 0, "sineInOut")
+    rlKeyAt(tracks, s, duration, 0, 0, 0, "sineInOut")
   end
   return rlModelWriteFresh(args, tracks, {})
 end
@@ -3948,10 +4519,36 @@ local function placePatternParts(args:{ [string]: any }): { [string]: any }
   if spacing <= 0 or spacing > 512 then
     error("validation_error: spacing must be 0-512 studs")
   end
+  -- Brick-by-brick anchor: a course builds off a verified part, never off
+  -- guessed world coordinates. With no origin the course starts at world
+  -- origin (the historical behavior); pass a part path to continue a build.
+  local originPath = tostring(args.origin or "")
+  local origin: Instance? = nil
+  local ox, oy, oz = 0, 5, 0
+  local originTop: number? = nil
+  if originPath ~= "" then
+    origin = findByPath(originPath)
+    if not origin then error("not found " .. originPath .. siblingHint(originPath)) end
+    local okP, op = pcall(function() return (origin :: any).Position end)
+    if okP and typeof(op) == "Vector3" then ox, oy, oz = op.X, op.Y, op.Z end
+    local okS, osz = pcall(function() return (origin :: any).Size end)
+    if okS and typeof(osz) == "Vector3" then originTop = oy + osz.Y / 2 end
+  end
+  if args.y ~= nil then oy = num(args.y, oy) end
+  -- Grid snap rounds course X/Z to snap multiples (Y stays exact so the
+  -- course stays level). 0 disables snapping.
+  local snap = num(args.snap, 0)
+  if snap < 0 or snap > 512 then
+    error("validation_error: snap must be 0-512 studs (0 disables snapping)")
+  end
+  -- Course naming: prefix_1..N so the next course can address exact parts
+  -- instead of guessing through duplicate "Part" names.
+  local prefix = tostring(args.prefix or ""):sub(1, 32)
   local sx, sy, sz = num3(args.size)
   local matName = tostring(args.material or "")
   local made = 0
   local partFailed:{ [string]: string } = {}
+  local spots:{ [string]: any } = {}
   for i = 1, count do
     local px, pz = 0, 0
     if pattern == "line" then
@@ -3966,9 +4563,15 @@ local function placePatternParts(args:{ [string]: any }): { [string]: any }
       px = ((i - 1) % cols) * spacing
       pz = math.floor((i - 1) / cols) * spacing
     end
+    local wx, wz = ox + px, oz + pz
+    if snap > 0 then
+      wx = math.floor(wx / snap + 0.5) * snap
+      wz = math.floor(wz / snap + 0.5) * snap
+    end
     local p = Instance.new("Part")
     p.Anchored = true
-    local props:{ [string]: any } = {Position = {px, 5, pz}}
+    if prefix ~= "" then p.Name = prefix .. "_" .. i end
+    local props:{ [string]: any } = {Position = {wx, oy, wz}}
     if sx ~= nil then (props :: any).Size = {sx, sy, sz} end
     if matName ~= "" then (props :: any).Material = matName end
     local ap, fl = applyProps(p, props)
@@ -3978,13 +4581,49 @@ local function placePatternParts(args:{ [string]: any }): { [string]: any }
     else
       p.Parent = parent
       made += 1
+      table.insert(spots, { i = i, path = p:GetFullName(), x = wx, y = oy, z = wz })
     end
   end
   if made == 0 then
     error("properties_failed: no parts placed (" .. propsFailedSummary(partFailed) .. ")")
   end
-  return {placed = made, of = count, pattern = pattern,
-    parent = parent:GetFullName(), spacing = spacing, failed = partFailed}
+  -- Course audit: floaters have no neighbor within 1.5 spacings (the
+  -- origin part counts, so a course rooted on its anchor never flags).
+  -- originTop tells the next course where to sit (stack at that Y).
+  local floaters:{ [string]: any } = {}
+  local hasOrigin, ox0, oz0 = false, 0, 0
+  if origin then
+    local okO, oo = pcall(function() return (origin :: any).Position end)
+    if okO and typeof(oo) == "Vector3" then ox0, oz0 = oo.X, oo.Z hasOrigin = true end
+  end
+  for _, a in ipairs(spots) do
+    local best = math.huge
+    if hasOrigin then
+      local dx, dz = ox0 - a.x, oz0 - a.z
+      best = math.sqrt(dx * dx + dz * dz)
+    end
+    for _, b in ipairs(spots) do
+      if b.i ~= a.i then
+        local d = math.sqrt((b.x - a.x) ^ 2 + (b.z - a.z) ^ 2)
+        if d < best then best = d end
+      end
+    end
+    if best > spacing * 1.5 and (#spots > 1 or hasOrigin) then
+      table.insert(floaters, { index = a.i, path = a.path })
+    end
+  end
+  local paths:{ [string]: any } = {}
+  for _, a in ipairs(spots) do table.insert(paths, a.path) end
+  local res:{ [string]: any } = {placed = made, of = count, pattern = pattern,
+    parent = parent:GetFullName(), spacing = spacing, failed = partFailed,
+    origin = origin and origin:GetFullName() or nil,
+    base = { x = ox, y = oy, z = oz }, snapped = snap > 0, snap = snap,
+    paths = paths, floaters = floaters, originTop = originTop}
+  if #floaters > 0 then
+    res.note = #floaters .. " floater(s) have no neighbor within "
+      .. (spacing * 1.5) .. " studs - move them onto the course or drop them"
+  end
+  return res
 end
 
 local function paintMaterial(args:{ [string]: any }): { [string]: any }
@@ -4271,6 +4910,9 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="delete_animation" then result=deleteAnimation(args)
     -- 114-119 Cinematics
     elseif tool=="create_cutscene" then result=createCutscene(args)
+    elseif tool=="preview_cutscene" then result=Cutscene.previewCutscene(args)
+    elseif tool=="validate_cutscene" then result=Cutscene.validateCutscene(args)
+    elseif tool=="remove_cutscene" then result=Cutscene.removeCutscene(args)
     elseif tool=="create_dialogue" then result=createDialogue(args)
     elseif tool=="create_motion_effect" then result=createMotionEffect(args)
     elseif tool=="inspect_motion_effect" then result=inspectMotionEffect(args)
@@ -4391,6 +5033,14 @@ local function executeCommand(cmd:any): (any, string?)
       local hint = siblingHint((cmd.args or {}).path or (cmd.args or {}).parent
         or (cmd.args or {}).characterPath or (cmd.args or {}).target or "")
       if hint ~= "" then err ..= hint end
+    end
+    -- Direct Workspace.A.B chains throw on the first missing segment. Point
+    -- the model at the safe pattern instead of a second blind guess.
+    if tool == "execute_luau" and (low:find("attempt to index nil", 1, true)
+      or low:find("attempt to index missing", 1, true)) then
+      err ..= " Hint: nil index - verify the path exists with get_instances"
+        .. " first and guard with FindFirstChild (never chain Workspace.A.B"
+        .. " on an uncertain tree)."
     end
   end
   ChangeHistoryService:SetWaypoint("RoLink after "..tool)
@@ -4547,10 +5197,13 @@ local function poll()
 end
 
 btn.Click:Connect(function() enabled=not enabled; btn:SetActive(enabled); log(enabled and "enabled" or "disabled") end)
-local last=0; RunService.Heartbeat:Connect(function(dt) last+=dt; if last>=POLL_INTERVAL then last=0; task.spawn(poll) end end)
+-- Block-scoped cursor: a chunk-level `local last` here would hold a register
+-- to end-of-file (Studio caps a chunk at ~200 locals). The closure keeps its
+-- own reference after the block closes.
+do local last=0; RunService.Heartbeat:Connect(function(dt) last+=dt; if last>=POLL_INTERVAL then last=0; task.spawn(poll) end end) end
 task.spawn(function() while true do task.wait(20); if enabled then pcall(function()
   local metrics={projectId="default", avgFPS=60, activePlayers=#game.Players:GetPlayers()}
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.6.0 loaded [repo copy] - 147 tools ready, polling "..MCP_URL)
+log("RoLink 2.7.0 loaded [repo copy] - 150 tools ready, polling "..MCP_URL)

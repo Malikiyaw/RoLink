@@ -13,6 +13,14 @@
 #   function ... end | if/elseif/else ... end | for/while ... do ... end |
 #   do ... end | repeat ... until
 #
+# It also counts chunk-scope `local` declarations (Studio caps a chunk at
+# ~200 locals: every top-level `local x` / `local function f` holds a
+# register to end-of-file, and the whole plugin then fails to load with
+# "Out of local registers ... exceeded limit 200" on the LAST chunk local
+# instead of anything actionable - seen live, line 5185 `local last`).
+# Helpers therefore live on category tables (Motion.x, Cutscene.x), and
+# one-shot chunk temps use do/end blocks. --max-locals sets the tripwire.
+#
 # Usage: python3 scripts/check_luau_blocks.py [file ...]
 # Exit 0 when every file balances and respects the line cap, 1 otherwise.
 import re
@@ -22,6 +30,7 @@ KEYWORDS = {"local", "function", "if", "elseif", "else", "for", "while",
             "repeat", "until", "do", "then", "end", "return", "break",
             "continue", "in", "and", "or", "not"}
 MAX_LINE_DEFAULT = 900
+MAX_CHUNK_LOCALS_DEFAULT = 185
 
 
 def tokenize(src):
@@ -79,7 +88,7 @@ def tokenize(src):
         i += 1
 
 
-def check(path, max_line=MAX_LINE_DEFAULT):
+def check(path, max_line=MAX_LINE_DEFAULT, max_chunk_locals=MAX_CHUNK_LOCALS_DEFAULT):
     with open(path, encoding="utf-8", errors="replace") as f:
         lines = f.read().splitlines()
     with open(path, encoding="utf-8", errors="replace") as f:
@@ -91,6 +100,7 @@ def check(path, max_line=MAX_LINE_DEFAULT):
                             % (path, idx, len(line), max_line))
     # state machine
     stack = []          # list of [kind, line]
+    chunk_locals = 0    # top-level `local` declarations (register tripwire below)
     prev_word = None    # previous keyword token (for `for/while ... do`)
     pendingDo = False   # a for/while header is waiting for its `do`
     ifExpr = False      # previous `if` was an if-EXPRESSION (no frame pushed)
@@ -105,6 +115,18 @@ def check(path, max_line=MAX_LINE_DEFAULT):
     for word, ln, col in tokenize(src):
         if word is None:
             continue
+        if word == "local" and not stack:
+            # Chunk-scope declaration: each holds a register to end-of-file.
+            # `local function f` takes one; `local a, b = ...` takes one per
+            # name (commas before `=` on the same line). Falls through on
+            # purpose: `local` opens no block frame itself.
+            eol = src.find("\n", col)
+            seg = src[col:] if eol < 0 else src[col:eol]
+            if re.match(r"\s*local\s+function\b", seg):
+                chunk_locals += 1
+            else:
+                head = seg.split("=", 1)[0]
+                chunk_locals += 1 + head.count(",")
         if word == "function":
             # `function` is only a block opener as a declaration or anonymous
             # function expression. When it is a plain identifier (table key,
@@ -197,20 +219,26 @@ def check(path, max_line=MAX_LINE_DEFAULT):
         prev_word = word
     for kind, ln in stack:
         errors.append("%s:%d unclosed %s block opened here (EOF)" % (path, ln, kind))
+    if chunk_locals > max_chunk_locals:
+        errors.append("%s: chunk declares %d top-level locals (cap %d) - group helpers/constants into tables (Section.x) or scope one-shot temps in do/end; Studio refuses the whole file past ~200 with 'Out of local registers'"
+                      % (path, chunk_locals, max_chunk_locals))
     return problems + errors
 
 
 def main(argv):
     max_line = MAX_LINE_DEFAULT
+    max_chunk_locals = MAX_CHUNK_LOCALS_DEFAULT
     files = []
     args = list(argv[1:])
     if args and args[0].startswith("--max-line="):
         max_line = int(args.pop(0).split("=", 1)[1])
+    if args and args[0].startswith("--max-locals="):
+        max_chunk_locals = int(args.pop(0).split("=", 1)[1])
     files = args or ["studio-plugin/RoLink.lua"]
     bad = 0
     for p in files:
         try:
-            issues = check(p, max_line)
+            issues = check(p, max_line, max_chunk_locals)
         except OSError as e:
             print("SKIP %s (%s)" % (p, e))
             continue

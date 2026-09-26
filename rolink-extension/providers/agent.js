@@ -908,6 +908,7 @@ const RLProvider = (() => {
         "ARENA AGENT MODE (supervised): this page runs an autonomous site agent with its own sandbox tools. For anything involving the user's Roblox Studio project, still write RoLink commands as plain-text JSON - the site's tools cannot reach Studio. Emit command blocks VERBATIM (never rephrase or summarize them); the extension executes them locally.",
         "After emitting a Studio command, write one short line and STOP - do not continue site-side work that buries the command turn under new artifacts (a buried command can't be adopted and run).",
         "When the page shows a human decision prompt (e.g. task-success vote buttons), STOP writing commands and wait in plain text - the user clicks, not you. Never ask to click it twice.",
+        "DEEP THINK FIRST (good practice): think in your own reasoning area before acting - state a 1-2 line plan, verify the target with one read (get_instances / get_script_content) before any edit, then do one command per reply and wait for its result.",
       ].join("\n");
     },
   });

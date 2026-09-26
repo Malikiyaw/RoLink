@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+## [2.7.0] - 2026-09-26
+
+### Plugin load fix: chunk-local register cap
+
+- Fixed the plugin failing to load at all (`Out of local registers ... exceeded limit 200` on the last chunk line, so no toolbar, no `loaded` banner, `plugin_status` never-polled): the file held ~200 chunk-scope locals (every top-level `local function` keeps a register to end-of-file). Motion/cutscene helpers now live on `Motion.*`/`Cutscene.*` tables, one-shot chunk temps use `do/end` blocks, subdivision counts are inline — ~35 registers freed with zero behavior change (all dispatcher spells and pinned declarations untouched).
+- `scripts/check_luau_blocks.py` now also counts chunk-scope locals (`--max-locals`, default 185) so the next approach trips CI instead of Studio.
+- Plugin reinstall required: quit Studio fully, reinstall `studio-plugin/RoLink.lua`, reopen (expect `RoLink 2.7.0 loaded [repo copy]` + toolbar button).
+
+### Preflight: scan-then-delete no longer needs confirmation
+
+- `broad-destroy` now requires the `:Destroy()` to sit inside a `for`/`while`/`repeat` body (plus a `GetDescendants`/`GetChildren` scan, `ClearAllChildren`, or root destroy). Scanning the tree and deleting one resolved target outside any loop is a single undoable delete — it reports `targeted-destroy` (MEDIUM) and runs without `confirm:true`. Real wipes (`for ... GetDescendants() do :Destroy() end`, guarded or not) still gate. Bridge and Node analyzers kept in sync.
+- Confirm rejections and failed tool results now log their full (untruncated, capped) text to `bridge_debug.log` file-only, so a terminal screenshot is never the only record of what fired.
+
+### Realistic animation: easing, metrics, scaffolds
+
+- New easings `bezierOut` (overshoot) and `springOut` (settle), per-pose easing overrides, deeper subdivision on long eased segments, and arc lift so swings bow outward instead of chord-cutting through the body. Budgets unchanged (200 keyframes, 64 poses each, 1024 total).
+- `preview_motion_animation` now reports per-part peak velocity (`peakVelocity`) and loop-seam drift (`loopSeam`, `loopSeamWorst`); `validate_motion_animation` warns `LOOP_SEAM` on looped controllers that would pop. Attack scaffolds bake overshoot/settle keys; idle/walk use sine cycling.
+- Prompts teach the realism recipe (block extremes, slow-in/out, overshoot strikes, planted holds, close loops) across `create_animation_track`, motion, and preview/validate outputs.
+- Plugin reinstall required: quit Studio fully, reinstall `studio-plugin/RoLink.lua`, reopen (expect `RoLink 2.7.0 loaded [repo copy]`).
+
+### Cinematic cutscenes: real camera, lifecycle tools
+
+- `create_cutscene` now builds eased per-frame camera tweens (12 easings incl. `bezierOut`/`springOut`), `cut|fade` transitions, per-shot FOV, bounded shake, static `hold` snaps, letterbox bars, time-synced subtitles, audio cues, and a skippable auto-play Play-time LocalScript. New lifecycle tools `preview_cutscene` (numeric timeline), `validate_cutscene` (error codes + `LOOP_SEAM`), `remove_cutscene` (confirm-gated). Catalog 147 → 150 tools.
+- Plugin reinstall required (same step as above).
+
+### Brick-by-brick modeling: anchored courses
+- `place_parts` learned `origin` (anchor on a verified part, offsets build off it), `y` (course height), `snap` (grid-size X/Z rounding, Y stays level), and `prefix` (names parts `prefix_1..N` for exact follow-ups). Results add `origin/base/paths/floaters/originTop`: `floaters[]` flags detached parts, `originTop` is the stacking height for the next course.
+- Prompts teach the course protocol: foundation with prefix → verify paths → anchor next course on origin at `originTop` → fix floaters before stacking → snapshot per layer. Never absolute coordinates from memory.
+- Plugin reinstall required (same step as above).
+
 ## [2.6.0] - 2026-09-25
 
 ### Roblox motion + separate Blender MCP

@@ -216,6 +216,7 @@ class PresetDefinitionTest(unittest.TestCase):
             "BLENDER_PORT": "9876",
             "BLENDER_MCP_SAFE_MODE": "1",
             "DISABLE_TELEMETRY": "true",
+            "UV_PYTHON_PREFERENCE": "only-managed",
         })
         self.assertIn("uvx", p["requires"])
         self.assertTrue(p["homepage"].startswith("https://"))
@@ -287,7 +288,8 @@ class DefaultInstallUntouchedTest(unittest.TestCase):
             self.assertEqual(info["server_id"], "blender")
             self.assertEqual(sorted(info["env_keys"]),
                              ["BLENDER_HOST", "BLENDER_MCP_SAFE_MODE",
-                              "BLENDER_PORT", "DISABLE_TELEMETRY"])
+                              "BLENDER_PORT", "DISABLE_TELEMETRY",
+                              "UV_PYTHON_PREFERENCE"])
             written = read_json(path)["mcpServers"]
             self.assertIn("roblox", written, "adding a preset must not drop the primary server")
             # Exactly these 7 keys: no fewer (a dropped key silently changes how
@@ -335,12 +337,12 @@ class DefaultInstallUntouchedTest(unittest.TestCase):
             ok, err, info = bridge.config_add_preset("mcp-for-blender", env={"BLENDER_PORT": "9999", "SECRET_TOKEN": "s3cr3t"})
             self.assertTrue(ok, err)
             self.assertNotIn("s3cr3t", json.dumps(info), "preset info must not echo env values")
-            # The caller's key joins the preset's own four; the override only
+            # The caller's key joins the preset's own five; the override only
             # changes a value, never the key set. info reports NAMES, sorted, so
             # "BLENDER_PORT is not set" is diagnosable and s3cr3t never is.
             self.assertEqual(info["env_keys"], ["BLENDER_HOST", "BLENDER_MCP_SAFE_MODE",
                                                 "BLENDER_PORT", "DISABLE_TELEMETRY",
-                                                "SECRET_TOKEN"])
+                                                "SECRET_TOKEN", "UV_PYTHON_PREFERENCE"])
             written = read_json(bridge.CONFIG_PATH)["mcpServers"]["blender"]["env"]
             self.assertEqual(written["BLENDER_PORT"], "9999")
             self.assertEqual(written["BLENDER_HOST"], "127.0.0.1")

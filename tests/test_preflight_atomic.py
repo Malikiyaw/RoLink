@@ -20,6 +20,11 @@ DS_WRITE = 'local ds = game:GetService("DataStoreService"):GetDataStore("P")\nds
 HTTP = 'local h = game:GetService("HttpService")\nreturn h:RequestAsync({Url="https://x.example", Method="GET"})'
 BROAD = 'for _, d in ipairs(workspace:GetDescendants()) do d:Destroy() end\nreturn 1'
 TARGETED = 'workspace.Map.OldSign:Destroy()\nreturn 1'
+SCAN_THEN_TARGETED = ('local all = game.Workspace:GetDescendants()\n'
+                      'local t = workspace.Map.OldSign\n'
+                      'if t then t:Destroy() end\nreturn 1')
+LOOP_WIPE_CHILDREN = 'for _, v in pairs(folder:GetChildren()) do v:Destroy() end\nreturn 1'
+LOOP_UNRELATED = 'for i = 1, 3 do print(i) end\nworkspace.Map.OldSign:Destroy()\nreturn 1'
 CLEAN = 'local x = 1 + 1\nreturn x'
 STRING_TRAP = 'local s = "call httpservice destroy :Destroy("\n-- workspace:GetDescendants() destroy\nreturn s'
 MASS = 'for i = 1, 200 do local p = Instance.new("Part") p.Parent = workspace end\nreturn 1'
@@ -60,6 +65,27 @@ class PreflightUnitTest(unittest.TestCase):
         r = bridge._luau_risk(TARGETED)
         self.assertEqual(r["level"], "MEDIUM")
         self.assertFalse(r["requiresConfirm"])
+
+    def test_scan_then_targeted_destroy_no_confirm(self):
+        # A tree scan followed by a Destroy OUTSIDE any loop is one
+        # undoable delete, not a wipe: no confirmation gate.
+        r = bridge._luau_risk(SCAN_THEN_TARGETED)
+        self.assertFalse(r["requiresConfirm"], r)
+        self.assertFalse(any(d["id"] == "broad-destroy" for d in r["dangers"]), r)
+        res = bridge.safe_call("execute_luau", {"code": SCAN_THEN_TARGETED}, 5)
+        self.assertNotEqual(res.get("status"), "confirm_required", res)
+
+    def test_loop_wipe_children_still_confirms(self):
+        r = bridge._luau_risk(LOOP_WIPE_CHILDREN)
+        self.assertTrue(any(d["id"] == "broad-destroy" for d in r["dangers"]), r)
+        self.assertTrue(r["requiresConfirm"])
+
+    def test_destroy_after_closed_loop_is_targeted(self):
+        # The loop is over before the Destroy runs: the stack machine must
+        # pop the closed block instead of blaming every later call.
+        r = bridge._luau_risk(LOOP_UNRELATED)
+        self.assertFalse(r["requiresConfirm"], r)
+        self.assertFalse(any(d["id"] == "broad-destroy" for d in r["dangers"]), r)
 
     def test_strings_and_comments_are_blind(self):
         r = bridge._luau_risk(STRING_TRAP)

@@ -250,6 +250,7 @@ const RLProvider = (() => {
       P.promptExtra = [
         "CLAUDE: write RoLink commands as plain-text JSON in the CHAT - never inside an artifact (artifacts don't feed the loop). After a command, reply briefly and wait for its result before the next step.",
         "CLAUDE USAGE CAPS: this site meters usage - keep prose short, never re-read what you already have, and batch independent reads with batch_queue (max 10).",
+        "DEEP THINK FIRST (good practice): use extended thinking to plan 1-2 steps and check exact names/params from list_commands before acting - then write one command per reply, verify with reads before edits.",
       ].join("\n");
       // Diagnostic: why the last getEditor() missed.
       P.describeMiss = () => lastMiss;

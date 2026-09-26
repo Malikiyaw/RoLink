@@ -64,6 +64,36 @@ function stripNoise(code: string): string {
 
 const count = (low: string, pat: RegExp): number => (low.match(pat) || []).length;
 
+// True when a :Destroy() call sits inside a for/while/repeat body, so a
+// scan-then-delete-one-target (Destroy outside any loop) passes without
+// confirmation while real wipes stay gated. Runs on noise-stripped code;
+// confusion gates (confirm), it never silently passes.
+function destroyInLoop(clean: string): boolean {
+  const destroys: number[] = [];
+  for (const m of clean.matchAll(/:destroy\s*\(/g)) destroys.push(m.index ?? 0);
+  if (!destroys.length) return false;
+  const toks: Array<[number, string]> = [];
+  for (const m of clean.matchAll(/\b(for|while|repeat|function|if|until|end)\b/g)) {
+    toks.push([m.index ?? 0, m[1]]);
+  }
+  const stack: string[] = [];
+  let di = 0;
+  for (const [pos, kw] of toks) {
+    while (di < destroys.length && destroys[di] < pos) {
+      if (stack.includes("loop")) return true;
+      di++;
+    }
+    if (kw === "for" || kw === "while" || kw === "repeat") stack.push("loop");
+    else if (kw === "function" || kw === "if") stack.push("block");
+    else if (kw === "end" || kw === "until") stack.pop();
+  }
+  while (di < destroys.length) {
+    if (stack.includes("loop")) return true;
+    di++;
+  }
+  return false;
+}
+
 export function analyzeRisk(code: unknown): LuauRisk {
   const empty: LuauRisk = { level: "LOW", dangers: [], services: [], scope: {}, requiresConfirm: false };
   if (typeof code !== "string" || !code.trim()) return empty;
@@ -84,8 +114,10 @@ export function analyzeRisk(code: unknown): LuauRisk {
 
   const destroys = count(low, /:destroy\s*\(/g);
   const clears = count(low, /clearallchildren\s*\(/g);
-  const broad = (low.includes("getdescendants") && destroys > 0) || clears > 0 ||
-    (destroys > 0 && ["workspace:destroy", "game:destroy", "game.workspace:destroy"].some(k => low.includes(k)));
+  const scan = low.includes("getdescendants") || low.includes("getchildren");
+  const broad = clears > 0 ||
+    (destroys > 0 && ["workspace:destroy", "game:destroy", "game.workspace:destroy"].some(k => low.includes(k))) ||
+    (destroys > 0 && scan && destroyInLoop(low));
   scope["destroyCalls"] = destroys;
   if (broad) dangers.push({ id: "broad-destroy", severity: "HIGH", detail: `${destroys} Destroy call(s) over a subtree (GetDescendants/ClearAllChildren) - confirm scope before running`, confirm: true });
   else if (destroys > 0) dangers.push({ id: "targeted-destroy", severity: "MEDIUM", detail: `${destroys} targeted Destroy call(s) - undoable via rollback`, confirm: false });

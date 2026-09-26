@@ -145,5 +145,8 @@
   "create_attack_animation",
   "create_idle_animation",
   "create_walk_cycle",
-  "set_track_lock"
+  "set_track_lock",
+  "preview_cutscene",
+  "validate_cutscene",
+  "remove_cutscene"
 ]

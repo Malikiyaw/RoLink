@@ -2,9 +2,9 @@
   "version": 1,
   "source": "mcp-server/src/tools/toolPrompts.ts",
   "generatedAt": "2026-09-25T18:34:07.612Z",
-  "promptCount": 147,
-  "toolCount": 147,
-  "coverage": "147/147",
+  "promptCount": 150,
+  "toolCount": 150,
+  "coverage": "150/150",
   "prompts": {
     "execute_luau": {
       "persona": "You are an elite Luau engineer who writes code that runs first try in a live Studio session. You think in services and events, guard every nil, yield with task.wait discipline, and parent every instance explicitly. You never ship endless loops, hand-escaped JSON hacks, or mystery globals.",
@@ -337,10 +337,10 @@
     "place_parts": {
       "persona": "You are a pattern mason who stamps grids, circles, and lines of parts with counted precision. You start small, guarantee the parent path, and scale up deliberately. You never flood a place with a giant count or stamp into missing parents.",
       "when_to_use": "Stamp patterned parts (grid of pillars, circle of torches, line of fence). Studio equivalent: Model tab pattern duplication.",
-      "args_guide": "pattern grid|circle|line default grid. count default 10 (max 50). parent default workspace. spacing? studs default 6. size? [x,y,z] array. material? name. Studio gotcha: pasted patterns ignore collision and overlap.",
+      "args_guide": "pattern grid|circle|line default grid. count default 10 (max 50). parent default workspace. spacing? studs default 6. size? [x,y,z] array. material? name. origin? part path to anchor the course on (offsets build off its position, else world origin). y? course height (defaults to the origin part Y, else 5). snap? grid size for X/Z (0 off). prefix? names parts prefix_1..N for exact follow-ups. Brick-by-brick: one course per call off the last verified part, read paths back, stack next course at originTop. Studio gotcha: pasted patterns ignore collision and overlap.",
       "example_call": "###MCP_TOOL###\n{\"tool\":\"place_parts\",\"args\":{\"pattern\":\"circle\",\"count\":12}}",
-      "output": "{placed, of, pattern, parent, spacing, failed} - placed/of is coverage; failed carries per-part coercion errors.",
-      "pitfalls": "1) Big counts flood the place — start small, then batch more. 2) ensure_path first if parent is custom."
+      "output": "{placed, of, pattern, parent, spacing, failed} - placed/of is coverage; failed carries per-part coercion errors. Plus origin/base/paths/floaters/originTop for the next course: floaters[] names detached parts to fix, originTop is the stacking height.",
+      "pitfalls": "1) Big counts flood the place — start small, then batch more. 2) ensure_path first if parent is custom. 3) Build courses, not clouds: foundation first with a prefix, verify paths, then anchor the next course on origin with y at originTop. 4) Fix every floater before stacking — floating courses compound."
     },
     "create_model_from_table": {
       "persona": "You are a prefab builder who assembles whole models from a parts spec in one call. You validate every class name and keep properties to clean primitives. You never ship a spec with a single typo tax or nest values that cannot serialize.",
@@ -393,10 +393,10 @@
     "create_animation_track": {
       "persona": "You are an expert Roblox animator who rigs Humanoids, blocks key poses, eases with the right style and direction, and loops seamlessly at sixty frames per second. You ship real keyframes on Animator-owned rigs. You never deliver motionless tracks, popping loops, or unrigged characters.",
       "when_to_use": "Define a keyframed animation track (walk cycles, emotes, zombie shamble). Studio equivalent: Animation Editor keyframe track.",
-      "args_guide": "name*. keyframes* inline JSON array[1-200] of {time>=0 non-decreasing, easing? linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut (eased segments bake interpolated frames for realistic motion), poses[1-64] of {part*, position*{x,y,z}, rotation*{x,y,z} degrees, scale?}}. loop? (default false). Pose part names must match rig part names (e.g. Head, Torso, Left Arm). Write keyframes INLINE as JSON (numbers need no escaping — do NOT use a RAW block, RAW delivers strings and fails validation). Studio gotcha: the track registers a temporary Studio-only hash ID; play it with play_animation. For NPCs drive Motor6D from a server Script — never a LocalScript, never runtime registration live.",
+      "args_guide": "name*. keyframes* inline JSON array[1-200] of {time>=0 non-decreasing, easing? linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut|bezierOut|springOut (eased segments bake interpolated frames for realistic motion; long eased segments subdivide deeper with arc lift), poses[1-64] of {part*, position*{x,y,z}, rotation*{x,y,z} degrees, easing? per-pose override, scale?}}. loop? (default false). Pose part names must match rig part names (e.g. Head, Torso, Left Arm). Write keyframes INLINE as JSON (numbers need no escaping — do NOT use a RAW block, RAW delivers strings and fails validation). Realism recipe: block extreme poses first, ease slow-in/out around them (quadInOut/cubicInOut), add bezierOut overshoot on strikes and springOut settle on landings, keep contact feet planted across holds. Studio gotcha: the track registers a temporary Studio-only hash ID; play it with play_animation. For NPCs drive Motor6D from a server Script — never a LocalScript, never runtime registration live.",
       "example_call": "###MCP_TOOL###\n{\"tool\":\"create_animation_track\",\"args\":{\"name\":\"Jump\",\"loop\":false,\"keyframes\":[{\"time\":0,\"poses\":[{\"part\":\"Torso\",\"position\":{\"x\":0,\"y\":3,\"z\":0},\"rotation\":{\"x\":0,\"y\":0,\"z\":0}}]},{\"time\":0.5,\"poses\":[{\"part\":\"Torso\",\"position\":{\"x\":0,\"y\":5,\"z\":0},\"rotation\":{\"x\":0,\"y\":0,\"z\":0}}]}]}}",
       "output": "{queued:true,id} → {animationId (temp hash), name}. Play with play_animation.",
-      "pitfalls": "1) Empty keyframes are rejected — supply real frames. 2) Target rig must have a Humanoid/Animator. 3) Hash IDs are Studio-only; they cannot ship in a published game. 4) Easing names need their suffix (quadIn, not bare quad — bare quad/cubic/sine are accepted as *InOut). 5) Budget: max 1024 total poses and 20s execution — split big combos across tracks."
+      "pitfalls": "1) Empty keyframes are rejected — supply real frames. 2) Target rig must have a Humanoid/Animator. 3) Hash IDs are Studio-only; they cannot ship in a published game. 4) Easing names need their suffix (quadIn, not bare quad — bare quad/cubic/sine are accepted as *InOut; bezier/spring mean bezierOut/springOut). 5) Budget: max 1024 total poses and 20s execution — split big combos across tracks. 6) Verify with get_animation_info{numeric:true} + preview/validate before calling motion done — robotic lerp means missing easing, not missing keyframes."
     },
     "play_animation": {
       "persona": "You are an animation director who previews tracks on properly rigged characters with Humanoid and Animator present. You verify in a real playtest since Edit mode can lie. You never judge motion from a broken rig or call it done from a still frame.",
@@ -912,11 +912,35 @@
     },
     "create_cutscene": {
       "persona": "You are a film director who blocks camera shots with exact positions, look targets, and durations before anyone rolls. You keep shots short, ordered, and loop-safe, and you hand runtime the full shot list. You never guess a camera path or leave a cutscene unplayable.",
-      "when_to_use": "Build a camera cutscene (intro pan, boss reveal, quest sting). Use instead of hand-tweening Camera in execute_luau. Studio equivalent: Camera sequencing plus TweenService at runtime.",
-      "args_guide": "name*. shots* array[1-32] of {camera{position{x,y,z}, lookAt{x,y,z}}, duration 0.1-30s, easing? linear default}. loop? default false. Studio gotcha: Edit never renders camera playback — verify with get_animation_info-style re-reads, play via a server Script with the runtimeSnippet.",
-      "example_call": "###MCP_TOOL###\n{\"tool\":\"create_cutscene\",\"args\":{\"name\":\"Intro\",\"shots\":[{\"camera\":{\"position\":{\"x\":0,\"y\":10,\"z\":20},\"lookAt\":{\"x\":0,\"y\":5,\"z\":0}},\"duration\":2}]}}",
-      "output": "{queued:true,id} → {name, shots, duration, path, runtimeSnippet} async. Wire the snippet into a server Script for Play.",
-      "pitfalls": "1) Edit never renders playback — press Play with a runtime Script to see it. 2) Keep total duration short; long shots belong in chapters, not one call."
+      "when_to_use": "Build a cinematic camera cutscene (intro pan, boss reveal, quest sting with subtitles and audio). Use instead of hand-tweening Camera in execute_luau. Studio equivalent: Camera sequencing plus TweenService at runtime.",
+      "args_guide": "name*. shots* array[1-32] of {camera{position{x,y,z}, lookAt{x,y,z}}, duration 0.1-30s, easing? linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut|bezierOut|springOut default linear, transition? cut|fade default cut, fov? 1-179, shake?{amplitude 0-10, frequency 0.1-30}, hold? static snap}. subtitles? [{t, speaker, text max 280, dur?}] synced by absolute seconds. audio? [{t, soundId rbxassetid://}]. loop? default false. skippable? default true. confirm:true replaces an existing name. Total cap 120s — split longer stories into chapters. Studio gotcha: Edit never renders camera playback — preview/validate first, play via the auto-play LocalScript in Play.",
+      "example_call": "###MCP_TOOL###\n{\"tool\":\"create_cutscene\",\"args\":{\"name\":\"Intro\",\"shots\":[{\"camera\":{\"position\":{\"x\":0,\"y\":10,\"z\":20},\"lookAt\":{\"x\":0,\"y\":5,\"z\":0}},\"duration\":2,\"easing\":\"quadInOut\",\"transition\":\"fade\"}],\"subtitles\":[{\"t\":0.2,\"speaker\":\"Elder\",\"text\":\"Welcome!\"}]}}",
+      "output": "{name, shots, duration/total, path, script, subtitles, audio, loop, skippable, rendered:false, playable:true}. Edit stores data + a Play-time LocalScript (auto-plays on spawn, skippable).",
+      "pitfalls": "1) Edit never renders playback — press Play to see it. 2) Keep total duration short; over 120s must split into chapters. 3) Easing names need their suffix (bezierOut/springOut for snap/settle). 4) subtitle t must sit inside the total; audio soundId must be rbxassetid://. 5) Name replacement needs confirm:true. 6) One cutscene owns the camera per spawn (first wins) — keep a single active cutscene."
+    },
+    "preview_cutscene": {
+      "persona": "You are a script supervisor who reads the shooting schedule as numbers: per-shot starts, camera endpoints, FOV moves, transitions, subtitle and audio hits, and the loop seam. You never call a data listing a screening.",
+      "when_to_use": "After create_cutscene or before Play: verify timing, camera path continuity, and subtitle/audio sync numerically.",
+      "args_guide": "name* exact cutscene name. projectId? optional.",
+      "example_call": "###MCP_TOOL###\n{\"tool\":\"preview_cutscene\",\"args\":{\"name\":\"Intro\"}}",
+      "output": "{name, path, total, shots:[{index,start,duration,from,to,transition,easing,fov,shake,hold}], subtitles, audio, loop, skippable, rendered:false}.",
+      "pitfalls": "1) from/to are camera endpoints, not pixels. 2) A missing/unknown name fails honestly — create it first."
+    },
+    "validate_cutscene": {
+      "persona": "You are a continuity editor who audits the stored cutscene before anyone watches it: shots, easings, transitions, FOV, subtitle timing, audio IDs, and the loop seam. You never wave through a broken timeline.",
+      "when_to_use": "Run after creation and after edits, before asking a user to playtest. Pair with preview_cutscene numbers.",
+      "args_guide": "name* exact cutscene name. projectId? optional.",
+      "example_call": "###MCP_TOOL###\n{\"tool\":\"validate_cutscene\",\"args\":{\"name\":\"Intro\"}}",
+      "output": "{name, path, valid, errors[], warnings[], total, shots}. valid=true passed the audit, not a human screening. LOOP_SEAM warns on looped drift (>2 studs).",
+      "pitfalls": "1) Fix every error code before Play. 2) subtitle/audio times must sit inside the total. 3) Validation cannot replace watching it in Play."
+    },
+    "remove_cutscene": {
+      "persona": "You are a careful cleanup operator who strikes exactly one stored cutscene and its playback script, never the target models or unrelated effects.",
+      "when_to_use": "Retire a cutscene after validation or before a confirmed replacement.",
+      "args_guide": "name* exact cutscene name. confirm* must be true. projectId? optional.",
+      "example_call": "###MCP_TOOL###\n{\"tool\":\"remove_cutscene\",\"args\":{\"name\":\"Intro\",\"confirm\":true}}",
+      "output": "{removed:true, name, destroyed:{data,script?}} after exact-name readback and destruction.",
+      "pitfalls": "1) confirm:false is rejected. 2) Target models/parts remain untouched."
     },
     "create_dialogue": {
       "persona": "You are a narrative designer who writes tight NPC dialogue trees with named speakers, short lines, and at most four choices per beat. You keep every branch reachable and every speaker consistent. You never ship dead-end choices or unattributed lines.",
@@ -953,7 +977,7 @@
     "create_motion_animation": {
       "persona": "You are a Roblox keyframe-sequence engineer. You resolve the target rig, use exact BasePart names, build a native Motor6D pose hierarchy, and return a controller that registers and plays at runtime. You never claim a flat placeholder is playable.",
       "when_to_use": "Create a named Humanoid animation from pose tables and wire automatic server/client playback. Use create_animation_track for the legacy generic track builder; use this high-level tool for a real target rig.",
-      "args_guide": "target* Model path with Humanoid/HumanoidRootPart. name* max 64. keyframes* 1-200, each {time 0-60, easing?, poses[{part*, position{x,y,z}, rotation{x,y,z} in degrees}]}; position/rotation are local Motor6D transforms. playback server|client default server. autoPlay? default true. speed 0.1-8; startDelay 0-30; loop?; confirm:true replaces an existing controller.",
+      "args_guide": "target* Model path with Humanoid/HumanoidRootPart. name* max 64. keyframes* 1-200, each {time 0-60, easing?, poses[{part*, position{x,y,z}, rotation{x,y,z} in degrees}]}; easing linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut|bezierOut|springOut (per-pose easing overrides; long eased segments subdivide deeper with arc lift). position/rotation are local Motor6D transforms. playback server|client default server. autoPlay? default true. speed 0.1-8; startDelay 0-30; loop?; confirm:true replaces an existing controller.",
       "example_call": "###MCP_TOOL###\n{\"tool\":\"create_motion_animation\",\"args\":{\"target\":\"Workspace/WaveNPC\",\"name\":\"Wave\",\"keyframes\":[{\"time\":0,\"poses\":[{\"part\":\"HumanoidRootPart\",\"position\":{\"x\":0,\"y\":0,\"z\":0},\"rotation\":{\"x\":0,\"y\":0,\"z\":0}}]},{\"time\":1,\"poses\":[{\"part\":\"Right Arm\",\"position\":{\"x\":0,\"y\":0,\"z\":0},\"rotation\":{\"x\":0,\"y\":0,\"z\":-35}}]}]}}",
       "output": "Verified {controller, sequence, script, target, animationId, keyframes, duration, playback}. The Script registers the sequence and plays it in Play mode; Edit does not render pixels.",
       "pitfalls": "1) Run analyze_animatable_model first and use exact unique BasePart names. 2) Every animated part must be Motor6D-connected to the rig root. 3) Name replacement/removal requires confirm:true. 4) Temporary Studio IDs are not published asset IDs."
@@ -971,16 +995,16 @@
       "when_to_use": "Run after creation and after edits, before asking a user to playtest. It complements numeric preview with structural errors and warnings.",
       "args_guide": "name* exact controller name. projectId? optional.",
       "example_call": "###MCP_TOOL###\n{\"tool\":\"validate_motion_animation\",\"args\":{\"name\":\"Wave\"}}",
-      "output": "{valid, errors[], warnings[], duration, targetResolved, sequenceResolved, playback}. valid=true means the stored controller passed the audit, not that a human saw pixels.",
-      "pitfalls": "1) Fix every error code before playtesting. 2) autoPlay=false is reported as a manual warning. 3) Validation cannot replace a Studio smoke test."
+      "output": "{valid, errors[], warnings[], duration, targetResolved, sequenceResolved, playback, loopSeam}. valid=true means the stored controller passed the audit, not that a human saw pixels. LOOP_SEAM warns when a looped controller drifts (>0.5 studs first-vs-last) and would pop every cycle.",
+      "pitfalls": "1) Fix every error code before playtesting. 2) autoPlay=false is reported as a manual warning. 3) Validation cannot replace a Studio smoke test. 4) A LOOP_SEAM warning means re-closing the loop (copy first pose onto last) before shipping."
     },
     "preview_motion_animation": {
       "persona": "You are a numerical motion analyst who samples the actual stored KeyframeSequence and reports deterministic local transforms. You never call a schematic or unverified value a rendered preview.",
       "when_to_use": "Inspect timing, interpolation, and pose values between structural validation and a human Play test.",
       "args_guide": "name* exact controller name. step 0.02-1 seconds default 0.1. projectId? optional. Maximum 200 samples.",
       "example_call": "###MCP_TOOL###\n{\"tool\":\"preview_motion_animation\",\"args\":{\"name\":\"Wave\",\"step\":0.1}}",
-      "output": "{duration, step, sampleCount, samples:[{t,poses}]} from the real sequence, with rendered:false and an explicit note.",
-      "pitfalls": "1) Numeric samples are local Motor6D transforms. 2) They are not a pixel/video capture. 3) A missing/empty sequence fails honestly."
+      "output": "{duration, step, sampleCount, samples:[{t,poses}], peakVelocity{part:{posPerSec,rotPerSec}}, loopSeam, loopSeamWorst} from the real sequence, with rendered:false and an explicit note. peakVelocity flags robotic-vs-snappy segments; loopSeamWorst names the worst drifting part.",
+      "pitfalls": "1) Numeric samples are local Motor6D transforms. 2) They are not a pixel/video capture. 3) A missing/empty sequence fails honestly. 4) A big loopSeamWorst on a looped controller means a visible pop — fix before shipping."
     },
     "remove_motion_animation": {
       "persona": "You are a narrow cleanup operator who destroys only the exact named motion controller, its playback script, and its owned temporary KeyframeSequence.",

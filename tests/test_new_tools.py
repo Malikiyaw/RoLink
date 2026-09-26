@@ -20,7 +20,8 @@ NEW_TOOLS = ["scan_errors", "inspect_ui", "screenshot_studio",
              "set_track_lock", "create_motion_animation",
              "inspect_motion_animation", "validate_motion_animation",
              "preview_motion_animation", "remove_motion_animation",
-             "inspect_motion_effect", "remove_motion_effect"]
+             "inspect_motion_effect", "remove_motion_effect",
+             "preview_cutscene", "validate_cutscene", "remove_cutscene"]
 
 
 def read(*parts):
@@ -44,7 +45,7 @@ class NewToolChainTest(unittest.TestCase):
         bridge.mgr = mgr  # no servers started: queue/Studio paths stay offline
 
     def test_registry_has_147_with_new_tools(self):
-        self.assertEqual(len(self.registry), 147)
+        self.assertEqual(len(self.registry), 150)
         for n in NEW_TOOLS:
             self.assertIn(n, self.registry)
 
@@ -107,7 +108,7 @@ class NewToolChainTest(unittest.TestCase):
         for key in ("studio", "place", "playState", "selected", "plugin",
                     "bridge", "pendingTasks", "project"):
             self.assertIn(key, body, f"missing {key}")
-        self.assertEqual(body["bridge"], "2.6.0")
+        self.assertEqual(body["bridge"], "2.7.0")
         self.assertIsInstance(body["selected"], list)
         self.assertIsInstance(body["pendingTasks"], int)
 
@@ -179,7 +180,7 @@ class AuditScriptTest(unittest.TestCase):
         r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "audit_tools.py")],
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("147 registered", r.stdout)
+        self.assertIn("150 registered", r.stdout)
         qpath = os.path.join(ROOT, "generated", "tool-quarantine.json")
         self.assertTrue(os.path.exists(qpath))
         q = json.load(io.open(qpath, encoding="utf-8"))
